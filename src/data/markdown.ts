@@ -1,0 +1,126 @@
+import { parseYaml, stringifyYaml } from "obsidian";
+import type { ClinicalRecord, EntityType } from "../domain/types";
+import { normalizeIsoDate } from "../domain/schema";
+
+/** Fields stored as a bare calendar day. */
+const DATE_ONLY_FIELDS = new Set(["due_date", "procedure_date", "follow_up_date"]);
+
+/** Fields stored as a full ISO timestamp. */
+const TIMESTAMP_FIELDS = new Set([
+  "created_at",
+  "updated_at",
+  "opened_at",
+  "closed_at",
+  "completed_at",
+  "cancelled_at"
+]);
+
+export function recordTitle(record: ClinicalRecord): string {
+  switch (record.entity) {
+    case "patient":
+      return record.patient_name || record.mrn || "Patient identity";
+    case "episode":
+      return record.case;
+    case "task":
+      return record.task;
+    case "procedure":
+      return record.procedure;
+    case "event":
+      return record.summary || record.action;
+  }
+}
+
+export function recordBody(record: ClinicalRecord): string {
+  const title = recordTitle(record);
+  const common = `# ${title}\n\n> Managed by Clinical Workspace. Structured properties above are the source of truth.\n`;
+  switch (record.entity) {
+    case "patient":
+      return `${common}\n## Patient summary\n\n- MRN: ${record.mrn || "Needed"}\n- Phone: ${record.phone || "NFN"}\n`;
+    case "episode":
+      return `${common}\n## Clinical notes\n\n\n## Plan\n\n- Next action: ${record.next_action || "Not set"}\n`;
+    case "task":
+      return `${common}\n## Task notes\n\n`;
+    case "procedure":
+      return `${common}\n## Operative notes\n\n- Outcome: ${record.outcome || "Not recorded"}\n`;
+    case "event":
+      return `${common}\n- Action: ${record.action}\n- Previous: ${record.previous_state || "Not applicable"}\n- New: ${record.new_state || "Not applicable"}\n`;
+  }
+}
+
+export function recordMarkdown(record: ClinicalRecord): string {
+  const yaml = stringifyYaml(record).trimEnd();
+  return `---\n${yaml}\n---\n${recordBody(record)}`;
+}
+
+export function parseFrontmatter(content: string): Record<string, unknown> | null {
+  const match = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
+  if (!match?.[1]) return null;
+  try {
+    const parsed = parseYaml(match[1]);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isClinicalEntity(value: unknown): value is EntityType {
+  return [
+    "patient",
+    "episode",
+    "task",
+    "procedure",
+    "document",
+    "event",
+    "medication-reference"
+  ].includes(String(value));
+}
+
+/**
+ * Normalises one frontmatter value into the shape the rest of the plugin
+ * assumes: a string, a number, a boolean, or an array of strings.
+ *
+ * Obsidian's YAML schema currently returns bare `2026-08-03` as a string, so
+ * dates round-trip cleanly. That is an implementation detail of a closed-source
+ * dependency rather than a guarantee, and a YAML 1.1 writer (another plugin, an
+ * external editor) would produce `Date` objects instead. Coercing here means a
+ * change in that behaviour degrades nothing: date comparisons keep working and
+ * write verification keeps passing.
+ */
+export function coerceFrontmatterValue(key: string, value: unknown): unknown {
+  if (value instanceof Date) {
+    const iso = value.toISOString();
+    return DATE_ONLY_FIELDS.has(key) || iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
+  }
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) return value.map((item) => (item === null || item === undefined ? "" : String(item)));
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value !== "string") return String(value);
+  if (DATE_ONLY_FIELDS.has(key)) {
+    const normalized = normalizeIsoDate(value);
+    // Preserve an unparseable value so the integrity check can report it.
+    return normalized || value;
+  }
+  if (TIMESTAMP_FIELDS.has(key)) return value.trim();
+  return value;
+}
+
+export function coerceFrontmatter(frontmatter: Record<string, unknown>): Record<string, unknown> {
+  const coerced: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(frontmatter)) {
+    coerced[key] = coerceFrontmatterValue(key, value);
+  }
+  return coerced;
+}
+
+export function parseClinicalRecord(content: string): ClinicalRecord | null {
+  const frontmatter = parseFrontmatter(content);
+  if (!frontmatter || !isClinicalEntity(frontmatter.entity) || !frontmatter.id) return null;
+  if (!["patient", "episode", "task", "procedure", "event"].includes(String(frontmatter.entity))) {
+    return null;
+  }
+  return coerceFrontmatter(frontmatter) as unknown as ClinicalRecord;
+}
+
+export function valueMatches(actual: unknown, expected: unknown): boolean {
+  return JSON.stringify(actual ?? null) === JSON.stringify(expected ?? null);
+}

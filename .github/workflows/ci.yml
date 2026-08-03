@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Read-only. Nothing in this workflow needs to write to the repository.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      # Actions are pinned to commit SHAs: a tag can be moved to point at
+      # different code, and this workflow runs against a clinical codebase.
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify release artefacts
+        run: npm run verify-release
+
+      # A vault must never reach the repository. The .gitignore blocks it, but
+      # a mistake there should fail the build rather than pass silently.
+      - name: Assert no vault or clinical data is tracked
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -Ei '(^|/)Clinical Workspace/|\.obsidian/|\.base$|^vaults?/'; then
+            echo "::error::Vault or clinical files are tracked in git."
+            exit 1
+          fi
+          echo "No vault, .obsidian directory or .base file is tracked."
+
+      # Long digit literals in source are almost always test fixtures, but a real
+      # MRN pasted in while debugging looks exactly the same. Every permitted
+      # value is listed here, so adding one is a deliberate act rather than an
+      # accident that slips through review.
+      - name: Assert no unapproved identifier-shaped literals in source
+        run: |
+          set -euo pipefail
+          ALLOWED='^(9000000001|9000000002|9000000000001|0009000000001|0012345|0500000000|0500000001)$'
+          # Hex literals are algorithmic constants, not identifiers.
+          UNEXPECTED=$(git grep -hI '' -- src tests \
+                       | sed -E 's/0x[0-9a-fA-F]+//g' \
+                       | grep -oE '[0-9]{7,}' \
+                       | sort -u | grep -Ev "$ALLOWED" || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "::error::Unapproved identifier-shaped literal(s) in source: $UNEXPECTED"
+            echo "Use an obviously synthetic value (9000...) and add it to the allowlist in this workflow."
+            exit 1
+          fi
+          echo "All identifier-shaped literals are approved synthetic values."

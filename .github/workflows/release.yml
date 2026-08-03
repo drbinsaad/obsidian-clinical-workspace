@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    # Obsidian release tags are bare semantic versions with no 'v' prefix.
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+# Default to read-only; the single job that publishes elevates for itself.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Check
+        run: npm run check
+
+      - name: Verify release artefacts
+        run: npm run verify-release
+
+      - name: Assert the tag matches the manifest
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          MANIFEST="$(node -p "require('./manifest.json').version")"
+          if [ "$TAG" != "$MANIFEST" ]; then
+            echo "::error::Tag $TAG does not match manifest version $MANIFEST."
+            exit 1
+          fi
+          echo "Tag $TAG matches the manifest."
+
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          # Copied by explicit name. Never a glob over dist/, so a stray file
+          # in the build directory can never be published by accident.
+          cp dist/main.js release/main.js
+          cp dist/manifest.json release/manifest.json
+          cp dist/styles.css release/styles.css
+          ls -l release
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: plugin
+          path: release/
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    # The only place in this repository that can write. Scoped to this job.
+    permissions:
+      contents: write
+    steps:
+      - name: Download artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: plugin
+          path: release
+
+      - name: Create release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          # Obsidian and BRAT expect these three files, named exactly this way.
+          files: |
+            release/main.js
+            release/manifest.json
+            release/styles.css
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true

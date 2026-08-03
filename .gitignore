@@ -1,0 +1,30 @@
+node_modules/
+dist/
+coverage/
+work/
+*.log
+*.zip
+
+# Secrets
+.env
+.env.*
+
+# Local tool settings
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+.AppleDouble
+.Spotlight-V100
+.Trashes
+# AppleDouble sidecars, created when the project lives on a non-HFS volume
+._*
+
+# Never allow a vault — real or synthetic — into the repository.
+# The plugin creates a folder with this exact name, so opening the repository
+# directory as a vault would otherwise write patient notes into the work tree.
+Clinical Workspace/
+**/.obsidian/
+*.base
+vault/
+vaults/

@@ -1,0 +1,335 @@
+.clinical-workspace-view {
+  --clinical-card-gap: 12px;
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.clinical-workspace-scroll {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Obsidian applies a global border-box reset, but the layout depends on it
+   rather than merely benefiting from it: without this the shell is 100% wide
+   plus its own horizontal padding and overflows by exactly that amount. */
+.clinical-workspace-view,
+.clinical-workspace-view *,
+.clinical-modal,
+.clinical-modal * {
+  box-sizing: border-box;
+}
+
+.clinical-workspace-shell {
+  width: min(100%, 860px);
+  margin: 0 auto;
+  padding: 16px 16px calc(92px + env(safe-area-inset-bottom));
+}
+
+.clinical-workspace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.clinical-workspace-title {
+  margin: 0;
+  font-size: var(--h2-size);
+}
+
+.clinical-workspace-subtitle,
+.clinical-card-meta,
+.clinical-card-review,
+.clinical-empty,
+.clinical-section-note {
+  color: var(--text-muted);
+}
+
+.clinical-workspace-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 -4px 16px;
+  padding: 6px 4px;
+  background: color-mix(in srgb, var(--background-primary) 94%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+.clinical-workspace-tab,
+.clinical-card-button {
+  min-height: 44px;
+  border-radius: var(--button-radius);
+}
+
+.clinical-workspace-tab {
+  padding: 6px 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  /* --text-muted does not reach 4.5:1 at this size; normal body colour does. */
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+}
+
+.clinical-workspace-tab:focus-visible,
+.clinical-card-button:focus-visible,
+.clinical-primary-action:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+.clinical-workspace-tab.is-active {
+  border-color: var(--interactive-accent);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.clinical-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.clinical-summary-card,
+.clinical-card,
+.clinical-form-section {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 14px;
+  background: var(--background-secondary);
+  box-shadow: var(--shadow-s);
+}
+
+.clinical-summary-card {
+  padding: 14px;
+}
+
+.clinical-summary-value {
+  display: block;
+  font-size: 1.55rem;
+  font-weight: var(--font-bold);
+}
+
+.clinical-summary-label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.clinical-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 18px 0 10px;
+}
+
+.clinical-section-header h3 {
+  margin: 0;
+}
+
+.clinical-list {
+  display: grid;
+  gap: var(--clinical-card-gap);
+}
+
+.clinical-card {
+  padding: 15px;
+  overflow-wrap: anywhere;
+}
+
+.clinical-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.clinical-card h4 {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+}
+
+.clinical-card p {
+  margin: 4px 0;
+}
+
+.clinical-badges,
+.clinical-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.clinical-badges {
+  margin-top: 10px;
+}
+
+.clinical-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+}
+
+/* Badges pair a tinted background with a same-hue foreground. Measured against
+   that background the plain hue lands at 2.9-4.2:1 depending on the colour, so
+   all four failed WCAG AA. Mixing the hue toward the body text colour lifts
+   every one past 4.5:1 while keeping the colour coding legible. */
+.clinical-badge.is-inpatient,
+.clinical-badge.is-urgent {
+  background: color-mix(in srgb, var(--color-orange) 18%, var(--background-primary));
+  color: color-mix(in srgb, var(--color-orange) 58%, var(--text-normal));
+}
+
+.clinical-badge.is-emergency,
+.clinical-badge.is-overdue {
+  background: color-mix(in srgb, var(--color-red) 18%, var(--background-primary));
+  color: color-mix(in srgb, var(--text-error) 58%, var(--text-normal));
+}
+
+.clinical-badge.is-outpatient {
+  background: color-mix(in srgb, var(--color-blue) 18%, var(--background-primary));
+  color: color-mix(in srgb, var(--color-blue) 58%, var(--text-normal));
+}
+
+.clinical-badge.is-complete {
+  background: color-mix(in srgb, var(--color-green) 18%, var(--background-primary));
+  color: color-mix(in srgb, var(--color-green) 58%, var(--text-normal));
+}
+
+.clinical-card-actions {
+  margin-top: 14px;
+}
+
+.clinical-card-button {
+  flex: 1 1 120px;
+  padding: 8px 12px;
+}
+
+.clinical-card-button.is-danger {
+  color: var(--text-error);
+}
+
+/* Anchored to the view, not the viewport: `fixed` escapes a sidebar leaf on
+   desktop and stacks when two workspace views are open. */
+.clinical-primary-action {
+  position: absolute;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  z-index: 8;
+  min-width: 58px;
+  min-height: 58px;
+  border-radius: 999px;
+  box-shadow: var(--shadow-l);
+}
+
+.clinical-empty {
+  padding: 28px 16px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 14px;
+  text-align: center;
+}
+
+.clinical-modal .modal-content {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.clinical-modal-heading {
+  margin-top: 0;
+}
+
+.clinical-form-section {
+  margin: 12px 0;
+  padding: 8px 14px;
+}
+
+.clinical-form-section h3 {
+  margin: 8px 0 2px;
+  font-size: var(--font-ui-medium);
+}
+
+.clinical-modal-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 12px 0 calc(8px + env(safe-area-inset-bottom));
+  background: var(--background-primary);
+}
+
+.clinical-modal-actions button {
+  min-height: 44px;
+  min-width: 112px;
+}
+
+.clinical-integrity-list {
+  max-height: 55vh;
+  overflow-y: auto;
+}
+
+.clinical-integrity-issue {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.clinical-integrity-issue .clinical-card-button {
+  margin-top: 8px;
+}
+
+.clinical-modal-error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--text-error);
+  border-radius: 8px;
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+}
+
+.clinical-card-button:disabled,
+.clinical-modal-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+@media (max-width: 520px) {
+  .clinical-workspace-shell {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .clinical-workspace-tabs {
+    margin-right: -8px;
+    margin-left: -8px;
+  }
+
+  .clinical-workspace-tab {
+    font-size: 0.72rem;
+  }
+
+  .clinical-card-top {
+    display: block;
+  }
+}
+
+@media (max-width: 360px) {
+  /* Tab labels stay at 0.72rem here. They still fit at 320px, and shrinking
+     them further put clinical navigation below a legible size on the move. */
+  .clinical-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}
