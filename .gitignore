@@ -21,10 +21,18 @@ work/
 ._*
 
 # Never allow a vault — real or synthetic — into the repository.
-# The plugin creates a folder with this exact name, so opening the repository
-# directory as a vault would otherwise write patient notes into the work tree.
+# The clinical folder is user-configurable, so matching only the default name
+# would miss a renamed one. .obsidian and .base are the reliable markers of a
+# vault, and every managed record lives beside one of them.
 Clinical Workspace/
+Clinical*/
 **/.obsidian/
-*.base
+**/*.base
 vault/
 vaults/
+# Record filenames are generated with these prefixes, wherever they end up.
+**/PAT-*.md
+**/EPI-*.md
+**/TSK-*.md
+**/PRC-*.md
+**/EVT-*.md

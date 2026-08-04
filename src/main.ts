@@ -1,31 +1,55 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
-import { CLINICAL_ROOT } from "./data/paths";
+import { clinicalRootFolder, setClinicalRoot } from "./data/paths";
 import { ClinicalRepository } from "./data/repository";
 import { ClinicalService } from "./services/clinical-service";
 import { IntegrityService } from "./services/integrity";
+import { MigrationService, type MigrationMarker, type MigrationResult } from "./services/migration";
 import { seedSyntheticFixtures } from "./services/synthetic-fixtures";
+import { CARE_SETTINGS, PATHWAYS, PRIORITIES } from "./domain/types";
+import {
+  auditActor,
+  DEFAULT_SETTINGS,
+  normalizeSettings,
+  type ClinicalSettings
+} from "./domain/settings";
 import { IntegrityReportModal } from "./ui/modals";
+import { ClinicalSettingTab } from "./ui/settings-tab";
 import {
   CLINICAL_WORKSPACE_VIEW,
   ClinicalWorkspaceView
 } from "./ui/workspace-view";
 
 export default class ClinicalWorkspacePlugin extends Plugin {
+  settings: ClinicalSettings = { ...DEFAULT_SETTINGS };
+
   private repository!: ClinicalRepository;
   private service!: ClinicalService;
   private integrity!: IntegrityService;
+  private migration!: MigrationService;
   private refreshTimer: number | null = null;
   private structureReady = false;
+  private integrityChecked = false;
+  private pendingMigrationMarker: unknown = null;
+  /** In-flight guards: concurrent first-run calls otherwise race on createFolder. */
+  private structurePromise: Promise<void> | null = null;
+  private activationPromise: Promise<ClinicalWorkspaceView> | null = null;
 
   async onload(): Promise<void> {
+    await this.loadSettings();
+
     this.repository = new ClinicalRepository(this.app);
+    this.repository.setActor(auditActor(this.settings));
     this.service = new ClinicalService(this.repository);
     this.integrity = new IntegrityService(this.repository);
+    this.migration = new MigrationService(this.app);
 
     this.registerView(
       CLINICAL_WORKSPACE_VIEW,
-      (leaf: WorkspaceLeaf) => new ClinicalWorkspaceView(leaf, this.repository, this.service, this.integrity)
+      (leaf: WorkspaceLeaf) =>
+        new ClinicalWorkspaceView(leaf, this.repository, this.service, this.integrity, () => this.settings)
     );
+
+    this.addSettingTab(new ClinicalSettingTab(this.app, this, this.migration));
 
     this.addRibbonIcon("stethoscope", "Open Clinical Workspace", () => {
       void this.activateWorkspace();
@@ -80,6 +104,76 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
   }
 
+  async loadSettings(): Promise<void> {
+    const stored = await this.loadData();
+    this.settings = normalizeSettings(stored, {
+      careSettings: CARE_SETTINGS,
+      pathways: PATHWAYS,
+      priorities: PRIORITIES
+    });
+    setClinicalRoot(this.settings.rootFolder);
+    this.pendingMigrationMarker = stored;
+  }
+
+  async updateSettings(patch: Partial<ClinicalSettings>): Promise<void> {
+    this.settings = normalizeSettings(
+      { ...this.settings, ...patch },
+      { careSettings: CARE_SETTINGS, pathways: PATHWAYS, priorities: PRIORITIES }
+    );
+    await this.saveData(this.settings);
+    this.repository.setActor(auditActor(this.settings));
+    setClinicalRoot(this.settings.rootFolder);
+    await this.refreshOpenViews();
+  }
+
+  /**
+   * Moves every record to a new root folder.
+   *
+   * The new location is persisted *before* the rename, not after. Writing it
+   * afterwards looks safer but is not: the rename is the irreversible step, so
+   * any failure or interruption after it would leave the plugin pointing at a
+   * folder that no longer holds the records, and the workspace would come back
+   * empty with no way to recover from inside the plugin. A marker records that
+   * a move was in flight so `reconcileMigration` can settle it on next load.
+   */
+  async migrateRootFolder(target: string): Promise<MigrationResult> {
+    const result = await this.migration.run(target, async (plan) => {
+      this.settings = { ...this.settings, rootFolder: plan.to };
+      await this.saveData({ ...this.settings, migrationInProgress: { from: plan.from, to: plan.to } });
+      setClinicalRoot(plan.to);
+    });
+    await this.saveData(this.settings);
+    await this.refreshOpenViews();
+    if (result.danglingLinks > 0) {
+      new Notice(
+        `Records moved, but ${result.danglingLinks} note${result.danglingLinks === 1 ? " still refers" : "s still refer"} to the old folder. Run the integrity check.`,
+        12000
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Settles a migration that was interrupted between the marker being written
+   * and the move completing. Whichever of the two folders actually exists wins,
+   * because that is where the records are.
+   */
+  private async reconcileMigration(stored: unknown): Promise<void> {
+    const marker = (stored as { migrationInProgress?: MigrationMarker } | null)?.migrationInProgress;
+    if (!marker?.from || !marker?.to) return;
+    const exists = (path: string) => Boolean(this.app.vault.getAbstractFileByPath(path));
+    const actual = exists(marker.to) ? marker.to : exists(marker.from) ? marker.from : null;
+    if (actual && actual !== this.settings.rootFolder) {
+      this.settings = { ...this.settings, rootFolder: actual };
+      setClinicalRoot(actual);
+    }
+    await this.saveData(this.settings);
+    new Notice(
+      `Clinical Workspace recovered an interrupted folder move. Records are in "${this.settings.rootFolder}".`,
+      12000
+    );
+  }
+
   /**
    * Folders and database views are created the first time the user actually
    * opens the workspace, not on load. A plugin that writes into a vault before
@@ -87,8 +181,25 @@ export default class ClinicalWorkspacePlugin extends Plugin {
    * Obsidian's community plugin guidelines.
    */
   private async ensureStructure(): Promise<void> {
-    await this.repository.ensureStructure();
-    this.structureReady = true;
+    if (this.structureReady) return;
+    // Shared promise rather than a boolean: two callers arriving together would
+    // both see structureReady === false and both start creating folders.
+    this.structurePromise ??= (async () => {
+      try {
+        await this.repository.ensureStructure();
+        this.structureReady = true;
+      } finally {
+        this.structurePromise = null;
+      }
+    })();
+    await this.structurePromise;
+  }
+
+  private async refreshOpenViews(): Promise<void> {
+    for (const leaf of this.app.workspace.getLeavesOfType(CLINICAL_WORKSPACE_VIEW)) {
+      const view = leaf.view;
+      if (view instanceof ClinicalWorkspaceView) await view.refresh();
+    }
   }
 
   private registerVaultEvents(): void {
@@ -104,19 +215,28 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   }
 
   private scheduleRefresh(path: string): void {
-    if (!path.startsWith(`${CLINICAL_ROOT}/`)) return;
+    if (!path.startsWith(`${clinicalRootFolder()}/`)) return;
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null;
-      for (const leaf of this.app.workspace.getLeavesOfType(CLINICAL_WORKSPACE_VIEW)) {
-        const view = leaf.view;
-        if (view instanceof ClinicalWorkspaceView) void view.refresh();
-      }
-    }, 180);
+      void this.refreshOpenViews();
+    }, this.settings.refreshDebounceMs);
   }
 
   private async activateWorkspace(): Promise<ClinicalWorkspaceView> {
-    if (!this.structureReady) await this.ensureStructure();
+    this.activationPromise ??= this.doActivateWorkspace().finally(() => {
+      this.activationPromise = null;
+    });
+    return this.activationPromise;
+  }
+
+  private async doActivateWorkspace(): Promise<ClinicalWorkspaceView> {
+    await this.ensureStructure();
+    if (this.pendingMigrationMarker) {
+      const marker = this.pendingMigrationMarker;
+      this.pendingMigrationMarker = null;
+      await this.reconcileMigration(marker);
+    }
     const existing = this.app.workspace.getLeavesOfType(CLINICAL_WORKSPACE_VIEW)[0];
     const leaf = existing ?? this.app.workspace.getLeaf(true);
     if (!existing) {
@@ -128,6 +248,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       throw new Error("Clinical Workspace view could not be opened.");
     }
     await view.refresh();
+    if (this.settings.runIntegrityOnStartup && !this.integrityChecked) {
+      this.integrityChecked = true;
+      await this.runIntegrityCheck({ onlyWhenIssuesFound: true });
+    }
     return view;
   }
 
@@ -140,10 +264,11 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
   }
 
-  private async runIntegrityCheck(): Promise<void> {
+  private async runIntegrityCheck(options: { onlyWhenIssuesFound?: boolean } = {}): Promise<void> {
     try {
-      if (!this.structureReady) await this.ensureStructure();
+      await this.ensureStructure();
       const issues = await this.integrity.scan();
+      if (options.onlyWhenIssuesFound && !issues.length) return;
       // Results are rendered in the interface. They are never written to the
       // developer console, because the records they describe are identifiable.
       new IntegrityReportModal(this.app, issues, (path) => {
@@ -154,5 +279,4 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       new Notice(error instanceof Error ? error.message : "Integrity check failed.", 7000);
     }
   }
-
 }

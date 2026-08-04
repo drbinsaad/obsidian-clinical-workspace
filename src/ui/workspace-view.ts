@@ -20,7 +20,9 @@ import {
   taskIsUndated,
   todayIso
 } from "../domain/schema";
-import { pathForRecord } from "../data/paths";
+import { clinicalFolder } from "../data/paths";
+import type { ClinicalSettings } from "../domain/settings";
+import { DEFAULT_SETTINGS } from "../domain/settings";
 import { ClinicalRepository } from "../data/repository";
 import { ClinicalService, PossibleDuplicatePatientError } from "../services/clinical-service";
 import { IntegrityService } from "../services/integrity";
@@ -62,7 +64,8 @@ export class ClinicalWorkspaceView extends ItemView {
     leaf: WorkspaceLeaf,
     private readonly repository: ClinicalRepository,
     private readonly service: ClinicalService,
-    private readonly integrity: IntegrityService
+    private readonly integrity: IntegrityService,
+    private readonly getSettings: () => ClinicalSettings = () => DEFAULT_SETTINGS
   ) {
     super(leaf);
   }
@@ -110,6 +113,13 @@ export class ClinicalWorkspaceView extends ItemView {
   }
 
   openAddPatient(seed?: Partial<NewEpisodeInput>): void {
+    const settings = this.getSettings();
+    const defaults: Partial<NewEpisodeInput> = {
+      careSetting: settings.defaultCareSetting,
+      pathway: settings.defaultPathway,
+      priority: settings.defaultPriority,
+      ...seed
+    };
     new NewEpisodeModal(
       this.app,
       async (input) => {
@@ -140,7 +150,7 @@ export class ClinicalWorkspaceView extends ItemView {
           throw error;
         }
       },
-      seed
+      defaults
     ).open();
   }
 
@@ -461,8 +471,20 @@ export class ClinicalWorkspaceView extends ItemView {
       });
       this.actionButton(actions, "Update", () => {
         new UpdateEpisodeModal(this.app, episode, async (input) => {
-          await this.service.updateEpisode(episode.id, input);
-          new Notice("Patient workflow updated.");
+          const result = await this.service.updateEpisode(episode.id, input);
+          // Say what happened to the task. A next action that produced no task
+          // must never pass silently — the clinician would assume it is on a
+          // worklist when it is not.
+          const outcome = result.task;
+          let message = "Patient workflow updated.";
+          if (outcome.kind === "created") {
+            message = outcome.superseded
+              ? `Task added: ${outcome.task.record.task}. ${outcome.superseded} superseded task${outcome.superseded === 1 ? "" : "s"} cancelled.`
+              : `Task added: ${outcome.task.record.task}`;
+          } else if (outcome.kind === "already-closed") {
+            message = `No task added: “${outcome.task.record.task}” was already ${outcome.task.record.status}. Use + Task to raise it again.`;
+          }
+          new Notice(message, outcome.kind === "already-closed" ? 9000 : 4000);
           await this.refresh();
         }).open();
       });
@@ -470,11 +492,16 @@ export class ClinicalWorkspaceView extends ItemView {
         actions,
         "Discharge",
         () => {
-          new ArchiveEpisodeModal(this.app, episode, async (outcome) => {
-            await this.service.archiveEpisode(episode.id, outcome);
-            new Notice("Patient episode archived.");
-            await this.refresh();
-          }).open();
+          new ArchiveEpisodeModal(
+            this.app,
+            episode,
+            async (outcome) => {
+              await this.service.archiveEpisode(episode.id, outcome);
+              new Notice("Patient episode archived.");
+              await this.refresh();
+            },
+            this.getSettings().confirmBeforeDischarge
+          ).open();
         },
         false,
         true
@@ -622,11 +649,15 @@ export class ClinicalWorkspaceView extends ItemView {
     id: string
   ): Promise<void> {
     const found = await this.repository.findById(entity, id);
-    await this.openPath(found?.path ?? pathForRecord(entity, id));
+    if (!found) {
+      new Notice("That record could not be found.");
+      return;
+    }
+    await this.openPath(found.path);
   }
 
   private openBase(name: string): void {
-    void this.openPath(`Clinical Workspace/Bases/${name}.base`);
+    void this.openPath(`${clinicalFolder("bases")}/${name}.base`);
   }
 
   private async openPath(path: string): Promise<void> {
@@ -642,12 +673,23 @@ export class ClinicalWorkspaceView extends ItemView {
     await this.app.workspace.getLeaf(false).openFile(abstract);
   }
 
+  /**
+   * Best-effort check for the core Bases plugin.
+   *
+   * `app.internalPlugins` is undocumented, so this is wrapped and defaults to
+   * "available" on any surprise: a wrong warning would be worse than letting
+   * Obsidian show its own error when the file opens.
+   */
   private basesAvailable(): boolean {
-    const internal = (this.app as unknown as {
-      internalPlugins?: { getEnabledPluginById?: (id: string) => unknown };
-    }).internalPlugins;
-    if (!internal?.getEnabledPluginById) return true;
-    return Boolean(internal.getEnabledPluginById("bases"));
+    try {
+      const internal = (this.app as unknown as {
+        internalPlugins?: { getEnabledPluginById?: (id: string) => unknown };
+      }).internalPlugins;
+      if (typeof internal?.getEnabledPluginById !== "function") return true;
+      return Boolean(internal.getEnabledPluginById("bases"));
+    } catch {
+      return true;
+    }
   }
 
   private patientFor(snapshot: ClinicalSnapshot, patientId: string): PatientRecord | undefined {

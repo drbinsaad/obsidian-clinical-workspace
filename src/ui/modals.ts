@@ -481,11 +481,19 @@ export class MergePatientsModal extends Modal {
 
 export class ArchiveEpisodeModal extends ClinicalModal<string> {
   private outcome = "Discharged";
+  private typedConfirmation = "";
   private readonly episode: EpisodeRecord;
+  private readonly requireConfirmation: boolean;
 
-  constructor(app: App, episode: EpisodeRecord, onSubmit: AsyncSubmit<string>) {
+  constructor(
+    app: App,
+    episode: EpisodeRecord,
+    onSubmit: AsyncSubmit<string>,
+    requireConfirmation = false
+  ) {
     super(app, "Archive episode", onSubmit);
     this.episode = episode;
+    this.requireConfirmation = requireConfirmation;
   }
 
   onOpen(): void {
@@ -497,10 +505,20 @@ export class ArchiveEpisodeModal extends ClinicalModal<string> {
     namedSetting(form, "Outcome / reason").addText((field) => {
       field.setValue(this.outcome).onChange((value) => (this.outcome = value));
     });
+    if (this.requireConfirmation) {
+      namedSetting(form, "Type DISCHARGE to confirm")
+        .setDesc("Confirmation is enabled in Clinical Workspace settings.")
+        .addText((field) => {
+          field.setPlaceholder("DISCHARGE").onChange((value) => (this.typedConfirmation = value));
+        });
+    }
     this.addActions(this.contentEl);
   }
 
   protected value(): string {
+    if (this.requireConfirmation && this.typedConfirmation.trim().toUpperCase() !== "DISCHARGE") {
+      throw new Error("Type DISCHARGE to confirm, or turn the confirmation off in settings.");
+    }
     return this.outcome;
   }
 }

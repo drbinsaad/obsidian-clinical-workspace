@@ -1,45 +1,89 @@
 import type { EntityType } from "../domain/types";
+import { DEFAULT_ROOT_FOLDER, normalizeFolderPath } from "../domain/settings";
 
-export const CLINICAL_ROOT = "Clinical Workspace";
+/**
+ * The vault folder every managed record lives under.
+ *
+ * Held as module state rather than threaded through every call site: the root
+ * is set once from settings during plugin load, and changing it afterwards is
+ * a migration, not a routine operation.
+ */
+let clinicalRoot = DEFAULT_ROOT_FOLDER;
 
-export const CLINICAL_FOLDERS = {
-  home: `${CLINICAL_ROOT}/00 Home`,
-  inbox: `${CLINICAL_ROOT}/Inbox`,
-  patients: `${CLINICAL_ROOT}/Patients`,
-  episodes: `${CLINICAL_ROOT}/Episodes`,
-  tasks: `${CLINICAL_ROOT}/Tasks`,
-  procedures: `${CLINICAL_ROOT}/Procedures`,
-  documents: `${CLINICAL_ROOT}/Documents`,
-  events: `${CLINICAL_ROOT}/Events`,
-  medications: `${CLINICAL_ROOT}/Medication Library`,
-  attachments: `${CLINICAL_ROOT}/Attachments`,
-  bases: `${CLINICAL_ROOT}/Bases`,
-  templates: `${CLINICAL_ROOT}/Templates`
-} as const;
+export function setClinicalRoot(root: string): void {
+  clinicalRoot = normalizeFolderPath(root);
+}
 
-export const ALL_CLINICAL_FOLDERS = Object.values(CLINICAL_FOLDERS);
+export function clinicalRootFolder(): string {
+  return clinicalRoot;
+}
 
-export function folderForEntity(entity: EntityType): string {
+export type ClinicalFolderKey =
+  | "home"
+  | "inbox"
+  | "patients"
+  | "episodes"
+  | "tasks"
+  | "procedures"
+  | "documents"
+  | "events"
+  | "medications"
+  | "attachments"
+  | "bases"
+  | "templates";
+
+const FOLDER_SUFFIXES: Record<ClinicalFolderKey, string> = {
+  home: "00 Home",
+  inbox: "Inbox",
+  patients: "Patients",
+  episodes: "Episodes",
+  tasks: "Tasks",
+  procedures: "Procedures",
+  documents: "Documents",
+  events: "Events",
+  medications: "Medication Library",
+  attachments: "Attachments",
+  bases: "Bases",
+  templates: "Templates"
+};
+
+export function clinicalFolder(key: ClinicalFolderKey, root = clinicalRoot): string {
+  return `${root}/${FOLDER_SUFFIXES[key]}`;
+}
+
+export function clinicalFolders(root = clinicalRoot): Record<ClinicalFolderKey, string> {
+  const folders = {} as Record<ClinicalFolderKey, string>;
+  for (const key of Object.keys(FOLDER_SUFFIXES) as ClinicalFolderKey[]) {
+    folders[key] = clinicalFolder(key, root);
+  }
+  return folders;
+}
+
+export function allClinicalFolders(root = clinicalRoot): string[] {
+  return Object.values(clinicalFolders(root));
+}
+
+export function folderForEntity(entity: EntityType, root = clinicalRoot): string {
   switch (entity) {
     case "patient":
-      return CLINICAL_FOLDERS.patients;
+      return clinicalFolder("patients", root);
     case "episode":
-      return CLINICAL_FOLDERS.episodes;
+      return clinicalFolder("episodes", root);
     case "task":
-      return CLINICAL_FOLDERS.tasks;
+      return clinicalFolder("tasks", root);
     case "procedure":
-      return CLINICAL_FOLDERS.procedures;
+      return clinicalFolder("procedures", root);
     case "document":
-      return CLINICAL_FOLDERS.documents;
+      return clinicalFolder("documents", root);
     case "event":
-      return CLINICAL_FOLDERS.events;
+      return clinicalFolder("events", root);
     case "medication-reference":
-      return CLINICAL_FOLDERS.medications;
+      return clinicalFolder("medications", root);
   }
 }
 
-export function pathForRecord(entity: EntityType, id: string): string {
-  return `${folderForEntity(entity)}/${id}.md`;
+export function pathForRecord(entity: EntityType, id: string, root = clinicalRoot): string {
+  return `${folderForEntity(entity, root)}/${id}.md`;
 }
 
 export function wikilink(path: string, label?: string): string {

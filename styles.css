@@ -333,3 +333,24 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* --- Settings tab --------------------------------------------------------- */
+
+.clinical-settings .clinical-section-note {
+  margin: 6px 0 12px;
+  font-size: var(--font-ui-small);
+}
+
+.clinical-settings-summary {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.clinical-settings-blocked {
+  color: var(--text-error);
+}

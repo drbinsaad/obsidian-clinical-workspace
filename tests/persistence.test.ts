@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { stringifyYaml } from "obsidian";
 import type { EpisodeRecord, PatientRecord, ProcedureRecord, TaskRecord } from "../src/domain/types";
 import {
@@ -189,31 +189,38 @@ test("a failed audit write does not fail or roll back the clinical action", asyn
 // --- Build output ------------------------------------------------------------
 
 test("the release bundle contains no synthetic fixtures", async () => {
-  let bundle: string;
-  try {
-    bundle = await readFile(new URL("../dist/main.js", import.meta.url), "utf8");
-  } catch {
-    // dist/ is produced by `npm run build`; `npm run check` builds after testing.
-    return;
-  }
+  // `npm run check` builds before testing, so dist/ must exist here. Returning
+  // early on a missing bundle made this test pass without checking anything.
+  const bundle = await readFile(new URL("../dist/main.js", import.meta.url), "utf8");
   assert.doesNotMatch(bundle, /Synthetic Patient/, "synthetic fixtures must be compiled out");
   assert.doesNotMatch(bundle, /seed-synthetic-demo-data/, "the dev command must be compiled out");
 });
 
 test("no source file writes an identifier to the console", async () => {
-  const files = [
-    "../src/main.ts",
-    "../src/ui/workspace-view.ts",
-    "../src/services/integrity.ts",
-    "../src/services/clinical-service.ts"
-  ];
-  for (const file of files) {
-    const source = await readFile(new URL(file, import.meta.url), "utf8");
-    for (const match of source.matchAll(/console\.\w+\(([^\n]*)/g)) {
+  // Enumerated from disk, not hardcoded: the previous version listed four files
+  // that call console zero times, so the loop body never ran and the test
+  // asserted nothing while appearing to guard the strongest privacy claim.
+  const dir = new URL("../src/", import.meta.url);
+  const sources = (await readdir(dir, { recursive: true, withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"));
+  assert.ok(sources.length >= 10, "expected to find the source tree");
+
+  let scanned = 0;
+  for (const entry of sources) {
+    const path = new URL(`${entry.parentPath.split("/src/")[1] ?? ""}/${entry.name}`.replace(/^\//, ""), dir);
+    const source = await readFile(path, "utf8");
+    for (const match of source.matchAll(/console\.\w+\(([\s\S]{0,200}?)\);/g)) {
+      scanned += 1;
       const call = match[1] ?? "";
-      assert.doesNotMatch(call, /\bissues\b|\brecord\b|\bpatient\b|\bmrn\b/i, `${file}: ${call.trim()}`);
+      assert.doesNotMatch(
+        call,
+        /\bissues\b|\brecord\.|\bpatient\b|\bmrn\b|\bphone\b|\.path\b/i,
+        `identifier-bearing console call in ${entry.name}: ${call.trim()}`
+      );
     }
   }
+  // Guards against the failure this test previously had: silently scanning nothing.
+  assert.ok(scanned > 0, "expected at least one console call to be scanned");
 });
 
 test("patients, episodes, tasks and procedures are linked both ways", async () => {

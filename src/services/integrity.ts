@@ -54,6 +54,20 @@ export class IntegrityService {
       ({ record }) => record.status !== "entered-in-error" && !record.merged_into
     );
 
+    // A note that cannot be parsed disappears from every list, so nothing else
+    // in this scan can see it. It has to be reported here or not at all.
+    for (const entity of ["patient", "episode", "task", "procedure", "event"] as const) {
+      for (const path of await this.repository.unreadablePaths(entity)) {
+        issues.push({
+          code: "unreadable-record",
+          severity: "error",
+          message: `A ${entity} note could not be read and is invisible to the workspace. Repair its properties.`,
+          recordId: "",
+          path
+        });
+      }
+    }
+
     // --- Patients -----------------------------------------------------------
     const mrnMap = new Map<string, typeof patients>();
     for (const patient of activePatients) {

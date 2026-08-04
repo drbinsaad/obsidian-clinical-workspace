@@ -11,31 +11,18 @@ import type {
   TaskRecord
 } from "../domain/types";
 import { createId, mrnMatchKey, nowIso, SCHEMA_VERSION } from "../domain/schema";
-import { BASE_FILES, BASE_SOURCE_FOLDERS } from "./bases";
+import { baseFiles, baseSourceFolders, homeNote } from "./bases";
 import { parseClinicalRecord, recordMarkdown, valueMatches } from "./markdown";
 import {
-  ALL_CLINICAL_FOLDERS,
-  CLINICAL_FOLDERS,
-  CLINICAL_ROOT,
+  allClinicalFolders,
+  clinicalFolder,
+  clinicalRootFolder,
   folderForEntity,
   pathForRecord
 } from "./paths";
 
 type FrontmatterChange = Record<string, string | number | boolean | string[]>;
 
-const HOME_NOTE = [
-  "# Clinical Workspace",
-  "",
-  "Use the **Open Clinical Workspace** command for the mobile patient, task and surgery interface.",
-  "",
-  "## Database views",
-  "",
-  "- ![[Clinical Workspace/Bases/Patients.base#All patients]]",
-  "- ![[Clinical Workspace/Bases/Episodes.base#Active episodes]]",
-  "- ![[Clinical Workspace/Bases/Tasks.base#Open tasks]]",
-  "- ![[Clinical Workspace/Bases/Surgery Logbook.base#Surgery logbook]]",
-  ""
-].join("\n");
 
 /**
  * Serialises async operations that share a key. Used both for writes to one
@@ -59,8 +46,14 @@ class KeyedWriteQueue {
 
 export class ClinicalRepository {
   private readonly queue = new KeyedWriteQueue();
+  /** Recorded as the actor on audit notes; set from settings on load. */
+  private actor = "local-user";
 
   constructor(private readonly app: App) {}
+
+  setActor(actor: string): void {
+    this.actor = actor.trim() || "local-user";
+  }
 
   /**
    * Serialises a read-check-write sequence under a caller-chosen logical key.
@@ -73,9 +66,9 @@ export class ClinicalRepository {
   }
 
   async ensureStructure(): Promise<void> {
-    await this.ensureFolder(CLINICAL_ROOT);
-    for (const folder of ALL_CLINICAL_FOLDERS) await this.ensureFolder(folder);
-    for (const [path, content] of Object.entries(BASE_FILES)) {
+    await this.ensureFolder(clinicalRootFolder());
+    for (const folder of allClinicalFolders()) await this.ensureFolder(folder);
+    for (const [path, content] of Object.entries(baseFiles())) {
       const existing = this.app.vault.getAbstractFileByPath(path);
       if (!existing) {
         await this.app.vault.create(normalizePath(path), content);
@@ -84,32 +77,87 @@ export class ClinicalRepository {
       // Repair a base whose content no longer matches its name (0.1.0 shipped a
       // Patients.base that queried Episodes). Only rewritten when it is plainly
       // wrong, so a base the user has customised is left alone.
-      const expectedFolder = BASE_SOURCE_FOLDERS[path];
+      const expectedFolder = baseSourceFolders()[path];
       if (expectedFolder && existing instanceof TFile) {
         const current = await this.app.vault.read(existing);
-        if (!current.includes(`file.inFolder("${expectedFolder}")`)) {
-          await this.app.vault.modify(existing, content);
+        if (current.includes(`file.inFolder("${expectedFolder}")`)) continue;
+        // Only a base still recognisably generated is repaired. Once the user
+        // has customised it, silently replacing their work on every open is
+        // worse than leaving a stale query they can fix themselves.
+        if (!this.isUntouchedBase(path, current)) {
+          console.warn(
+            "Clinical Workspace: a database view points at the wrong folder but has been customised, so it was left alone."
+          );
+          continue;
         }
+        await this.app.vault.modify(existing, content);
       }
     }
-    const homePath = `${CLINICAL_FOLDERS.home}/Clinical Workspace.md`;
-    const homeNote = this.app.vault.getAbstractFileByPath(homePath);
-    if (!homeNote) {
-      await this.app.vault.create(normalizePath(homePath), HOME_NOTE);
-    } else if (homeNote instanceof TFile) {
+    const homePath = `${clinicalFolder("home")}/Clinical Workspace.md`;
+    const expectedHome = homeNote();
+    const existingHome = this.app.vault.getAbstractFileByPath(homePath);
+    if (!existingHome) {
+      await this.app.vault.create(normalizePath(homePath), expectedHome);
+    } else if (existingHome instanceof TFile) {
       // Version 0.1.0 embedded a view name that no longer exists, because the
-      // base that held it was renamed. Left alone, the embed renders as an
-      // error. Only the known-stale form is replaced.
-      const current = await this.app.vault.read(homeNote);
-      if (current.includes("Patients.base#Active patients")) {
-        await this.app.vault.modify(homeNote, HOME_NOTE);
+      // base that held it was renamed; a root-folder migration invalidates the
+      // embeds the same way. Rewritten only when an embed is plainly stale.
+      const current = await this.app.vault.read(existingHome);
+      const stale =
+        current.includes("Patients.base#Active patients") ||
+        (current.includes("![[") && !current.includes(`${clinicalFolder("bases")}/Patients.base`));
+      // A note the user has written in is theirs. Repair only the untouched
+      // scaffolding this plugin generated.
+      if (stale && this.isUntouchedHome(current)) {
+        await this.app.vault.modify(existingHome, expectedHome);
+      } else if (stale) {
+        console.warn(
+          "Clinical Workspace: the home note has stale database embeds but has been edited, so it was left alone."
+        );
       }
     }
   }
 
+  /**
+   * True only when the file is byte-identical to something this plugin would
+   * have written for the root it currently references.
+   *
+   * A heuristic ("does it look roughly like our scaffold?") cannot tell one
+   * line of the user's prose from one line of ours, so anything short of an
+   * exact match is treated as the user's work and left alone.
+   */
+  private isUntouchedBase(path: string, content: string): boolean {
+    const referenced = /file\.inFolder\("([^"]+)"\)/.exec(content)?.[1];
+    if (!referenced) return false;
+    const priorRoot = referenced.replace(/\/[^/]+$/, "");
+    const name = path.split("/").pop();
+    if (!name) return false;
+    const generated = baseFiles(priorRoot)[`${clinicalFolder("bases", priorRoot)}/${name}`];
+    return generated !== undefined && generated.trim() === content.trim();
+  }
+
+  private isUntouchedHome(content: string): boolean {
+    const referenced = /!\[\[(.+?)\/Bases\/Patients\.base/.exec(content)?.[1];
+    if (!referenced) return false;
+    if (homeNote(referenced).trim() === content.trim()) return true;
+    // The scaffold shipped by 0.1.0, before Episodes.base existed.
+    const legacy = [
+      "# Clinical Workspace",
+      "",
+      "Use the **Open Clinical Workspace** command for the mobile patient, task and surgery interface.",
+      "",
+      "## Database views",
+      "",
+      `- ![[${referenced}/Bases/Patients.base#Active patients]]`,
+      `- ![[${referenced}/Bases/Tasks.base#Open tasks]]`,
+      `- ![[${referenced}/Bases/Surgery Logbook.base#Surgery logbook]]`
+    ].join("\n");
+    return legacy.trim() === content.trim();
+  }
+
   /** Managed folders that are absent from the vault. */
   missingFolders(): string[] {
-    return ALL_CLINICAL_FOLDERS.filter((folder) => !this.app.vault.getAbstractFileByPath(normalizePath(folder)));
+    return allClinicalFolders().filter((folder) => !this.app.vault.getAbstractFileByPath(normalizePath(folder)));
   }
 
   private async ensureFolder(path: string): Promise<void> {
@@ -189,6 +237,25 @@ export class ClinicalRepository {
   }
 
   /**
+   * Notes sitting in a managed folder that could not be parsed as a record.
+   *
+   * A note damaged by a sync conflict or a hand edit silently disappears from
+   * `list()`, because `parseClinicalRecord` returns null for unreadable
+   * frontmatter. Silence is the wrong behaviour here: an unreadable *task* is
+   * still outstanding work, and treating it as absent would let an episode be
+   * discharged with work still open. Every caller that makes a safety decision
+   * from a list must also consult this.
+   */
+  async unreadablePaths(entity: EntityType): Promise<string[]> {
+    const folder = `${folderForEntity(entity)}/`;
+    const files = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(folder));
+    const results = await Promise.all(
+      files.map(async (file) => ((await this.read(file.path)) ? null : file.path))
+    );
+    return results.filter((path): path is string => path !== null);
+  }
+
+  /**
    * Resolves a record by its stable identifier.
    *
    * The conventional path is checked first because it is a single read and is
@@ -254,7 +321,7 @@ export class ClinicalRepository {
       updated_at: timestamp,
       tags: ["clinical/event"],
       action: input.action,
-      actor: input.actor ?? "local-user",
+      actor: input.actor ?? this.actor,
       patient_id: input.patientId ?? "",
       episode_id: input.episodeId ?? "",
       target_id: input.targetId,

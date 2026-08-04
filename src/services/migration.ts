@@ -1,0 +1,131 @@
+import { App, normalizePath, TFile, TFolder } from "obsidian";
+import { baseFiles, homeNote } from "../data/bases";
+import { allClinicalFolders, clinicalFolder, clinicalRootFolder } from "../data/paths";
+import { normalizeFolderPath, validateRootFolder } from "../domain/settings";
+
+export interface MigrationPlan {
+  from: string;
+  to: string;
+  files: number;
+  blocked: string | null;
+}
+
+export interface MigrationResult extends MigrationPlan {
+  /** Wikilinks still pointing at the old root after the move; must be empty. */
+  danglingLinks: number;
+}
+
+/** Persisted across the rename so an interrupted migration can be reconciled. */
+export interface MigrationMarker {
+  from: string;
+  to: string;
+}
+
+/**
+ * Moves the managed root folder.
+ *
+ * Records reference each other with vault-absolute wikilinks, so the folder
+ * cannot simply be renamed on disk. `fileManager.renameFile` is used instead,
+ * which is the only API that rewrites inbound links across the vault. Base
+ * files are regenerated afterwards because Obsidian does not rewrite folder
+ * strings embedded in a base's YAML.
+ */
+export class MigrationService {
+  constructor(private readonly app: App) {}
+
+  plan(target: string): MigrationPlan {
+    const from = clinicalRootFolder();
+    const to = normalizeFolderPath(target);
+    const invalid = validateRootFolder(to);
+    if (invalid) return { from, to, files: 0, blocked: invalid };
+    if (from === to) return { from, to, files: 0, blocked: "That is already the current folder." };
+
+    const source = this.app.vault.getAbstractFileByPath(normalizePath(from));
+    if (!source) return { from, to, files: 0, blocked: `The folder "${from}" does not exist.` };
+    if (!(source instanceof TFolder)) return { from, to, files: 0, blocked: `"${from}" is not a folder.` };
+    if (this.app.vault.getAbstractFileByPath(normalizePath(to))) {
+      return { from, to, files: 0, blocked: `"${to}" already exists. Choose a folder that does not exist yet.` };
+    }
+    // Moving a folder into its own subtree is not a rename Obsidian can do.
+    if (`${to}/`.startsWith(`${from}/`)) {
+      return { from, to, files: 0, blocked: "The new folder cannot sit inside the current one." };
+    }
+
+    const files = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(`${from}/`)).length;
+    return { from, to, files, blocked: null };
+  }
+
+  /**
+   * Performs the move.
+   *
+   * `beforeRename` is awaited immediately before the irreversible step, so the
+   * caller can persist where the records are about to be. Everything after the
+   * rename is cosmetic regeneration and is deliberately non-fatal: a failure
+   * there must not leave the caller believing the move did not happen, because
+   * by then it has.
+   */
+  async run(target: string, beforeRename?: (plan: MigrationPlan) => Promise<void>): Promise<MigrationResult> {
+    const plan = this.plan(target);
+    if (plan.blocked) throw new Error(plan.blocked);
+
+    const source = this.app.vault.getAbstractFileByPath(normalizePath(plan.from));
+    if (!(source instanceof TFolder)) throw new Error(`The folder "${plan.from}" does not exist.`);
+
+    if (beforeRename) await beforeRename(plan);
+
+    // Rewrites every wikilink pointing into the folder.
+    await this.app.fileManager.renameFile(source, normalizePath(plan.to));
+
+    // Past this point the records have moved. Nothing below may throw, or the
+    // caller would report failure for a move that actually succeeded.
+    try {
+      for (const folder of allClinicalFolders(plan.to)) await this.ensureFolder(folder);
+
+      for (const [path, content] of Object.entries(baseFiles(plan.to))) {
+        const existing = this.app.vault.getAbstractFileByPath(normalizePath(path));
+        if (existing instanceof TFile) await this.app.vault.modify(existing, content);
+        else if (!existing) await this.app.vault.create(normalizePath(path), content);
+      }
+      const homePath = normalizePath(`${clinicalFolder("home", plan.to)}/Clinical Workspace.md`);
+      const home = this.app.vault.getAbstractFileByPath(homePath);
+      if (home instanceof TFile) await this.app.vault.modify(home, homeNote(plan.to));
+      else if (!home) await this.app.vault.create(homePath, homeNote(plan.to));
+    } catch (error) {
+      console.warn(
+        "Clinical Workspace: records moved, but database views could not be regenerated. They will be rebuilt on next open.",
+        error instanceof Error ? error.message : error
+      );
+    }
+
+    return { ...plan, danglingLinks: await this.countDanglingLinks(plan.from, plan.to) };
+  }
+
+  /**
+   * Counts wikilinks still pointing at the old root.
+   *
+   * This is the check that decides whether the migration is trustworthy: the
+   * whole design rests on `renameFile` rewriting links held in YAML
+   * frontmatter, which is not something the API documents. If that assumption
+   * is ever wrong, this returns a non-zero count instead of leaving a silently
+   * broken caseload.
+   */
+  async countDanglingLinks(from: string, to: string): Promise<number> {
+    const files = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(`${to}/`));
+    let dangling = 0;
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      if (content.includes(`[[${from}/`)) dangling += 1;
+    }
+    return dangling;
+  }
+
+  private async ensureFolder(path: string): Promise<void> {
+    const normalized = normalizePath(path);
+    if (this.app.vault.getAbstractFileByPath(normalized)) return;
+    let current = "";
+    for (const segment of normalized.split("/")) {
+      current = current ? `${current}/${segment}` : segment;
+      if (!this.app.vault.getAbstractFileByPath(current)) await this.app.vault.createFolder(current);
+    }
+  }
+}

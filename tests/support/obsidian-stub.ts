@@ -105,6 +105,43 @@ export class Vault {
 export class FileManager {
   constructor(private readonly vault: Vault) {}
 
+  /**
+   * Models Obsidian's folder rename, including the part the migration depends
+   * on: rewriting vault-absolute wikilinks that point into the folder.
+   *
+   * Real Obsidian's behaviour for links held in YAML frontmatter is not
+   * documented, so this stub deliberately rewrites them. That makes the stub
+   * OPTIMISTIC: a passing migration test proves the plugin is correct *if*
+   * Obsidian rewrites frontmatter links, and `MigrationService.countDanglingLinks`
+   * exists to catch the case where it does not.
+   */
+  async renameFile(file: TAbstractFile, newPath: string): Promise<void> {
+    const from = normalizePath(file.path);
+    const to = normalizePath(newPath);
+    const isFolder = this.vault.folders.has(from);
+
+    for (const path of [...this.vault.files.keys()]) {
+      if (path === from || (isFolder && path.startsWith(`${from}/`))) {
+        const moved = path === from ? to : `${to}${path.slice(from.length)}`;
+        this.vault.files.set(moved, this.vault.files.get(path)!);
+        this.vault.files.delete(path);
+      }
+    }
+    for (const folder of [...this.vault.folders]) {
+      if (folder === from || folder.startsWith(`${from}/`)) {
+        this.vault.folders.delete(folder);
+        this.vault.folders.add(folder === from ? to : `${to}${folder.slice(from.length)}`);
+      }
+    }
+    this.vault.folders.add(to);
+
+    // Rewrite inbound wikilinks, body and frontmatter alike.
+    for (const [path, content] of [...this.vault.files.entries()]) {
+      if (!content.includes(`[[${from}/`)) continue;
+      this.vault.files.set(path, content.split(`[[${from}/`).join(`[[${to}/`));
+    }
+  }
+
   async processFrontMatter(file: TFile, fn: (frontmatter: Record<string, unknown>) => void): Promise<void> {
     const key = normalizePath(file.path);
     const content = this.vault.files.get(key);

@@ -53,6 +53,17 @@ export interface CreateTaskResult {
   duplicate: boolean;
 }
 
+export type EpisodeTaskOutcome =
+  | { kind: "no-action" }
+  | { kind: "unchanged"; task: RecordWithPath<TaskRecord> }
+  | { kind: "already-closed"; task: RecordWithPath<TaskRecord> }
+  | { kind: "created"; task: RecordWithPath<TaskRecord>; superseded: number };
+
+export interface UpdateEpisodeResult {
+  episode: RecordWithPath<EpisodeRecord>;
+  task: EpisodeTaskOutcome;
+}
+
 /** Raised when an MRN-less patient looks like one that already exists. */
 export class PossibleDuplicatePatientError extends Error {
   constructor(readonly candidates: PatientRecord[]) {
@@ -110,7 +121,20 @@ export class ClinicalService {
         normalizeComparable(record.case) === normalizeComparable(input.caseName)
     );
     if (duplicate) {
-      return { patient, episode: duplicate, task: null, reusedPatient, duplicateEpisode: true };
+      // The episode already exists, but a previous attempt may have failed
+      // before its first task was written. Returning task: null here made that
+      // loss permanent, because a retry always lands in this branch.
+      let existingTask: RecordWithPath<TaskRecord> | null = null;
+      if (normalizeText(input.nextAction)) {
+        const outcome = await this.reconcileEpisodeTask(
+          duplicate,
+          normalizeText(input.nextAction),
+          input.dueDate,
+          duplicate.record.pathway
+        );
+        existingTask = "task" in outcome ? outcome.task : null;
+      }
+      return { patient, episode: duplicate, task: existingTask, reusedPatient, duplicateEpisode: true };
     }
 
     const episodeId = createId("EPI");
@@ -384,7 +408,7 @@ export class ClinicalService {
     });
   }
 
-  async updateEpisode(episodeId: string, input: EpisodeUpdateInput): Promise<RecordWithPath<EpisodeRecord>> {
+  async updateEpisode(episodeId: string, input: EpisodeUpdateInput): Promise<UpdateEpisodeResult> {
     const episode = await this.repository.findById<EpisodeRecord>("episode", episodeId);
     if (!episode) throw new Error("Episode was not found.");
     if (["archived", "cancelled", "entered-in-error"].includes(episode.record.status)) {
@@ -416,33 +440,11 @@ export class ClinicalService {
       due_date: input.dueDate
     });
 
-    // Saving this sheet must not resurrect work that has already been dealt
-    // with. Comparing against the episode's own `next_action` is not enough,
-    // because completing a task clears that field — so the check is whether a
-    // task with this exact identity has ever existed for the episode, in any
-    // status. An explicitly added task is unaffected; this guards only the
-    // task implied by editing the episode.
-    let alreadyRaised = false;
-    if (nextAction) {
-      const key = taskIdempotencyKey({
-        episodeId: episode.record.id,
-        task: nextAction,
-        dueDate: input.dueDate
-      });
-      const tasks = await this.repository.list<TaskRecord>("task");
-      alreadyRaised = tasks.some(({ record }) => record.idempotency_key === key);
-    }
-    if (nextAction && !alreadyRaised) {
-      await this.createTask({
-        patientId: episode.record.patient_id,
-        episodeId: episode.record.id,
-        task: nextAction,
-        taskType: this.defaultTaskTypeForPathway(input.pathway),
-        priority: input.priority,
-        dueDate: input.dueDate,
-        owner: ""
-      });
-    }
+    // Task handling here has to satisfy three things at once: re-saving the
+    // sheet unchanged must not resurrect completed work; changing the plan must
+    // not leave the superseded task open; and a request that cannot produce a
+    // task must say so rather than vanish.
+    const outcome = await this.reconcileEpisodeTask(episode, nextAction, input.dueDate, input.pathway);
     await this.repository.createEvent({
       action: "episode-updated",
       patientId: episode.record.patient_id,
@@ -453,7 +455,62 @@ export class ClinicalService {
       previousState: `${episode.record.care_setting}/${episode.record.pathway}/${episode.record.priority}`,
       newState: `${input.careSetting}/${input.pathway}/${input.priority}`
     });
-    return updated;
+    return { episode: updated, task: outcome };
+  }
+
+  /**
+   * Brings the episode's open task into line with its next action.
+   *
+   * Returns what happened so the interface can say so. Silently doing nothing
+   * is the one option not available: a clinician who types a next action and
+   * sees no task has been misled.
+   */
+  private async reconcileEpisodeTask(
+    episode: RecordWithPath<EpisodeRecord>,
+    nextAction: string,
+    dueDate: string,
+    pathway: EpisodeRecord["pathway"]
+  ): Promise<EpisodeTaskOutcome> {
+    if (!nextAction) return { kind: "no-action" };
+
+    const key = taskIdempotencyKey({ episodeId: episode.record.id, task: nextAction, dueDate });
+    const tasks = await this.repository.list<TaskRecord>("task");
+    const forEpisode = tasks.filter(({ record }) => record.episode_id === episode.record.id);
+
+    const openMatch = forEpisode.find(({ record }) => record.idempotency_key === key && taskIsOpen(record));
+    if (openMatch) return { kind: "unchanged", task: openMatch };
+
+    const closedMatch = forEpisode.find(({ record }) => record.idempotency_key === key);
+    if (closedMatch) {
+      // The identical task was already completed or cancelled. Recreating it is
+      // what the earlier duplicate bug did; pretending nothing was asked for is
+      // what the fix did. Neither is right, so report it and let the user
+      // decide whether to re-raise it explicitly.
+      return { kind: "already-closed", task: closedMatch };
+    }
+
+    // The plan changed: close the task the previous next action raised, so the
+    // episode carries one live task rather than an accumulating pile.
+    const superseded = forEpisode.filter(
+      ({ record }) =>
+        taskIsOpen(record) &&
+        normalizeComparable(record.task) === normalizeComparable(episode.record.next_action) &&
+        normalizeComparable(record.task) !== normalizeComparable(nextAction)
+    );
+    for (const item of superseded) {
+      await this.cancelTask(item.record.id, `Superseded by: ${nextAction}`);
+    }
+
+    const created = await this.createTask({
+      patientId: episode.record.patient_id,
+      episodeId: episode.record.id,
+      task: nextAction,
+      taskType: this.defaultTaskTypeForPathway(pathway),
+      priority: episode.record.priority,
+      dueDate,
+      owner: ""
+    });
+    return { kind: "created", task: created.task, superseded: superseded.length };
   }
 
   /** Corrects a patient's recorded identity. */
@@ -585,6 +642,18 @@ export class ClinicalService {
   async archiveEpisode(episodeId: string, outcome: string): Promise<RecordWithPath<EpisodeRecord>> {
     const episode = await this.repository.findById<EpisodeRecord>("episode", episodeId);
     if (!episode) throw new Error("Episode was not found.");
+    if (episode.record.status === "archived") return episode;
+
+    // An unreadable task note is outstanding work that `list()` cannot see.
+    // Discharging past it would close an episode with live work attached, so
+    // the safe default is to refuse until the note is repaired.
+    const unreadable = await this.repository.unreadablePaths("task");
+    if (unreadable.length) {
+      throw new Error(
+        `${unreadable.length} task note${unreadable.length === 1 ? "" : "s"} could not be read, so open work cannot be confirmed. Run the integrity check and repair them before discharging.`
+      );
+    }
+
     const tasks = (await this.repository.list<TaskRecord>("task")).map((item) => item.record);
     const decision = canArchiveEpisode(episode.record.status, tasks, episodeId);
     if (!decision.allowed) throw new Error(decision.reason);
@@ -725,8 +794,10 @@ export class ClinicalService {
       return { procedure: await this.repository.create(record), alreadyLogged: false };
     });
 
-    if (outcome.alreadyLogged) return outcome.procedure;
-
+    // A previously logged procedure still runs the follow-up workflow below.
+    // Returning early made a part-failed procedure permanently un-retryable:
+    // the record existed, so every retry short-circuited and reported success
+    // while the episode was never updated and the follow-up task never created.
     const tasks = await this.repository.list<TaskRecord>("task");
     for (const task of tasks) {
       if (
@@ -738,13 +809,26 @@ export class ClinicalService {
       }
     }
 
+    // Unrelated tasks on this episode may still be open, so the episode is only
+    // ready to close when nothing else is outstanding. Declaring it closed while
+    // work remains would hide that work from every worklist.
+    const remaining = (await this.repository.list<TaskRecord>("task")).filter(
+      ({ record }) => record.episode_id === episode.record.id && taskIsOpen(record)
+    );
+    const stillOpen = remaining.length > 0 || input.followUpRequired;
+    const nextOutstanding = remaining
+      .slice()
+      .sort((a, b) => String(a.record.due_date || "9999").localeCompare(String(b.record.due_date || "9999")))[0];
+
     // Care setting is the clinician's to decide. A post-operative inpatient is
     // still an inpatient, so it is left exactly as recorded.
     await this.repository.update<EpisodeRecord>(episode.path, {
       pathway: pathwayAfterProcedure(input.followUpRequired),
-      status: input.followUpRequired ? "active" : "ready-to-close",
-      next_action: input.followUpRequired ? normalizeText(input.followUpPlan) : "",
-      due_date: input.followUpRequired ? input.followUpDate : ""
+      status: stillOpen ? "active" : "ready-to-close",
+      next_action: input.followUpRequired
+        ? normalizeText(input.followUpPlan)
+        : (nextOutstanding?.record.task ?? ""),
+      due_date: input.followUpRequired ? input.followUpDate : (nextOutstanding?.record.due_date ?? "")
     });
     if (input.followUpRequired) {
       await this.createTask({
@@ -757,15 +841,17 @@ export class ClinicalService {
         owner: ""
       });
     }
-    await this.repository.createEvent({
-      action: "procedure-completed",
-      patientId: patient.record.id,
-      episodeId: episode.record.id,
-      targetId: outcome.procedure.record.id,
-      targetEntity: "procedure",
-      summary: `Procedure completed: ${outcome.procedure.record.procedure}`,
-      newState: input.followUpRequired ? "postoperative follow-up" : "ready to close"
-    });
+    if (!outcome.alreadyLogged) {
+      await this.repository.createEvent({
+        action: "procedure-completed",
+        patientId: patient.record.id,
+        episodeId: episode.record.id,
+        targetId: outcome.procedure.record.id,
+        targetEntity: "procedure",
+        summary: `Procedure completed: ${outcome.procedure.record.procedure}`,
+        newState: input.followUpRequired ? "postoperative follow-up" : "ready to close"
+      });
+    }
     return outcome.procedure;
   }
 
