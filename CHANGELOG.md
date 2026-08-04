@@ -7,8 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] - 2026-08-04
+
+Adds plugin settings and a configurable clinical folder, then fixes what an
+adversarial review found in that new code and in the existing workflow.
+
 ### Added
 
+- **Settings tab.** Clinician name (recorded as the actor on every audit note),
+  defaults for care setting, pathway and priority, an optional typed
+  confirmation before discharge, an optional integrity check when the workspace
+  first opens, and a configurable refresh delay.
+- **Configurable clinical folder**, applied by an explicit migration with a live
+  preview of what will move rather than taking effect on its own. Inter-record
+  links are verified afterwards; a rewrite that failed is reported rather than
+  left to break the caseload silently.
 - Task cancellation. An open task can be closed without being completed, so an
   episode can always be discharged.
 - Patient identity editor, for correcting a recorded MRN, name, or phone.
@@ -40,6 +55,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An unreadable note no longer disappears.** Frontmatter that failed to parse
+  dropped the record from every list, so a task damaged by a sync conflict
+  became invisible and its episode could be discharged with the work still
+  open. Discharge now refuses, and the integrity check reports the note.
+- **Changing an episode's next action cancels the task it replaces** instead of
+  leaving both open. When the new action matches an already-closed task, that is
+  reported rather than silently dropped.
+- Archiving an already-archived episode no longer overwrites the pathway and
+  outcome that restore depends on.
+- A procedure that failed part-way is retryable; the retry finishes the workflow
+  rather than reporting success and stopping.
+- An episode is only marked ready to close when no other task is open.
+- Generated database views and the home note are replaced only when they are
+  byte-identical to what the plugin would have written, so user edits survive.
+- Settings persist on a debounce rather than on every keystroke, and a blank
+  field is treated as mid-edit rather than as zero.
 - Renaming a clinical note no longer detaches it. Records resolve by their
   stable id, so a renamed task can still be completed and its episode
   discharged; previously both failed permanently and there was no way to
@@ -66,9 +97,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Clinical folder paths reject `.` and `..` segments anywhere in the path, not
+  just at the start, so a migration target cannot resolve outside the vault.
+- Stored settings are validated on load; an invalid value falls back to its
+  default rather than reaching the workflow.
+- The console-identifier guard previously scanned four files that call `console`
+  zero times, so it asserted nothing while appearing to protect the strongest
+  privacy claim. It now enumerates the source tree and fails if it scans nothing.
 - Added `SECURITY.md` with a threat model and private reporting instructions.
 - `.gitignore` now excludes AppleDouble sidecars and blocks any vault,
   `.obsidian` directory, or `.base` file from entering the repository.
+
+### Known limitations
+
+- `mergePatients` is not atomic. Obsidian offers no multi-file transaction, so a
+  real fix needs journal-and-resume; the integrity check detects the artefacts a
+  partial merge leaves behind.
+- Nothing has been tested on iOS.
 
 ## [0.1.0] - 2026-08-03
 

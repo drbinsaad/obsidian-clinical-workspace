@@ -14,6 +14,37 @@ A mobile-first, local-first workflow plugin for personal clinical follow-up and 
 
 The commands **Open Clinical Workspace** and **Add patient episode** can be added to the Obsidian mobile toolbar or triggered from the command palette.
 
+## Settings
+
+**Settings → Community plugins → Clinical Workspace.**
+
+| Setting | What it does |
+|---|---|
+| Your name or initials | Recorded as the actor on every audit note. Left blank, the trail reads `local-user`. |
+| Care setting · Pathway · Priority | Pre-selected on the Add patient form; every field is still editable per patient. |
+| Confirm before discharge | Requires the word `DISCHARGE` to be typed before an episode is archived. |
+| Run integrity check on first open | Surfaces problems without having to remember to look. Silent when there are none. |
+| Refresh delay | How long to coalesce vault changes before redrawing, 0–2000 ms. |
+| Clinical folder | Where records live. Changing it is a migration, not a toggle — see below. |
+
+Settings are stored in `data.json` inside the plugin's own folder. Only the
+values above are written there; no patient information is ever stored in plugin
+settings.
+
+### Moving the clinical folder
+
+Type a new folder name and the panel previews exactly what would move. Nothing
+happens until **Move records** is pressed. The migration uses Obsidian's own
+rename, which rewrites the links between records — including those held in YAML
+frontmatter, verified against a real vault — and then regenerates the database
+views, which Obsidian does not rewrite on its own.
+
+Afterwards the plugin counts any link still pointing at the old folder and warns
+if it finds one. It should always be zero; a non-zero count means the rewrite did
+not do what it is supposed to, and the integrity check will show what to repair.
+The new location is recorded *before* the move, so an interruption is recoverable
+rather than leaving the workspace pointing at an empty folder.
+
 ## Data model
 
 Each entity has a stable generated ID and its own note:
@@ -38,6 +69,9 @@ Patient ──< Episode ──< Task
 
 ### Known limitations
 
+- Nothing has been tested on iOS. The layout has been measured at iPhone
+  viewports and the plugin uses only mobile-safe APIs, but no build has run on a
+  device.
 - Duplicate protection is per-device. Two devices editing before sync converges can still produce duplicates — run the integrity check after any conflict.
 - Multi-file operations are not transactional. A failure part-way leaves the earlier writes in place; the integrity check reports what it can find.
 - Audit notes are best-effort. A failed audit write is reported but does not roll back the clinical action.

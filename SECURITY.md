@@ -19,14 +19,18 @@ Expect an acknowledgement within 7 days.
 ## What this plugin does with your data
 
 - **All data stays in your vault.** Every record is a Markdown note with YAML
-  frontmatter under `Clinical Workspace/`.
+  frontmatter under the configured clinical folder, `Clinical Workspace` by default.
 - **No network access.** The plugin makes no HTTP requests and contains no
   telemetry, analytics, crash reporting, or update checks. There is no code
   path that transmits vault content anywhere.
 - **No third-party runtime dependencies.** The bundle imports only the Obsidian
   API. Everything in `package.json` is a build-time or test-time dependency.
 - **No writes outside its own folder.** Files and folders are only ever created
-  or modified under `Clinical Workspace/`.
+  or modified under the configured clinical folder.
+- **Plugin settings hold no patient data.** `data.json` inside the plugin folder
+  stores only the configuration listed in the README — a clinician name, four
+  defaults, two toggles, a delay, and a folder name. No MRN, patient name, phone
+  number or record content is ever written to it.
 - **No identifiers in logs.** Integrity results are rendered in the interface.
   Messages are written so that they never contain an MRN, name, or phone
   number, and this is enforced by a test.
@@ -64,10 +68,11 @@ check, but a note is otherwise taken at face value.
 | 1 | Vault read by another Obsidian plugin | **Not mitigable from within this plugin.** Any community plugin has full vault access. Install as few as possible in a clinical vault, and review what you do install. |
 | 2 | Device loss or theft | Out of scope. Requires full-disk encryption and a screen lock. |
 | 3 | Sync provider or an account with vault access | Out of scope. Use a sync route your institution sanctions. |
-| 4 | Accidental publication to git | `.gitignore` excludes `Clinical Workspace/`, `**/.obsidian/`, and `*.base`, so a vault created in the repository directory cannot be committed by accident. |
+| 4 | Accidental publication to git | `.gitignore` excludes any `.obsidian` directory, any `.base` file, and the generated record filename prefixes, so a vault created in the repository directory cannot be committed by accident regardless of what the clinical folder is named. |
 | 5 | Identifiers leaking through logs or bug reports | Integrity output is rendered in the interface, never logged, and contains no identifiers. Enforced by a test. |
 | 6 | A hostile note causing code execution | **Not reachable.** All DOM is built with `createEl`/`createDiv`/`createSpan`, which assign `textContent`. There is no `innerHTML`, `eval`, or `new Function` anywhere in the source. |
 | 7 | Fabricated records mixed into real data | The synthetic data generator is compiled out of release builds and cannot be reached from a released version. |
+| 8 | A folder migration moving records outside the vault | Folder paths reject `.` and `..` segments anywhere in the path, and the target must not already exist. |
 
 ## Before using this with identifiable patient data
 
