@@ -32,11 +32,14 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm test
-
+      # Build before test: the suite asserts on dist/main.js to prove that
+      # development tooling is compiled out of a release build. Testing first
+      # made that assertion silently unreachable.
       - name: Build
         run: npm run build
+
+      - name: Test
+        run: npm test
 
       - name: Verify release artefacts
         run: npm run verify-release
