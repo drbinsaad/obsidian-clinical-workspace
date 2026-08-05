@@ -161,8 +161,11 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   private async reconcileMigration(stored: unknown): Promise<void> {
     const marker = (stored as { migrationInProgress?: MigrationMarker } | null)?.migrationInProgress;
     if (!marker?.from || !marker?.to) return;
-    const exists = (path: string) => Boolean(this.app.vault.getAbstractFileByPath(path));
-    const actual = exists(marker.to) ? marker.to : exists(marker.from) ? marker.from : null;
+    // "Contains records", not "exists": an empty folder proves nothing, and the
+    // whole failure mode here is choosing one and reporting an empty caseload.
+    const holdsRecords = (root: string) =>
+      this.app.vault.getMarkdownFiles().some((file) => file.path.startsWith(`${root}/`));
+    const actual = holdsRecords(marker.to) ? marker.to : holdsRecords(marker.from) ? marker.from : null;
     if (actual && actual !== this.settings.rootFolder) {
       this.settings = { ...this.settings, rootFolder: actual };
       setClinicalRoot(actual);
@@ -231,12 +234,15 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   }
 
   private async doActivateWorkspace(): Promise<ClinicalWorkspaceView> {
-    await this.ensureStructure();
+    // Reconciliation runs FIRST. ensureStructure creates whatever root the
+    // settings name, so running it first would manufacture an empty folder at
+    // the interrupted destination and reconciliation would then "find" it.
     if (this.pendingMigrationMarker) {
       const marker = this.pendingMigrationMarker;
       this.pendingMigrationMarker = null;
       await this.reconcileMigration(marker);
     }
+    await this.ensureStructure();
     const existing = this.app.workspace.getLeavesOfType(CLINICAL_WORKSPACE_VIEW)[0];
     const leaf = existing ?? this.app.workspace.getLeaf(true);
     if (!existing) {

@@ -130,7 +130,8 @@ export class ClinicalService {
           duplicate,
           normalizeText(input.nextAction),
           input.dueDate,
-          duplicate.record.pathway
+          duplicate.record.pathway,
+          input.priority
         );
         existingTask = "task" in outcome ? outcome.task : null;
       }
@@ -273,6 +274,11 @@ export class ClinicalService {
     if (!patient || !episode) throw new Error("The linked patient or episode was not found.");
     if (["archived", "cancelled", "entered-in-error"].includes(episode.record.status)) {
       throw new Error("Tasks can only be added to an active episode.");
+    }
+    // The episode owns the patient relationship. Accepting a mismatched pair
+    // would file work under one patient while it belongs to another.
+    if (episode.record.patient_id !== patient.record.id) {
+      throw new Error("That episode does not belong to the selected patient.");
     }
 
     const idempotencyKey = taskIdempotencyKey(input);
@@ -444,7 +450,13 @@ export class ClinicalService {
     // sheet unchanged must not resurrect completed work; changing the plan must
     // not leave the superseded task open; and a request that cannot produce a
     // task must say so rather than vanish.
-    const outcome = await this.reconcileEpisodeTask(episode, nextAction, input.dueDate, input.pathway);
+    const outcome = await this.reconcileEpisodeTask(
+      episode,
+      nextAction,
+      input.dueDate,
+      input.pathway,
+      input.priority
+    );
     await this.repository.createEvent({
       action: "episode-updated",
       patientId: episode.record.patient_id,
@@ -469,9 +481,29 @@ export class ClinicalService {
     episode: RecordWithPath<EpisodeRecord>,
     nextAction: string,
     dueDate: string,
-    pathway: EpisodeRecord["pathway"]
+    pathway: EpisodeRecord["pathway"],
+    // Passed explicitly: the episode record in hand predates this save, so
+    // reading priority from it would write the previous value back.
+    priority: EpisodeRecord["priority"]
   ): Promise<EpisodeTaskOutcome> {
-    if (!nextAction) return { kind: "no-action" };
+    if (!nextAction) {
+      // Clearing the field must not leave the card claiming there is nothing to
+      // do while a task is still open. Point it at the work that remains.
+      const remaining = (await this.repository.list<TaskRecord>("task"))
+        .filter(({ record }) => record.episode_id === episode.record.id && taskIsOpen(record))
+        .sort((a, b) =>
+          String(a.record.due_date || "9999").localeCompare(String(b.record.due_date || "9999"))
+        );
+      const first = remaining[0];
+      if (first) {
+        await this.repository.update<EpisodeRecord>(episode.path, {
+          next_action: first.record.task,
+          due_date: first.record.due_date
+        });
+        return { kind: "unchanged", task: first };
+      }
+      return { kind: "no-action" };
+    }
 
     const key = taskIdempotencyKey({ episodeId: episode.record.id, task: nextAction, dueDate });
     const tasks = await this.repository.list<TaskRecord>("task");
@@ -491,11 +523,14 @@ export class ClinicalService {
 
     // The plan changed: close the task the previous next action raised, so the
     // episode carries one live task rather than an accumulating pile.
+    // Any open task raised by the episode's previous next action is superseded —
+    // including one with the same wording on a different date, which is a
+    // reschedule rather than a second piece of work.
     const superseded = forEpisode.filter(
       ({ record }) =>
         taskIsOpen(record) &&
-        normalizeComparable(record.task) === normalizeComparable(episode.record.next_action) &&
-        normalizeComparable(record.task) !== normalizeComparable(nextAction)
+        (normalizeComparable(record.task) === normalizeComparable(episode.record.next_action) ||
+          normalizeComparable(record.task) === normalizeComparable(nextAction))
     );
     for (const item of superseded) {
       await this.cancelTask(item.record.id, `Superseded by: ${nextAction}`);
@@ -506,7 +541,7 @@ export class ClinicalService {
       episodeId: episode.record.id,
       task: nextAction,
       taskType: this.defaultTaskTypeForPathway(pathway),
-      priority: episode.record.priority,
+      priority,
       dueDate,
       owner: ""
     });

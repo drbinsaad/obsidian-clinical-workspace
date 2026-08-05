@@ -22,6 +22,7 @@ test("templates and other non-clinical notes are skipped", () => {
 
 test("calendar and archive notes are excluded before parsing", () => {
   assert.equal(isExcluded("/staging/Calendar/20260805.md", R), true);
+  assert.equal(isExcluded("/staging/Calendar/20260805.txt", R), true);
   assert.equal(isExcluded("/staging/Calendar/2026-W32.md", R), true);
   assert.equal(isExcluded("/staging/@Templates/patient.md", R), true);
   assert.equal(isExcluded("/staging/@Archive/old.md", R), true);
@@ -66,10 +67,10 @@ test("a missing MRN is reported, not invented", () => {
   assert.ok(note.problems.includes("no MRN found"));
 });
 
-test("a missing case falls back to the title and says so", () => {
+test("a missing case uses an explicit review placeholder, not the patient title", () => {
   const note = parse("d.md", "# 9000002004 - Sara Testpatient\n* [ ] Chase result")!;
-  assert.equal(note.caseName, "9000002004 - Sara Testpatient");
-  assert.ok(note.problems.some((p) => p.includes("used the note title")));
+  assert.equal(note.caseName, "Imported patient follow-up");
+  assert.ok(note.problems.some((p) => p.includes("review placeholder")));
 });
 
 // --- To-dos -------------------------------------------------------------------
@@ -108,6 +109,17 @@ test("a task with no date imports with no date rather than today", () => {
 test("the same line is not counted twice when two patterns match it", () => {
   const note = parse("h.md", "# 9000002008 - Test Name\n* [ ] Only one task")!;
   assert.equal(note.openTasks.length, 1);
+});
+
+test("the same task text on two dates remains two distinct tasks", () => {
+  const note = parse(
+    "h2.txt",
+    "# 9000002013 - Test Name\n* [ ] Review result >2026-08-12\n* [ ] Review result >2026-08-19"
+  )!;
+  assert.deepEqual(note.openTasks, [
+    { text: "Review result", due: "2026-08-12" },
+    { text: "Review result", due: "2026-08-19" }
+  ]);
 });
 
 // --- Classification -----------------------------------------------------------

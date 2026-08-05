@@ -170,6 +170,18 @@ export class IntegrityService {
           path: task.path
         });
       }
+      // The episode owns the patient relationship; a task disagreeing with it
+      // is filed under the wrong chart, which no other rule here would notice.
+      const taskEpisode = episodes.find((item) => item.record.id === task.record.episode_id);
+      if (taskEpisode && taskEpisode.record.patient_id !== task.record.patient_id) {
+        issues.push({
+          code: "mismatched-task-patient",
+          severity: "error",
+          message: "Task is filed under a different patient from its episode.",
+          recordId: task.record.id,
+          path: task.path
+        });
+      }
       if (task.record.due_date && !isIsoDate(task.record.due_date)) {
         issues.push({
           code: "invalid-task-date",
@@ -209,6 +221,16 @@ export class IntegrityService {
           code: "orphan-procedure",
           severity: "error",
           message: "Procedure links to a missing patient or episode.",
+          recordId: procedure.record.id,
+          path: procedure.path
+        });
+      }
+      const procedureEpisode = episodes.find((item) => item.record.id === procedure.record.episode_id);
+      if (procedureEpisode && procedureEpisode.record.patient_id !== procedure.record.patient_id) {
+        issues.push({
+          code: "mismatched-procedure-patient",
+          severity: "error",
+          message: "Procedure is filed under a different patient from its episode.",
           recordId: procedure.record.id,
           path: procedure.path
         });

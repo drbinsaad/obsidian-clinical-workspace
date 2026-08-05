@@ -13,6 +13,7 @@ import type {
 import { createId, mrnMatchKey, nowIso, SCHEMA_VERSION } from "../domain/schema";
 import { baseFiles, baseSourceFolders, homeNote } from "./bases";
 import { parseClinicalRecord, recordMarkdown, valueMatches } from "./markdown";
+import { isUntouchedBase, isUntouchedHome } from "./scaffold";
 import {
   allClinicalFolders,
   clinicalFolder,
@@ -84,7 +85,7 @@ export class ClinicalRepository {
         // Only a base still recognisably generated is repaired. Once the user
         // has customised it, silently replacing their work on every open is
         // worse than leaving a stale query they can fix themselves.
-        if (!this.isUntouchedBase(path, current)) {
+        if (!isUntouchedBase(path, current)) {
           console.warn(
             "Clinical Workspace: a database view points at the wrong folder but has been customised, so it was left alone."
           );
@@ -108,7 +109,7 @@ export class ClinicalRepository {
         (current.includes("![[") && !current.includes(`${clinicalFolder("bases")}/Patients.base`));
       // A note the user has written in is theirs. Repair only the untouched
       // scaffolding this plugin generated.
-      if (stale && this.isUntouchedHome(current)) {
+      if (stale && isUntouchedHome(current)) {
         await this.app.vault.modify(existingHome, expectedHome);
       } else if (stale) {
         console.warn(
@@ -116,43 +117,6 @@ export class ClinicalRepository {
         );
       }
     }
-  }
-
-  /**
-   * True only when the file is byte-identical to something this plugin would
-   * have written for the root it currently references.
-   *
-   * A heuristic ("does it look roughly like our scaffold?") cannot tell one
-   * line of the user's prose from one line of ours, so anything short of an
-   * exact match is treated as the user's work and left alone.
-   */
-  private isUntouchedBase(path: string, content: string): boolean {
-    const referenced = /file\.inFolder\("([^"]+)"\)/.exec(content)?.[1];
-    if (!referenced) return false;
-    const priorRoot = referenced.replace(/\/[^/]+$/, "");
-    const name = path.split("/").pop();
-    if (!name) return false;
-    const generated = baseFiles(priorRoot)[`${clinicalFolder("bases", priorRoot)}/${name}`];
-    return generated !== undefined && generated.trim() === content.trim();
-  }
-
-  private isUntouchedHome(content: string): boolean {
-    const referenced = /!\[\[(.+?)\/Bases\/Patients\.base/.exec(content)?.[1];
-    if (!referenced) return false;
-    if (homeNote(referenced).trim() === content.trim()) return true;
-    // The scaffold shipped by 0.1.0, before Episodes.base existed.
-    const legacy = [
-      "# Clinical Workspace",
-      "",
-      "Use the **Open Clinical Workspace** command for the mobile patient, task and surgery interface.",
-      "",
-      "## Database views",
-      "",
-      `- ![[${referenced}/Bases/Patients.base#Active patients]]`,
-      `- ![[${referenced}/Bases/Tasks.base#Open tasks]]`,
-      `- ![[${referenced}/Bases/Surgery Logbook.base#Surgery logbook]]`
-    ].join("\n");
-    return legacy.trim() === content.trim();
   }
 
   /** Managed folders that are absent from the vault. */

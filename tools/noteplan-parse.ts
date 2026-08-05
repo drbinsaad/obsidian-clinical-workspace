@@ -26,15 +26,13 @@ export interface ParsedNote {
 /** Calendar notes are dated filenames, never patients. */
 export function isCalendarNote(file: string): boolean {
   const name = path.basename(file);
-  return /^\d{8}\.md$/.test(name) || /^\d{4}-W\d+\.md$/.test(name);
+  return /^\d{8}\.(?:md|txt)$/.test(name) || /^\d{4}-W\d+\.(?:md|txt)$/.test(name);
 }
 
 export function isExcluded(file: string, rules: ImportRules): boolean {
   if (isCalendarNote(file)) return true;
-  return rules.exclude.some((pattern) => {
-    const folder = pattern.replace(/^\*\*\//, "").replace(/\/\*\*$/, "");
-    return folder.startsWith("@") && file.split("/").includes(folder);
-  });
+  const normalized = file.split(path.sep).join("/");
+  return rules.exclude.some((pattern) => path.matchesGlob(normalized, pattern));
 }
 
 /**
@@ -64,8 +62,11 @@ export function parseNote(file: string, content: string, rules: ImportRules): Pa
   if (!mrn) problems.push("no MRN found");
   if (!patientName) problems.push("no patient name found");
   if (!caseName) {
-    caseName = normalizeText(title.replace(/^#\s*/, "")) || "Imported from NotePlan";
-    problems.push("no case/reason found — used the note title");
+    // Note titles in the source are commonly patient names. Reusing that as a
+    // clinical case silently turns identity into diagnosis, so keep the gap
+    // explicit and send it to review instead.
+    caseName = "Imported patient follow-up";
+    problems.push("no case/reason found — used a review placeholder");
   }
 
   const dateOf = (line: string): string => firstMatch(rules.taskDatePatterns, line) ?? "";
@@ -80,10 +81,12 @@ export function parseNote(file: string, content: string, rules: ImportRules): Pa
   const openTasks: ParsedTask[] = [];
   for (const line of allMatches(rules.openTaskPatterns, content)) {
     const text = strip(line);
+    const due = dateOf(line);
     // The same line can match more than one open-task pattern.
-    if (!text || seen.has(text)) continue;
-    seen.add(text);
-    openTasks.push({ text, due: dateOf(line) });
+    const key = `${text}\u0000${due}`;
+    if (!text || seen.has(key)) continue;
+    seen.add(key);
+    openTasks.push({ text, due });
   }
 
   const careSetting: CareSetting = rules.inpatientMarkers.some((m) => content.includes(m))

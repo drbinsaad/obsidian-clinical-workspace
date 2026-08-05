@@ -45,14 +45,18 @@ export interface ImportRules {
  * Common alternatives are accepted too, because a real vault is never uniform.
  */
 export const DEFAULT_RULES: ImportRules = {
-  includeGlob: "**/*.md",
+  // NotePlan stores ordinary notes as either .txt or .md depending on the
+  // app/version that created them. Both contain Markdown-compatible text.
+  includeGlob: "**/*.{md,txt}",
   exclude: [
     "**/@Templates/**",
     "**/@Archive/**",
     "**/@Trash/**",
     // NotePlan calendar notes are dated filenames, not patients.
     "**/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].md",
-    "**/[0-9][0-9][0-9][0-9]-W[0-9]*.md"
+    "**/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].txt",
+    "**/[0-9][0-9][0-9][0-9]-W[0-9]*.md",
+    "**/[0-9][0-9][0-9][0-9]-W[0-9]*.txt"
   ],
 
   mrnPatterns: [

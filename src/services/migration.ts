@@ -1,5 +1,6 @@
 import { App, normalizePath, TFile, TFolder } from "obsidian";
 import { baseFiles, homeNote } from "../data/bases";
+import { isUntouchedBase, isUntouchedHome } from "../data/scaffold";
 import { allClinicalFolders, clinicalFolder, clinicalRootFolder } from "../data/paths";
 import { normalizeFolderPath, validateRootFolder } from "../domain/settings";
 
@@ -81,15 +82,26 @@ export class MigrationService {
     try {
       for (const folder of allClinicalFolders(plan.to)) await this.ensureFolder(folder);
 
+      // Regenerate only files still identical to what the plugin would have
+      // written. A base or home note the user has customised is their work, and
+      // a folder move is no reason to discard it.
       for (const [path, content] of Object.entries(baseFiles(plan.to))) {
         const existing = this.app.vault.getAbstractFileByPath(normalizePath(path));
-        if (existing instanceof TFile) await this.app.vault.modify(existing, content);
-        else if (!existing) await this.app.vault.create(normalizePath(path), content);
+        if (!existing) {
+          await this.app.vault.create(normalizePath(path), content);
+        } else if (existing instanceof TFile) {
+          const current = await this.app.vault.read(existing);
+          if (isUntouchedBase(path, current)) await this.app.vault.modify(existing, content);
+        }
       }
       const homePath = normalizePath(`${clinicalFolder("home", plan.to)}/Clinical Workspace.md`);
       const home = this.app.vault.getAbstractFileByPath(homePath);
-      if (home instanceof TFile) await this.app.vault.modify(home, homeNote(plan.to));
-      else if (!home) await this.app.vault.create(homePath, homeNote(plan.to));
+      if (!home) {
+        await this.app.vault.create(homePath, homeNote(plan.to));
+      } else if (home instanceof TFile) {
+        const current = await this.app.vault.read(home);
+        if (isUntouchedHome(current)) await this.app.vault.modify(home, homeNote(plan.to));
+      }
     } catch (error) {
       console.warn(
         "Clinical Workspace: records moved, but database views could not be regenerated. They will be rebuilt on next open.",
