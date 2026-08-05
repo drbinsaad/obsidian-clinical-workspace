@@ -10,7 +10,8 @@
     "test": "node --import tsx --import ./tests/support/register.mjs --test tests/*.test.ts",
     "check": "npm run typecheck && npm run build && npm test",
     "version": "node scripts/version-bump.mjs && git add package.json manifest.json versions.json",
-    "verify-release": "node scripts/verify-release.mjs"
+    "verify-release": "node scripts/verify-release.mjs",
+    "install:vault": "node scripts/install-to-vault.mjs"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",

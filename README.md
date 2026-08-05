@@ -86,10 +86,20 @@ npm run check
 
 `npm run check` runs strict TypeScript checking, the test suite, and a production build into `dist/`.
 
-The default build output is the local `dist/` directory. The build does not install into or modify any Obsidian vault. To test in an isolated synthetic vault, explicitly provide its plugin directory:
+The default build output is the local `dist/` directory. The build does not install into or modify any Obsidian vault.
+
+To install a build into a vault:
 
 ```bash
-CLINICAL_PLUGIN_OUTDIR="/path/to/Clinical Dev Vault/.obsidian/plugins/clinical-workspace" npm run build
+npm run build && npm run install:vault -- "/path/to/vault"
+```
+
+That refuses to install a development build — the one carrying the synthetic data generator — unless `--allow-dev` is passed, so a vault holding real patient information cannot gain the ability to fabricate records by accident. It also refuses a folder that is not an Obsidian vault.
+
+To build straight into a vault instead:
+
+```bash
+CLINICAL_PLUGIN_OUTDIR="/path/to/vault/.obsidian/plugins/clinical-workspace" npm run build
 ```
 
 ### Development tooling
