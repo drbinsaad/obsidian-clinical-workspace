@@ -11,7 +11,8 @@
     "check": "npm run typecheck && npm run build && npm test",
     "version": "node scripts/version-bump.mjs && git add package.json manifest.json versions.json",
     "verify-release": "node scripts/verify-release.mjs",
-    "install:vault": "node scripts/install-to-vault.mjs"
+    "install:vault": "node scripts/install-to-vault.mjs",
+    "import:noteplan": "node --import tsx --import ./tests/support/register.mjs tools/import-noteplan.ts"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
