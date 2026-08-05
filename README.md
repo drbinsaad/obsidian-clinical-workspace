@@ -126,37 +126,16 @@ npm run verify-release
 
 Then push the tag. Release tags are **bare semantic versions with no `v` prefix**, which is what the release workflow triggers on. It publishes a draft release with `main.js`, `manifest.json` and `styles.css` attached.
 
-## Importing from NotePlan
+## Migrating existing records
 
-```bash
-# 1. Copy your NotePlan notes into a staging folder. Never point this at the
-#    live NotePlan directory.
-npm run import:noteplan -- --from "/path/to/staging"
+Records are plain Markdown with YAML frontmatter, so they can be produced by any
+tool. Whatever writes them, run **Run clinical data integrity check** afterwards:
+it reports records that reference a missing patient or episode, a task or
+procedure filed under a different patient from its episode, duplicate MRNs,
+unreadable notes, and unrecognised field values.
 
-# 2. Read the report. Nothing has been written.
-# 3. When the numbers look right:
-npm run import:noteplan -- --from "/path/to/staging" --to "/path/to/vault" --apply
-```
-
-The source folder is only ever read. Nothing is written anywhere without `--apply`.
-
-The dry run reports how many notes were recognised as patients, how many were skipped, what would be created, and — most usefully — which notes the rules did not fully understand, with the reason for each. If the numbers look wrong, the rules need tuning, not the data.
-
-Records are produced by driving the plugin's own `ClinicalService`, so an imported record is identical to one created through the interface: same ids, idempotency keys, wikilinks and audit events. Every imported record is tagged `#clinical/imported-<date>` so the whole import can be reviewed, or removed, in one search.
-
-### Tuning the rules
-
-Every pattern lives in `tools/noteplan-rules.ts` and can be overridden without touching code:
-
-```bash
-npm run import:noteplan -- --from "<folder>" --rules my-rules.json
-```
-
-Defaults assume NotePlan's syntax — `*` bullets, `[ ]`/`[x]`/`[-]` for open/done/cancelled, `>YYYY-MM-DD` for scheduling — and accept common variations. Completed and cancelled to-dos are counted but not imported; only outstanding work becomes a task.
-
-A note is only treated as a patient when it has an MRN, or a name together with some other clinical signal such as a phone number or a stated reason. A heading on its own is never enough: under-importing is easy to correct, whereas inventing a patient record is not.
-
-Do not combine a clinical patient vault with the ENT educational knowledge vault. Keep the clinical workspace in a separate encrypted/sanctioned sync location.
+Records written outside the plugin are not validated on the way in. The
+integrity check is the only thing that will tell you they are sound.
 
 ## License
 
