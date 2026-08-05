@@ -129,7 +129,12 @@ export abstract class ClinicalModal<T> extends Modal {
     this.contentEl.empty();
     this.contentEl.createEl("h2", { text: title, cls: "clinical-modal-heading" });
     this.contentEl.createEl("p", { text: description, cls: "clinical-section-note" });
-    return this.contentEl.createDiv({ cls: "clinical-form-section" });
+    // Fields live in their own scrolling region so the action row can be a
+    // fixed footer. Previously the row was sticky inside the whole modal, which
+    // pinned it to the bottom of a container taller than the screen — landing
+    // it mid-form, over the fields, on a phone.
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
+    return body.createDiv({ cls: "clinical-form-section" });
   }
 }
 
@@ -143,7 +148,11 @@ export class NewEpisodeModal extends ClinicalModal<NewEpisodeInput> {
     pathway: "assessment",
     priority: "routine",
     nextAction: "",
-    dueDate: ""
+    // Seeded to today so the control is visible. An empty date input renders as
+    // nothing at all on iOS, leaving "Due date" looking like a label with no
+    // field. A date with no next action creates no task, so this is inert until
+    // the clinician actually asks for something.
+    dueDate: todayIso()
   };
 
   constructor(app: App, onSubmit: AsyncSubmit<NewEpisodeInput>, seed?: Partial<NewEpisodeInput>) {

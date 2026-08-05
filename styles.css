@@ -217,6 +217,21 @@
 .clinical-card-button {
   flex: 1 1 120px;
   padding: 8px 12px;
+  /* Explicit chrome: Obsidian's default button is flat on mobile, which left
+     these reading as plain text with no indication they were tappable. */
+  border: 1px solid var(--background-modifier-border);
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+.clinical-card-button:hover {
+  background: var(--interactive-hover);
+}
+
+/* mod-cta carries Obsidian's accent styling; leave it to own its background. */
+.clinical-card-button.mod-cta {
+  border-color: transparent;
 }
 
 .clinical-card-button.is-danger {
@@ -243,8 +258,29 @@
   text-align: center;
 }
 
+/* Column layout: heading and description fixed, fields scroll, actions pinned
+   to the bottom of the modal itself rather than to a taller scroll container. */
 .clinical-modal .modal-content {
+  display: flex;
+  flex-direction: column;
+  max-height: 100%;
+  min-height: 0;
   padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Obsidian centres the control in a Setting row; a date reads as a stray value
+   floating mid-row unless it is pinned left like every other field. */
+.clinical-modal input[type="date"] {
+  width: 100%;
+  min-height: 44px;
+  text-align: left;
+}
+
+.clinical-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .clinical-modal-heading {
@@ -262,8 +298,7 @@
 }
 
 .clinical-modal-actions {
-  position: sticky;
-  bottom: 0;
+  flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
   gap: 10px;
@@ -304,6 +339,30 @@
 .clinical-modal-actions button:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* Obsidian's mobile toolbar is a floating bar that sits ABOVE the home
+   indicator, so env(safe-area-inset-bottom) does not describe it and no browser
+   viewport test can see it. Without this allowance it covers the floating
+   action button and slices the last section of every tab. Measured on iPhone. */
+.is-mobile .clinical-workspace-shell {
+  padding-bottom: calc(200px + env(safe-area-inset-bottom));
+}
+
+/* The floating action button sits over the bottom-right of the view. When a tab
+   holds little content there is nothing to scroll, so a card's action row can
+   come to rest underneath it — on the Patients tab that hid Discharge, the one
+   destructive control. A right gutter guarantees no action is ever covered. */
+.is-mobile .clinical-card-actions {
+  padding-right: 68px;
+}
+
+.is-mobile .clinical-primary-action {
+  bottom: calc(96px + env(safe-area-inset-bottom));
+}
+
+.is-mobile .clinical-modal-actions {
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
 }
 
 @media (max-width: 520px) {
