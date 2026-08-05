@@ -161,3 +161,150 @@ test("integrity reports a task whose patient does not match its episode", async 
   assert.ok(codes.includes("mismatched-task-patient"), `expected a mismatch issue, got: ${codes.join(", ")}`);
   void a;
 });
+
+// --- Regressions introduced by the fixes above, found by a later review ------
+
+test("a failed replacement never leaves the superseded task cancelled", async () => {
+  const { service, repository } = await harness();
+  const created = await service.createEpisode(
+    episodeInput({ pathway: "opd-follow-up", nextAction: "Call family", dueDate: "2026-08-20" })
+  );
+
+  // Make the replacement write fail, the way a full disk or a locked file would.
+  const realCreate = repository.create.bind(repository);
+  (repository as unknown as { create: typeof realCreate }).create = async (record) => {
+    if ((record as { entity: string }).entity === "task") throw new Error("EIO: simulated failure");
+    return realCreate(record);
+  };
+  await assert.rejects(() =>
+    service.updateEpisode(created.episode.record.id, {
+      careSetting: "outpatient",
+      pathway: "opd-follow-up",
+      priority: "routine",
+      nextAction: "Book audiology",
+      dueDate: "2026-08-25"
+    })
+  );
+  (repository as unknown as { create: typeof realCreate }).create = realCreate;
+
+  const open = await openTasks(repository);
+  assert.equal(open.length, 1, "the outstanding work must survive a failed replacement");
+  assert.equal(open[0]!.record.task, "Call family");
+});
+
+test("rescheduling does not cancel a task the clinician added deliberately", async () => {
+  const { service, repository } = await harness();
+  const created = await service.createEpisode(
+    episodeInput({ pathway: "opd-follow-up", nextAction: "Call family", dueDate: "2026-08-20" })
+  );
+  // A repeat of the same action, scheduled on purpose via "+ Task".
+  await service.createTask({
+    patientId: created.patient.record.id,
+    episodeId: created.episode.record.id,
+    task: "Call family",
+    taskType: "call-patient",
+    priority: "routine",
+    dueDate: "2026-09-20",
+    owner: ""
+  });
+
+  await service.updateEpisode(created.episode.record.id, {
+    careSetting: "outpatient",
+    pathway: "opd-follow-up",
+    priority: "routine",
+    nextAction: "Book audiology",
+    dueDate: "2026-08-25"
+  });
+
+  const open = await openTasks(repository);
+  const stillThere = open.find((t) => t.record.task === "Call family" && t.record.due_date === "2026-09-20");
+  assert.ok(stillThere, "a deliberately scheduled repeat is the clinician's work, not ours to cancel");
+});
+
+test("adding a task does not rewrite the episode's priority", async () => {
+  const { service, repository } = await harness();
+  const created = await service.createEpisode(
+    episodeInput({ caseName: "Urgent case", priority: "emergency" })
+  );
+  await service.createTask({
+    patientId: created.patient.record.id,
+    episodeId: created.episode.record.id,
+    task: "Routine paperwork",
+    taskType: "other",
+    priority: "routine",
+    dueDate: "2026-08-20",
+    owner: ""
+  });
+  const episode = (await repository.findById<EpisodeRecord>("episode", created.episode.record.id))!.record;
+  assert.equal(episode.priority, "emergency", "an urgent episode must not be downgraded by a routine task");
+});
+
+test("a procedure cannot be filed under a patient the episode does not belong to", async () => {
+  const { service, repository } = await harness();
+  const a = await service.createEpisode(episodeInput({ mrn: "9000004001", caseName: "Case A" }));
+  const b = await service.createEpisode(episodeInput({ mrn: "9000004002", caseName: "Case B" }));
+
+  await assert.rejects(
+    () =>
+      service.completeProcedure({
+        patientId: a.patient.record.id,
+        episodeId: b.episode.record.id,
+        procedure: "Tonsillectomy",
+        procedureDate: "2026-08-11",
+        role: "Primary surgeon",
+        outcome: "",
+        followUpRequired: false,
+        followUpDate: "",
+        followUpPlan: ""
+      }),
+    /does not belong/i
+  );
+  // Nothing may have been written before the check.
+  assert.equal((await repository.list("procedure")).length, 0, "no logbook entry before validation");
+});
+
+test("integrity reports a procedure filed under the wrong patient", async () => {
+  const { service, repository, integrity } = await harness();
+  const a = await service.createEpisode(
+    episodeInput({ mrn: "9000004003", pathway: "or-booking", nextAction: "Book OR", dueDate: "2026-08-09" })
+  );
+  const b = await service.createEpisode(episodeInput({ mrn: "9000004004", caseName: "Case B" }));
+  await service.completeProcedure({
+    patientId: a.patient.record.id,
+    episodeId: a.episode.record.id,
+    procedure: "Tonsillectomy",
+    procedureDate: "2026-08-11",
+    role: "Primary surgeon",
+    outcome: "",
+    followUpRequired: false,
+    followUpDate: "",
+    followUpPlan: ""
+  });
+  const procedure = (await repository.list("procedure"))[0]!;
+  await repository.update(procedure.path, { patient_id: b.patient.record.id });
+
+  const codes = (await integrity.scan()).map((i) => i.code);
+  assert.ok(codes.includes("mismatched-procedure-patient"), `got: ${codes.join(", ")}`);
+});
+
+test("an empty destination folder is not mistaken for one holding records", async () => {
+  const { service, repository, app } = await harness();
+  await service.createEpisode(episodeInput({ nextAction: "Chase result", dueDate: "2026-08-10" }));
+  const original = clinicalRootFolder();
+  try {
+    // ensureStructure at the destination writes a home note and four bases —
+    // markdown, but not records. The old test treated any markdown as proof.
+    setClinicalRoot("Ward Records");
+    await repository.ensureStructure();
+    const RECORD_FOLDERS = ["Patients", "Episodes", "Tasks", "Procedures"];
+    const holdsRecords = (root: string) =>
+      [...app.vault.files.keys()].some((p) =>
+        RECORD_FOLDERS.some((f) => p.startsWith(`${root}/${f}/`) && p.endsWith(".md"))
+      );
+    assert.ok([...app.vault.files.keys()].some((p) => p.startsWith("Ward Records/")), "scaffolding was written");
+    assert.equal(holdsRecords("Ward Records"), false, "scaffolding is not records");
+    assert.equal(holdsRecords("Clinical Workspace"), true);
+  } finally {
+    setClinicalRoot(original);
+  }
+});

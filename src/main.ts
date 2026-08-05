@@ -120,7 +120,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       { ...this.settings, ...patch },
       { careSettings: CARE_SETTINGS, pathways: PATHWAYS, priorities: PRIORITIES }
     );
-    await this.saveData(this.settings);
+    // normalizeSettings drops unknown keys, so an unrelated settings change would
+    // otherwise erase an in-flight migration marker and with it the only record
+    // that a move was interrupted.
+    await this.saveData(this.withPendingMarker(this.settings));
     this.repository.setActor(auditActor(this.settings));
     setClinicalRoot(this.settings.rootFolder);
     await this.refreshOpenViews();
@@ -158,18 +161,30 @@ export default class ClinicalWorkspacePlugin extends Plugin {
    * and the move completing. Whichever of the two folders actually exists wins,
    * because that is where the records are.
    */
+  /** Re-attaches an in-flight migration marker to whatever is being saved. */
+  private withPendingMarker(settings: ClinicalSettings): Record<string, unknown> {
+    const marker = (this.pendingMigrationMarker as { migrationInProgress?: MigrationMarker } | null)
+      ?.migrationInProgress;
+    return marker ? { ...settings, migrationInProgress: marker } : { ...settings };
+  }
+
   private async reconcileMigration(stored: unknown): Promise<void> {
     const marker = (stored as { migrationInProgress?: MigrationMarker } | null)?.migrationInProgress;
     if (!marker?.from || !marker?.to) return;
-    // "Contains records", not "exists": an empty folder proves nothing, and the
-    // whole failure mode here is choosing one and reporting an empty caseload.
+    // "Holds records", not "exists" and not "contains any markdown": ensureStructure
+    // writes a home note and database views, so a freshly created empty root would
+    // otherwise look occupied — which is the exact failure this is here to prevent.
+    const RECORD_FOLDERS = ["Patients", "Episodes", "Tasks", "Procedures"];
     const holdsRecords = (root: string) =>
-      this.app.vault.getMarkdownFiles().some((file) => file.path.startsWith(`${root}/`));
+      this.app.vault
+        .getMarkdownFiles()
+        .some((file) => RECORD_FOLDERS.some((folder) => file.path.startsWith(`${root}/${folder}/`)));
     const actual = holdsRecords(marker.to) ? marker.to : holdsRecords(marker.from) ? marker.from : null;
     if (actual && actual !== this.settings.rootFolder) {
       this.settings = { ...this.settings, rootFolder: actual };
       setClinicalRoot(actual);
     }
+    this.pendingMigrationMarker = null;
     await this.saveData(this.settings);
     new Notice(
       `Clinical Workspace recovered an interrupted folder move. Records are in "${this.settings.rootFolder}".`,

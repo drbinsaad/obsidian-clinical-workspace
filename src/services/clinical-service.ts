@@ -320,10 +320,18 @@ export class ClinicalService {
 
     if (result.duplicate) return result;
 
+    // The episode points at its most imminent outstanding task, not at whichever
+    // was added last. Tracking the last one made "the task this episode raised"
+    // ambiguous, so rescheduling could cancel a repeat the clinician had
+    // deliberately scheduled for later. Priority is left alone entirely: it is a
+    // judgement about the patient, not a property of the newest task.
+    const outstanding = (await this.repository.list<TaskRecord>("task"))
+      .filter(({ record }) => record.episode_id === episode.record.id && taskIsOpen(record))
+      .sort((a, b) => String(a.record.due_date || "9999").localeCompare(String(b.record.due_date || "9999")));
+    const imminent = outstanding[0] ?? result.task;
     await this.repository.update<EpisodeRecord>(episode.path, {
-      next_action: result.task.record.task,
-      due_date: result.task.record.due_date,
-      priority: result.task.record.priority,
+      next_action: imminent.record.task,
+      due_date: imminent.record.due_date,
       status: episode.record.status === "ready-to-close" ? "active" : episode.record.status
     });
     await this.repository.createEvent({
@@ -523,19 +531,22 @@ export class ClinicalService {
 
     // The plan changed: close the task the previous next action raised, so the
     // episode carries one live task rather than an accumulating pile.
-    // Any open task raised by the episode's previous next action is superseded —
-    // including one with the same wording on a different date, which is a
-    // reschedule rather than a second piece of work.
-    const superseded = forEpisode.filter(
-      ({ record }) =>
-        taskIsOpen(record) &&
-        (normalizeComparable(record.task) === normalizeComparable(episode.record.next_action) ||
-          normalizeComparable(record.task) === normalizeComparable(nextAction))
-    );
-    for (const item of superseded) {
-      await this.cancelTask(item.record.id, `Superseded by: ${nextAction}`);
-    }
-
+    // Identified by idempotency key, not by wording. The key folds in the due
+    // date, so it names exactly the task the episode's previous next action
+    // raised — and leaves alone a repeat of the same wording on another date,
+    // which the clinician scheduled deliberately with "+ Task".
+    const previousKey = normalizeText(episode.record.next_action)
+      ? taskIdempotencyKey({
+          episodeId: episode.record.id,
+          task: episode.record.next_action,
+          dueDate: episode.record.due_date
+        })
+      : null;
+    const superseded = previousKey
+      ? forEpisode.filter(({ record }) => taskIsOpen(record) && record.idempotency_key === previousKey)
+      : [];
+    // Create first, cancel second. Cancelling first meant any failure in
+    // createTask destroyed the outstanding work and left nothing in its place.
     const created = await this.createTask({
       patientId: episode.record.patient_id,
       episodeId: episode.record.id,
@@ -545,6 +556,10 @@ export class ClinicalService {
       dueDate,
       owner: ""
     });
+    for (const item of superseded) {
+      if (item.record.id === created.task.record.id) continue;
+      await this.cancelTask(item.record.id, `Superseded by: ${nextAction}`);
+    }
     return { kind: "created", task: created.task, superseded: superseded.length };
   }
 
@@ -790,6 +805,11 @@ export class ClinicalService {
     const episode = await this.repository.findById<EpisodeRecord>("episode", input.episodeId);
     const patient = await this.repository.findById<PatientRecord>("patient", input.patientId);
     if (!episode || !patient) throw new Error("The linked patient or episode was not found.");
+    // Checked before anything is written: a logbook entry filed under the wrong
+    // chart is not something a later retry can put right.
+    if (episode.record.patient_id !== patient.record.id) {
+      throw new Error("That episode does not belong to the selected patient.");
+    }
     if (!normalizeText(input.procedure)) throw new Error("Procedure is required.");
     if (!input.procedureDate) throw new Error("Procedure date is required.");
     if (input.followUpRequired && (!input.followUpDate || !normalizeText(input.followUpPlan))) {
