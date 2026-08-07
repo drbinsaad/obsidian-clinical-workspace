@@ -60,13 +60,13 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.addSettingTab(new ClinicalSettingTab(this.app, this, this.migration));
 
     this.addRibbonIcon("stethoscope", "Open Clinical Workspace", () => {
-      void this.activateWorkspace();
+      void this.openWorkspace();
     });
 
     this.addCommand({
       id: "open-workspace",
       name: "Open workspace",
-      callback: () => void this.activateWorkspace()
+      callback: () => void this.openWorkspace()
     });
     this.addCommand({
       id: "add-patient-episode",
@@ -226,17 +226,25 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     const holdsRecords = (root: string) =>
       markdownFilesInFolder(this.app.vault, root)
         .some((file) => RECORD_FOLDERS.some((folder) => file.path.startsWith(`${root}/${folder}/`)));
-    const actual = resolveMigrationRoot(marker, holdsRecords);
-    if (!actual) {
+    const sourceHasRecords = holdsRecords(marker.from);
+    const destinationHasRecords = holdsRecords(marker.to);
+    const actual = resolveMigrationRoot(marker, (root) =>
+      root === marker.from ? sourceHasRecords : destinationHasRecords
+    );
+    if (!actual && (sourceHasRecords || destinationHasRecords)) {
       this.pendingMigrationMarker = { migrationInProgress: marker };
       await this.saveData(this.withPendingMarker(this.settings));
       throw new Error(
         "Clinical Workspace could not determine where an interrupted folder move left the records. The recovery marker was preserved; inspect both folders before continuing."
       );
     }
-    if (actual && actual !== this.settings.rootFolder) {
-      this.settings = { ...this.settings, rootFolder: actual };
-      setClinicalRoot(actual);
+    // A newly scaffolded workspace legitimately has no records at either path.
+    // If its rename failed, the source remains authoritative; preserving the
+    // marker would otherwise make every future activation fail forever.
+    const resolvedRoot = actual ?? marker.from;
+    if (resolvedRoot !== this.settings.rootFolder) {
+      this.settings = { ...this.settings, rootFolder: resolvedRoot };
+      setClinicalRoot(resolvedRoot);
     }
     this.pendingMigrationMarker = null;
     await this.saveData(this.settings);
@@ -275,11 +283,22 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   }
 
   private registerVaultEvents(): void {
-    this.registerEvent(this.app.vault.on("create", (file) => this.scheduleRefresh(file.path)));
-    this.registerEvent(this.app.vault.on("modify", (file) => this.scheduleRefresh(file.path)));
-    this.registerEvent(this.app.vault.on("delete", (file) => this.scheduleRefresh(file.path)));
+    this.registerEvent(this.app.vault.on("create", (file) => {
+      this.repository.invalidatePath(file.path);
+      this.scheduleRefresh(file.path);
+    }));
+    this.registerEvent(this.app.vault.on("modify", (file) => {
+      this.repository.invalidatePath(file.path);
+      this.scheduleRefresh(file.path);
+    }));
+    this.registerEvent(this.app.vault.on("delete", (file) => {
+      this.repository.invalidatePath(file.path);
+      this.scheduleRefresh(file.path);
+    }));
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
+        this.repository.invalidatePath(file.path);
+        this.repository.invalidatePath(oldPath);
         this.scheduleRefresh(file.path);
         this.scheduleRefresh(oldPath);
       })
@@ -310,6 +329,18 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.activationPromise = null;
     });
     return this.activationPromise;
+  }
+
+  /** User-facing entry point: command and ribbon failures must never be silent. */
+  private async openWorkspace(): Promise<void> {
+    try {
+      await this.activateWorkspace();
+    } catch (error) {
+      new Notice(
+        error instanceof Error ? error.message : "Clinical Workspace could not be opened.",
+        7000
+      );
+    }
   }
 
   private async doActivateWorkspace(): Promise<ClinicalWorkspaceView> {

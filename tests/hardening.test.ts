@@ -20,7 +20,7 @@ test("an unreadable task note blocks discharge instead of silently vanishing", a
   const created = await service.createEpisode(
     episodeInput({ nextAction: "Chase histopathology", dueDate: "2026-08-10" })
   );
-  app.vault.files.set(created.task!.path, corrupt(app.vault.files.get(created.task!.path)!));
+  app.vault.writeRaw(created.task!.path, corrupt(app.vault.files.get(created.task!.path)!));
 
   // The record is now invisible to list(), which is exactly the danger.
   assert.equal((await repository.list<TaskRecord>("task")).length, 0);
@@ -36,7 +36,7 @@ test("an unreadable task note blocks discharge instead of silently vanishing", a
 test("integrity reports an unreadable note", async () => {
   const { service, integrity, app } = await harness();
   const created = await service.createEpisode(episodeInput({ nextAction: "Chase result", dueDate: "2026-08-10" }));
-  app.vault.files.set(created.task!.path, corrupt(app.vault.files.get(created.task!.path)!));
+  app.vault.writeRaw(created.task!.path, corrupt(app.vault.files.get(created.task!.path)!));
 
   const issues = await integrity.scan();
   const unreadable = issues.filter((issue) => issue.code === "unreadable-record");
@@ -279,8 +279,8 @@ test("dangling links are detected if a rename fails to rewrite them", async () =
       const from = (file as { path: string }).path;
       for (const path of [...app.vault.files.keys()]) {
         if (path === from || path.startsWith(`${from}/`)) {
-          app.vault.files.set(`${newPath}${path.slice(from.length)}`, app.vault.files.get(path)!);
-          app.vault.files.delete(path);
+          app.vault.writeRaw(`${newPath}${path.slice(from.length)}`, app.vault.files.get(path)!);
+          app.vault.deleteRaw(path);
         }
       }
       app.vault.folders.add(newPath);
@@ -300,7 +300,7 @@ test("a user-edited home note is left alone", async () => {
   const { repository, app } = await harness();
   const homePath = "Clinical Workspace/00 Home/Clinical Workspace.md";
   const edited = "# Clinical Workspace\n\nMy own notes about how I run clinic.\n\n## Database views\n\n- ![[Clinical Workspace/Bases/Patients.base#Active patients]]\n";
-  app.vault.files.set(homePath, edited);
+  app.vault.writeRaw(homePath, edited);
 
   await repository.ensureStructure();
   assert.equal(app.vault.files.get(homePath), edited, "the plugin must not overwrite prose the user wrote");
@@ -310,7 +310,7 @@ test("untouched scaffolding is still repaired", async () => {
   const { repository, app } = await harness();
   const homePath = "Clinical Workspace/00 Home/Clinical Workspace.md";
   // The exact scaffold 0.1.0 wrote — anything else counts as the user's work.
-  app.vault.files.set(
+  app.vault.writeRaw(
     homePath,
     [
       "# Clinical Workspace",

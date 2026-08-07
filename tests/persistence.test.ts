@@ -97,7 +97,7 @@ test("a hand-edited record does not take down the whole snapshot", async () => {
   const bad = await service.createEpisode(episodeInput({ mrn: "222", caseName: "Bad case" }));
 
   const raw = app.vault.files.get(bad.episode.path)!;
-  app.vault.files.set(
+  app.vault.writeRaw(
     bad.episode.path,
     raw.replace(/^case: Bad case$/m, "case:").replace(/^priority: routine$/m, "priority: Routine")
   );
@@ -118,7 +118,7 @@ test("integrity reports the corrupt record rather than passing silently", async 
   const { service, integrity, app } = await harness();
   const bad = await service.createEpisode(episodeInput({ caseName: "Bad case" }));
   const raw = app.vault.files.get(bad.episode.path)!;
-  app.vault.files.set(
+  app.vault.writeRaw(
     bad.episode.path,
     raw.replace(/^case: Bad case$/m, "case:").replace(/^priority: routine$/m, "priority: Routine")
   );
@@ -159,8 +159,8 @@ test("integrity finds an orphan patient left by a partial write", async () => {
 test("integrity finds an orphan task when its episode is moved out of the folder", async () => {
   const { service, integrity, app } = await harness();
   const created = await service.createEpisode(episodeInput({ nextAction: "Do thing", dueDate: "2026-08-10" }));
-  app.vault.files.set("Archive/moved.md", app.vault.files.get(created.episode.path)!);
-  app.vault.files.delete(created.episode.path);
+  app.vault.writeRaw("Archive/moved.md", app.vault.files.get(created.episode.path)!);
+  app.vault.deleteRaw(created.episode.path);
   const codes = (await integrity.scan()).map((issue) => issue.code);
   assert.ok(codes.includes("orphan-task"));
 });

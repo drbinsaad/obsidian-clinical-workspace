@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.3.5] - 2026-08-07
+
+Independent re-review patch release.
+
+### Fixed
+
+- An interrupted root-folder move in a newly scaffolded, record-free workspace
+  now resolves back to the source and clears its recovery marker instead of
+  making every future workspace activation fail.
+- Ribbon and command activation failures now appear in a Notice rather than
+  becoming silent unhandled promise rejections.
+- Text normalization strips directionality controls used for visual spoofing
+  while preserving the orthographically significant ZWNJ and ZWJ characters
+  used by Persian and other Arabic-script languages.
+- Discharge errors for unreadable task notes no longer display user-authored
+  filenames that could contain a patient name; they direct the user to the
+  privacy-scoped integrity check instead.
+- Patient identity correction and linked-label updates now run under one lock,
+  preventing concurrent edits from leaving mixed labels.
+
+### Changed
+
+- New records use schema version 3, documenting the existing
+  `merge_in_progress` recovery field. Older records continue to load unchanged.
+- The Obsidian test stub now models `cachedRead` as an independently cached
+  snapshot and invalidates it after writes, so stale-cache assumptions are
+  regression-testable.
+- Repeated list and workspace refreshes reuse parsed records only when the
+  exact note content is unchanged, removing repeat YAML parsing without making
+  clinical decisions depend on asynchronous metadata-cache timing.
+- Community verification ignores macOS AppleDouble `._*` sidecars and reports
+  the real TypeScript source count on exFAT checkouts.
+
 ## [0.3.4] - 2026-08-07
 
 Independent-review remediation release.

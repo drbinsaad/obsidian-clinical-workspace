@@ -586,40 +586,42 @@ export class ClinicalService {
     patientId: string,
     input: PatientIdentityInput
   ): Promise<RecordWithPath<PatientRecord>> {
-    const errors = validatePatientIdentityInput(input);
-    if (errors.length) throw new Error(errors.join(" "));
-    const patient = await this.repository.findById<PatientRecord>("patient", patientId);
-    if (!patient) throw new Error("Patient was not found.");
+    return this.repository.withLock(`patient-identity:${patientId}`, async () => {
+      const errors = validatePatientIdentityInput(input);
+      if (errors.length) throw new Error(errors.join(" "));
+      const patient = await this.repository.findById<PatientRecord>("patient", patientId);
+      if (!patient) throw new Error("Patient was not found.");
 
-    const mrn = normalizeMrn(input.mrn);
-    const patientName = normalizeText(input.patientName);
-    const phone = normalizePhone(input.phone);
+      const mrn = normalizeMrn(input.mrn);
+      const patientName = normalizeText(input.patientName);
+      const phone = normalizePhone(input.phone);
 
-    if (mrn && mrnMatchKey(mrn) !== mrnMatchKey(patient.record.mrn)) {
-      const clash = await this.repository.findPatientByMrn(mrn);
-      if (clash && clash.record.id !== patientId) {
-        throw new Error("Another patient already has this MRN. Merge the two records instead.");
+      if (mrn && mrnMatchKey(mrn) !== mrnMatchKey(patient.record.mrn)) {
+        const clash = await this.repository.findPatientByMrn(mrn);
+        if (clash && clash.record.id !== patientId) {
+          throw new Error("Another patient already has this MRN. Merge the two records instead.");
+        }
       }
-    }
 
-    const updated = await this.repository.update<PatientRecord>(patient.path, {
-      mrn,
-      mrn_status: mrnStatus(mrn),
-      patient_name: patientName,
-      phone,
-      phone_status: phoneStatus(phone)
+      const updated = await this.repository.update<PatientRecord>(patient.path, {
+        mrn,
+        mrn_status: mrnStatus(mrn),
+        patient_name: patientName,
+        phone,
+        phone_status: phoneStatus(phone)
+      });
+      await this.repointPatientLinks(patientId, updated);
+      await this.repository.createEvent({
+        action: "patient-identity-updated",
+        patientId,
+        targetId: patientId,
+        targetEntity: "patient",
+        summary: "Patient identity corrected",
+        previousState: patient.record.mrn ? "mrn recorded" : "mrn missing",
+        newState: mrn ? "mrn recorded" : "mrn missing"
+      });
+      return updated;
     });
-    await this.repointPatientLinks(patientId, updated);
-    await this.repository.createEvent({
-      action: "patient-identity-updated",
-      patientId,
-      targetId: patientId,
-      targetEntity: "patient",
-      summary: "Patient identity corrected",
-      previousState: patient.record.mrn ? "mrn recorded" : "mrn missing",
-      newState: mrn ? "mrn recorded" : "mrn missing"
-    });
-    return updated;
   }
 
   /** Counts what a merge would move, so the user can confirm before it runs. */
@@ -738,9 +740,8 @@ export class ClinicalService {
         unreadableEpisodeId === null || unreadableEpisodeId === episodeId
     );
     if (relevantUnreadable.length) {
-      const paths = relevantUnreadable.map(({ path }) => path).join(", ");
       throw new Error(
-        `${relevantUnreadable.length} task note${relevantUnreadable.length === 1 ? "" : "s"} could not be read and may belong to this episode, so open work cannot be confirmed. Repair: ${paths}`
+        `${relevantUnreadable.length} task note${relevantUnreadable.length === 1 ? "" : "s"} could not be read and may belong to this episode, so open work cannot be confirmed. Run the clinical data integrity check and repair unreadable task notes before discharging.`
       );
     }
 
