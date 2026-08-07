@@ -7,18 +7,17 @@
  *
  * YAML behaviour mirrors what Obsidian actually writes, verified against records
  * produced by the plugin in a real vault: numeric-looking strings are quoted,
- * dates are not, and everything reads back as a string. That is js-yaml's
- * CORE_SCHEMA, not its default schema.
+ * dates are not, and everything reads back as a string. The YAML core schema
+ * reproduces those semantics without applying timestamp coercion.
  */
-// Named imports: js-yaml v4 is CommonJS and exposes no ESM default export.
-import { CORE_SCHEMA, dump, load } from "js-yaml";
+import { parse, stringify } from "yaml";
 
 export function parseYaml(text: string): unknown {
-  return load(text, { schema: CORE_SCHEMA });
+  return parse(text, { schema: "core" });
 }
 
 export function stringifyYaml(value: unknown): string {
-  return dump(value, { schema: CORE_SCHEMA, lineWidth: -1 });
+  return stringify(value, { schema: "core", lineWidth: 0 });
 }
 
 export function normalizePath(path: string): string {

@@ -49,7 +49,7 @@ test("dates read back as strings, not Date objects", async () => {
 });
 
 test("a YAML writer that yields Date objects is coerced back into strings", () => {
-  // What js-yaml's default schema produces for an unquoted `due_date: 2026-08-03`.
+  // Some YAML timestamp schemas produce this for an unquoted `due_date: 2026-08-03`.
   assert.equal(coerceFrontmatterValue("due_date", new Date("2026-08-03T00:00:00.000Z")), "2026-08-03");
   assert.equal(
     coerceFrontmatterValue("created_at", new Date("2026-08-03T13:15:30.951Z")),
