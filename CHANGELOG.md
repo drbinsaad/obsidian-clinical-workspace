@@ -9,6 +9,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.3.0] - 2026-08-05
+
+Two further adversarial reviews, and the fixes for what they found. The theme
+of this release is that fixes introduce defects: of the findings in the second
+review, 15 were regressions from fixes made earlier the same day. Every fix
+below carries a test that fails against the build before it.
+
+### Fixed — clinical correctness
+
+- A task could be filed under one patient while its episode belonged to
+  another. The episode owns that relationship and it is now enforced on
+  creation, for procedures as well as tasks.
+- Nothing detected such a mismatch after the fact. Integrity gains
+  `mismatched-task-patient` and `mismatched-procedure-patient`.
+- Changing only a task's due date created a second open task instead of
+  rescheduling the first.
+- Clearing an episode's next action left an open task behind while the card
+  showed nothing outstanding.
+- Changing an episode's priority could revert, because the task created
+  alongside it was built from a record captured before the save.
+- Adding a task rewrote the episode's priority, so a routine task silently
+  downgraded an urgent episode. Priority is a judgement about the patient,
+  not a property of the newest task.
+- An episode now points at its most imminent outstanding task rather than
+  whichever was added last, which made "the task this episode raised"
+  ambiguous.
+- Superseding a task no longer cancels it before its replacement exists, and
+  identifies it by idempotency key rather than by wording — so a repeat
+  deliberately scheduled for a later date is left alone.
+- `completeProcedure` validates the patient and episode before writing,
+  rather than after.
+
+### Fixed — folder migration
+
+- An interrupted move could resolve to an empty folder and report an empty
+  caseload. Reconciliation now runs before the folder structure is created,
+  and looks for records rather than for any markdown.
+- The recovery marker was erased by any unrelated settings change.
+- Moving the folder overwrote customised database views and the home note.
+
+### Fixed — mobile
+
+- Obsidian's mobile toolbar floats above the safe-area inset, so the floating
+  action button sat underneath it and the last section of every tab was cut off.
+- Modal actions were pinned mid-form on a phone, leaving five of nine fields
+  unreachable. The modal is now a column with its own scrolling body.
+- Card buttons had no visible chrome on mobile and read as plain text.
+- The floating action button covered the Discharge control on a short list.
+- An empty date field renders as nothing at all on iOS.
+
+### Removed
+
+- The NotePlan importer. The migration was done another way, and the importer
+  fabricated patients from any four-digit number — a note titled
+  "# 2024 - Q3 Retrospective" became a patient with MRN 2024 and
+  `mrn_status: confirmed`. Code that writes clinical records should not sit
+  unused in the tree.
+
+### Added
+
+- `npm run install:vault` — installs a build into a vault, refusing a
+  development build unless `--allow-dev` is passed.
+
 ## [0.2.0] - 2026-08-04
 
 Adds plugin settings and a configurable clinical folder, then fixes what an
