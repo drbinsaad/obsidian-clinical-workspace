@@ -199,7 +199,7 @@ export class ClinicalWorkspaceView extends ItemView {
     titles.createEl("h2", { text: "Clinical Workspace", cls: "clinical-workspace-title" });
     titles.createDiv({ text: "Local-first patient workflow", cls: "clinical-workspace-subtitle" });
     const refresh = header.createEl("button", {
-      attr: { "aria-label": "Refresh clinical workspace" },
+      attr: { "aria-label": "Refresh Clinical Workspace" },
       cls: "clickable-icon clinical-refresh-button"
     });
     setIcon(refresh, "refresh-cw");
@@ -245,7 +245,7 @@ export class ClinicalWorkspaceView extends ItemView {
     this.selectTab(next);
     window.setTimeout(() => {
       const target = this.contentEl.querySelector(`#clinical-tab-${next}`);
-      if (target instanceof HTMLElement) target.focus();
+      if (target?.instanceOf(HTMLElement)) target.focus();
     }, 0);
   }
 
@@ -334,7 +334,7 @@ export class ClinicalWorkspaceView extends ItemView {
     const databaseCard = databases.createDiv({ cls: "clinical-card" });
     databaseCard.createEl("h4", { text: "Structured views" });
     databaseCard.createEl("p", {
-      text: "Open the native Patients, Episodes, Tasks, or Surgery Logbook database.",
+      text: "Open the native patients, episodes, tasks, or surgery logbook database.",
       cls: "clinical-card-meta"
     });
     const databaseActions = databaseCard.createDiv({ cls: "clinical-card-actions" });
@@ -667,7 +667,7 @@ export class ClinicalWorkspaceView extends ItemView {
       return;
     }
     if (abstract.extension === "base" && !this.basesAvailable()) {
-      new Notice("Enable the core Bases plugin in Settings to open database views.", 7000);
+      new Notice("Enable the core Bases plugin in settings to open database views.", 7000);
       return;
     }
     await this.app.workspace.getLeaf(false).openFile(abstract);

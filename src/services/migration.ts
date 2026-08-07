@@ -2,6 +2,7 @@ import { App, normalizePath, TFile, TFolder } from "obsidian";
 import { baseFiles, homeNote } from "../data/bases";
 import { isUntouchedBase, isUntouchedHome } from "../data/scaffold";
 import { allClinicalFolders, clinicalFolder, clinicalRootFolder } from "../data/paths";
+import { markdownFilesInFolder } from "../data/vault-scope";
 import { normalizeFolderPath, validateRootFolder } from "../domain/settings";
 
 export interface MigrationPlan {
@@ -52,7 +53,7 @@ export class MigrationService {
       return { from, to, files: 0, blocked: "The new folder cannot sit inside the current one." };
     }
 
-    const files = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(`${from}/`)).length;
+    const files = markdownFilesInFolder(this.app.vault, from).length;
     return { from, to, files, blocked: null };
   }
 
@@ -122,7 +123,7 @@ export class MigrationService {
    * broken caseload.
    */
   async countDanglingLinks(from: string, to: string): Promise<number> {
-    const files = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(`${to}/`));
+    const files = markdownFilesInFolder(this.app.vault, to);
     let dangling = 0;
     for (const file of files) {
       const content = await this.app.vault.read(file);

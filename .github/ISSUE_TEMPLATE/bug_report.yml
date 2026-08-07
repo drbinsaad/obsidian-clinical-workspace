@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a reproducible Clinical Workspace problem using synthetic data only.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not include patient information.** Use fictional names and synthetic `9000...` MRNs. Report security problems privately through the repository Security tab.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: This report contains no real patient identifiers, screenshots, clinical text or vault files.
+          required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Clinical Workspace version
+      placeholder: 0.3.1
+    validations:
+      required: true
+  - type: input
+    id: obsidian-version
+    attributes:
+      label: Obsidian version and platform
+      placeholder: Obsidian 1.13.1, iOS
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Use only synthetic records.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true

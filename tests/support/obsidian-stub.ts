@@ -37,7 +37,11 @@ export class TFile extends TAbstractFile {
   }
 }
 
-export class TFolder extends TAbstractFile {}
+export class TFolder extends TAbstractFile {
+  constructor(path: string, public children: TAbstractFile[] = []) {
+    super(path);
+  }
+}
 
 const FRONTMATTER = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
@@ -55,8 +59,24 @@ export class Vault {
   getAbstractFileByPath(path: string): TAbstractFile | null {
     const key = normalizePath(path);
     if (this.files.has(key)) return new TFile(key);
-    if (this.folders.has(key)) return new TFolder(key);
+    if (this.folders.has(key)) return this.folderTree(key);
     return null;
+  }
+
+  private folderTree(path: string): TFolder {
+    const prefix = `${path}/`;
+    const children: TAbstractFile[] = [];
+    for (const folder of this.folders) {
+      if (!folder.startsWith(prefix)) continue;
+      const relative = folder.slice(prefix.length);
+      if (relative && !relative.includes("/")) children.push(this.folderTree(folder));
+    }
+    for (const file of this.files.keys()) {
+      if (!file.startsWith(prefix)) continue;
+      const relative = file.slice(prefix.length);
+      if (relative && !relative.includes("/")) children.push(new TFile(file));
+    }
+    return new TFolder(path, children);
   }
 
   getMarkdownFiles(): TFile[] {

@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.3.1] - 2026-08-07
+
+Community-review readiness and privacy-scope hardening.
+
+### Added
+
+- Obsidian's declarative settings API, including settings-search metadata for
+  identity, workflow defaults, safety, storage and privacy controls.
+- Strict Obsidian community linting and a reviewer-style publication preflight.
+- A regression test proving clinical scans ignore unrelated vault folders.
+- BRAT, manual-install and future Community-directory instructions.
+- Contribution and issue-reporting templates that prohibit patient data.
+
+### Changed
+
+- Runtime record and integrity scans now recurse only through the configured
+  clinical root instead of enumerating every Markdown file in the vault.
+- The folder-migration action uses Obsidian's current destructive-button API.
+- Command IDs and names follow Obsidian's namespace and sentence-case rules.
+- Unsafe YAML and settings values are narrowed before reaching typed code.
+
+### Security
+
+- The release preflight rejects vault-wide enumeration, network access,
+  clipboard access, deprecated settings APIs, dynamic code execution and unsafe
+  HTML assignment.
+
 ## [0.3.0] - 2026-08-05
 
 Two further adversarial reviews, and the fixes for what they found. The theme

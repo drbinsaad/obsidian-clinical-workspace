@@ -4,6 +4,17 @@ A mobile-first, local-first workflow plugin for personal clinical follow-up and 
 
 > This is a personal workflow aid, not an EHR/EMR, prescribing system, diagnostic system, or autonomous clinical decision-support tool. Follow institutional privacy, retention, backup, and device-management policy before storing identifiable patient information. See [SECURITY.md](SECURITY.md) for the threat model and what this plugin deliberately does not provide.
 
+## Separate plugin and vault boundary
+
+Clinical Workspace and [Knowledge Base Command Center](https://github.com/drbinsaad/knowledge-base-command-center) are independent Obsidian plugins:
+
+| Plugin | Plugin ID | Purpose |
+|---|---|---|
+| Clinical Workspace | `clinical-workspace` | Personal clinical follow-up, tasks, episodes and surgery logbook |
+| Knowledge Base Command Center | `ent-vault-command-center` | Visual organization and note creation for a knowledge vault |
+
+They have different repositories, release histories, settings and plugin folders. A vault holding identifiable clinical records should contain only the minimum institutionally approved plugins. Do not install a general vault-indexing plugin in that vault unless your information-governance policy explicitly permits it.
+
 ## Mobile workflow
 
 - **Today** — overdue tasks, tasks due today, undated open work, active inpatients, and episode counts.
@@ -12,7 +23,46 @@ A mobile-first, local-first workflow plugin for personal clinical follow-up and 
 - **Surgery** — OR booking queue plus completed surgery logbook; optional follow-up is only requested when enabled.
 - **More** — native Bases, patient records with identity editing and merge, archive/restore, and integrity checking.
 
-The commands **Open Clinical Workspace** and **Add patient episode** can be added to the Obsidian mobile toolbar or triggered from the command palette.
+The commands **Open workspace** and **Add patient episode** can be added to the Obsidian mobile toolbar or triggered from the command palette. Obsidian automatically displays them under the Clinical Workspace plugin name.
+
+## Installation
+
+Clinical Workspace requires Obsidian 1.13.0 or later and supports desktop and mobile.
+
+### BRAT beta installation
+
+Until the Community directory listing is approved:
+
+1. Install and enable **BRAT** from Obsidian's Community plugins browser.
+2. Open the command palette and run **BRAT: Add a beta plugin for testing**.
+3. Enter `drbinsaad/obsidian-clinical-workspace`.
+4. Enable **Clinical Workspace** under **Settings → Community plugins**.
+
+[Install Clinical Workspace with BRAT](obsidian://brat?plugin=https://github.com/drbinsaad/obsidian-clinical-workspace)
+
+BRAT can check for releases on startup or through **BRAT: Check for updates to all beta plugins and UPDATE**.
+
+### Community directory
+
+After approval, install from **Settings → Community plugins → Browse**, search for **Clinical Workspace**, then select **Install** and **Enable**. Future stable releases appear under **Community plugins → Check for updates**.
+
+### Manual installation
+
+Download `main.js`, `manifest.json` and `styles.css` from the same GitHub release and place them in:
+
+```text
+<vault>/.obsidian/plugins/clinical-workspace/
+```
+
+Restart Obsidian, then enable Clinical Workspace under Community plugins. Never copy development builds into a vault holding real patient information.
+
+## First-use safety checklist
+
+- Use a dedicated test vault and synthetic `9000...` MRNs first.
+- Enable **Confirm before discharge** and **Run integrity check on first open**.
+- Test the complete workflow before considering identifiable information.
+- Confirm institutional approval for the device, vault location, synchronization, retention and backup route.
+- Run **Clinical Workspace: Run clinical data integrity check** after any sync conflict.
 
 ## Settings
 
@@ -69,9 +119,9 @@ Patient ──< Episode ──< Task
 
 ### Known limitations
 
-- Nothing has been tested on iOS. The layout has been measured at iPhone
-  viewports and the plugin uses only mobile-safe APIs, but no build has run on a
-  device.
+- The mobile layout has been exercised and corrected using a real iPhone, and
+  the plugin uses only mobile-safe APIs. Continue to validate the complete
+  workflow with synthetic records on every device and Obsidian version you use.
 - Duplicate protection is per-device. Two devices editing before sync converges can still produce duplicates — run the integrity check after any conflict.
 - Multi-file operations are not transactional. A failure part-way leaves the earlier writes in place; the integrity check reports what it can find.
 - Audit notes are best-effort. A failed audit write is reported but does not roll back the clinical action.

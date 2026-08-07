@@ -1,6 +1,7 @@
-import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
 import { clinicalRootFolder, setClinicalRoot } from "./data/paths";
 import { ClinicalRepository } from "./data/repository";
+import { markdownFilesInFolder } from "./data/vault-scope";
 import { ClinicalService } from "./services/clinical-service";
 import { IntegrityService } from "./services/integrity";
 import { MigrationService, type MigrationMarker, type MigrationResult } from "./services/migration";
@@ -56,8 +57,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "open-clinical-workspace",
-      name: "Open Clinical Workspace",
+      id: "open-workspace",
+      name: "Open workspace",
       callback: () => void this.activateWorkspace()
     });
     this.addCommand({
@@ -105,7 +106,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    const stored = await this.loadData();
+    const stored = (await this.loadData()) as unknown;
     this.settings = normalizeSettings(stored, {
       careSettings: CARE_SETTINGS,
       pathways: PATHWAYS,
@@ -176,8 +177,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // otherwise look occupied — which is the exact failure this is here to prevent.
     const RECORD_FOLDERS = ["Patients", "Episodes", "Tasks", "Procedures"];
     const holdsRecords = (root: string) =>
-      this.app.vault
-        .getMarkdownFiles()
+      markdownFilesInFolder(this.app.vault, root)
         .some((file) => RECORD_FOLDERS.some((folder) => file.path.startsWith(`${root}/${folder}/`)));
     const actual = holdsRecords(marker.to) ? marker.to : holdsRecords(marker.from) ? marker.from : null;
     if (actual && actual !== this.settings.rootFolder) {
@@ -294,7 +294,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       // developer console, because the records they describe are identifiable.
       new IntegrityReportModal(this.app, issues, (path) => {
         const file = this.app.vault.getAbstractFileByPath(path);
-        if (file) void this.app.workspace.getLeaf(false).openFile(file as never);
+        if (file instanceof TFile) void this.app.workspace.getLeaf(false).openFile(file);
       }).open();
     } catch (error) {
       new Notice(error instanceof Error ? error.message : "Integrity check failed.", 7000);

@@ -1,13 +1,10 @@
 import type {
-  CareSetting,
   EpisodeRecord,
   MrnStatus,
   NewEpisodeInput,
   NewTaskInput,
-  Pathway,
   PatientIdentityInput,
   PhoneStatus,
-  Priority,
   TaskRecord
 } from "./types";
 import { CURRENT_SCHEMA_VERSION } from "./types";
@@ -27,7 +24,13 @@ export function todayIso(): string {
 }
 
 export function normalizeText(value: unknown): string {
-  return String(value ?? "")
+  const text =
+    typeof value === "string"
+      ? value
+      : typeof value === "number" || typeof value === "boolean" || typeof value === "bigint"
+        ? String(value)
+        : "";
+  return text
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -79,7 +82,7 @@ export function isIsoDate(value: unknown): boolean {
 
 export function createId(prefix: string): string {
   const bytes = new Uint8Array(10);
-  globalThis.crypto.getRandomValues(bytes);
+  crypto.getRandomValues(bytes);
   const token = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
   return `${prefix}-${token}`;
 }
@@ -125,7 +128,7 @@ export function displayPhone(phone: string): string {
   return phone || "NFN";
 }
 
-export function pathwayLabel(pathway: Pathway | string): string {
+export function pathwayLabel(pathway: string): string {
   const labels: Record<string, string> = {
     assessment: "Assessment",
     "or-booking": "OR Booking",
@@ -137,13 +140,13 @@ export function pathwayLabel(pathway: Pathway | string): string {
   return labels[pathway] ?? "Unknown pathway";
 }
 
-export function careSettingLabel(value: CareSetting | string): string {
+export function careSettingLabel(value: string): string {
   if (value === "inpatient") return "Inpatient";
   if (value === "outpatient") return "Outpatient";
   return "Unknown setting";
 }
 
-export function priorityLabel(value: Priority | string): string {
+export function priorityLabel(value: string): string {
   const text = normalizeText(value);
   if (!text) return "Unknown";
   return text.charAt(0).toUpperCase() + text.slice(1);
