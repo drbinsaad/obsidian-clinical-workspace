@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.3.3] - 2026-08-07
+
+### Changed
+
+- Replaced the direct `js-yaml` development dependency with the maintained
+  `yaml` package recommended by the Obsidian Community source-code review.
+- Preserved Obsidian-like core-schema parsing and stringification in the test
+  harness, including quoted identifiers with leading zeroes.
+
 ## [0.3.2] - 2026-08-07
 
 ### Security
