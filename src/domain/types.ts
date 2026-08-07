@@ -72,8 +72,10 @@ export type PatientStatus = (typeof PATIENT_STATUSES)[number];
  * 1 — initial release.
  * 2 — episodes remember the pathway they held before archiving so restore is
  *     non-destructive; patients carry `merged_into` for the merge workflow.
+ * 3 — patients carry `merge_in_progress` so interrupted multi-note merges are
+ *     explicit and safely retryable.
  */
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 export interface BaseRecord {
   schema_version: number;

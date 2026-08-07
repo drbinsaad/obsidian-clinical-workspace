@@ -110,8 +110,8 @@ test("migrating the folder does not overwrite a customised base or home note", a
     await service.createEpisode(episodeInput());
     const basePath = "Clinical Workspace/Bases/Patients.base";
     const homePath = "Clinical Workspace/00 Home/Clinical Workspace.md";
-    app.vault.files.set(basePath, 'filters:\n  and:\n    - \'file.inFolder("Clinical Workspace/Patients")\'\n# my own notes\n');
-    app.vault.files.set(homePath, "# Clinical Workspace\n\nMy own prose about how I run clinic.\n");
+    app.vault.writeRaw(basePath, 'filters:\n  and:\n    - \'file.inFolder("Clinical Workspace/Patients")\'\n# my own notes\n');
+    app.vault.writeRaw(homePath, "# Clinical Workspace\n\nMy own prose about how I run clinic.\n");
 
     await new MigrationService(app as never).run("Ward Records");
     setClinicalRoot("Ward Records");

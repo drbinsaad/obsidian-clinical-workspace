@@ -62,6 +62,8 @@ class KeyedWriteQueue {
 
 export class ClinicalRepository {
   private readonly queue = new KeyedWriteQueue();
+  /** Parsed records keyed by the exact cachedRead content that produced them. */
+  private readonly parsedRecords = new Map<string, { content: string; record: ClinicalRecord | null }>();
   /** Recorded as the actor on audit notes; set from settings on load. */
   private actor = "local-user";
 
@@ -69,6 +71,20 @@ export class ClinicalRepository {
 
   setActor(actor: string): void {
     this.actor = actor.trim() || "local-user";
+  }
+
+  /** Drops memoized YAML after Obsidian reports a vault change for this path. */
+  invalidatePath(path: string): void {
+    this.parsedRecords.delete(normalizePath(path));
+  }
+
+  private parseRecord(path: string, content: string): ClinicalRecord | null {
+    const normalized = normalizePath(path);
+    const cached = this.parsedRecords.get(normalized);
+    if (cached?.content === content) return cached.record;
+    const record = parseClinicalRecord(content);
+    this.parsedRecords.set(normalized, { content, record });
+    return record;
   }
 
   /**
@@ -180,7 +196,7 @@ export class ClinicalRepository {
     const content = fresh
       ? await this.app.vault.read(abstract)
       : await this.app.vault.cachedRead(abstract);
-    const record = parseClinicalRecord(content);
+    const record = this.parseRecord(abstract.path, content);
     return record ? { record: record as T, path: abstract.path } : null;
   }
 
@@ -236,7 +252,7 @@ export class ClinicalRepository {
     const results = await Promise.all(
       files.map(async (file) => {
         const content = await this.app.vault.cachedRead(file);
-        const record = parseClinicalRecord(content);
+        const record = this.parseRecord(file.path, content);
         if (record?.entity === entity) return null;
         return {
           path: file.path,

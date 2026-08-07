@@ -11,7 +11,7 @@ async function sourceFiles(folder) {
   for (const entry of entries) {
     const target = path.join(folder, entry.name);
     if (entry.isDirectory()) files.push(...(await sourceFiles(target)));
-    else if (entry.isFile() && entry.name.endsWith(".ts")) files.push(target);
+    else if (entry.isFile() && !entry.name.startsWith("._") && entry.name.endsWith(".ts")) files.push(target);
   }
   return files;
 }

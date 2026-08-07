@@ -47,6 +47,8 @@ const FRONTMATTER = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 export class Vault {
   readonly files = new Map<string, string>();
   readonly folders = new Set<string>();
+  /** Snapshot used by cachedRead; intentionally separate from the backing map. */
+  private readonly readCache = new Map<string, string>();
   /** Artificial await between read and write, used to expose races in tests. */
   latency = 0;
 
@@ -93,23 +95,54 @@ export class Vault {
     await this.tick();
     if (this.files.has(key)) throw new Error(`File already exists: ${key}`);
     this.files.set(key, content);
+    this.readCache.delete(key);
     return new TFile(key);
   }
 
   async read(file: TFile): Promise<string> {
     await this.tick();
-    const content = this.files.get(normalizePath(file.path));
+    const key = normalizePath(file.path);
+    const content = this.files.get(key);
     if (content === undefined) throw new Error(`File not found: ${file.path}`);
+    this.readCache.set(key, content);
     return content;
   }
 
   async cachedRead(file: TFile): Promise<string> {
-    return this.read(file);
+    await this.tick();
+    const key = normalizePath(file.path);
+    const cached = this.readCache.get(key);
+    if (cached !== undefined) return cached;
+    const content = this.files.get(key);
+    if (content === undefined) throw new Error(`File not found: ${file.path}`);
+    this.readCache.set(key, content);
+    return content;
   }
 
   async modify(file: TFile, content: string): Promise<void> {
     await this.tick();
-    this.files.set(normalizePath(file.path), content);
+    const key = normalizePath(file.path);
+    this.files.set(key, content);
+    this.readCache.delete(key);
+  }
+
+  /** Models Obsidian invalidating cachedRead after a vault or file-manager write. */
+  invalidateCachedRead(path: string): void {
+    this.readCache.delete(normalizePath(path));
+  }
+
+  /** Test helper for an external edit after Obsidian has delivered its change event. */
+  writeRaw(path: string, content: string): void {
+    const key = normalizePath(path);
+    this.files.set(key, content);
+    this.invalidateCachedRead(key);
+  }
+
+  /** Test helper for an externally delivered deletion. */
+  deleteRaw(path: string): void {
+    const key = normalizePath(path);
+    this.files.delete(key);
+    this.invalidateCachedRead(key);
   }
 
   on(): { id: string } {
@@ -122,6 +155,8 @@ export class Vault {
     if (content === undefined) throw new Error(`File not found: ${from}`);
     this.files.delete(normalizePath(from));
     this.files.set(normalizePath(to), content);
+    this.invalidateCachedRead(from);
+    this.invalidateCachedRead(to);
   }
 }
 
@@ -148,6 +183,8 @@ export class FileManager {
         const moved = path === from ? to : `${to}${path.slice(from.length)}`;
         this.vault.files.set(moved, this.vault.files.get(path)!);
         this.vault.files.delete(path);
+        this.vault.invalidateCachedRead(path);
+        this.vault.invalidateCachedRead(moved);
       }
     }
     for (const folder of [...this.vault.folders]) {
@@ -162,6 +199,7 @@ export class FileManager {
     for (const [path, content] of [...this.vault.files.entries()]) {
       if (!content.includes(`[[${from}/`)) continue;
       this.vault.files.set(path, content.split(`[[${from}/`).join(`[[${to}/`));
+      this.vault.invalidateCachedRead(path);
     }
   }
 
@@ -178,6 +216,7 @@ export class FileManager {
     const body = match ? content.slice(match[0].length) : content;
     await this.vault.tick();
     this.vault.files.set(key, `---\n${stringifyYaml(frontmatter).trimEnd()}\n---\n${body}`);
+    this.vault.invalidateCachedRead(key);
   }
 }
 
@@ -188,7 +227,10 @@ export class App {
 
 /* Declarations below exist only so modules that import them can be loaded. */
 export class Notice {
-  constructor(public message: string, public duration?: number) {}
+  static readonly history: Notice[] = [];
+  constructor(public message: string, public duration?: number) {
+    Notice.history.push(this);
+  }
 }
 export class Plugin {}
 export class ItemView {}

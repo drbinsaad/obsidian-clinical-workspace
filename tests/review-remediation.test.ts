@@ -13,14 +13,15 @@ import {
   taskIdempotencyKey
 } from "../src/domain/schema";
 import { DEFAULT_SETTINGS, type ClinicalSettings } from "../src/domain/settings";
-import type {
-  EpisodeRecord,
-  ProcedureRecord,
-  TaskRecord
+import {
+  CURRENT_SCHEMA_VERSION,
+  type EpisodeRecord,
+  type ProcedureRecord,
+  type TaskRecord
 } from "../src/domain/types";
 import { MigrationService, type MigrationResult } from "../src/services/migration";
 import { ClinicalSettingTab } from "../src/ui/settings-tab";
-import type { App as StubApp } from "./support/obsidian-stub";
+import { Notice as StubNotice, type App as StubApp } from "./support/obsidian-stub";
 import { episodeInput, harness, withLatency } from "./support/harness";
 
 test("a failed root rename rolls back the active root and preserves its recovery marker", async () => {
@@ -69,6 +70,56 @@ test("a failed root rename rolls back the active root and preserves its recovery
   } finally {
     setClinicalRoot(originalRoot);
   }
+});
+
+test("an interrupted move in a record-free workspace recovers to the source", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    const { app } = await harness();
+    const marker = { from: "Clinical Workspace", to: "Ward Records" };
+    let saved: Record<string, unknown> = {};
+    const plugin = new ClinicalWorkspacePlugin(app as unknown as App, {} as never) as unknown as {
+      app: StubApp;
+      settings: ClinicalSettings;
+      pendingMigrationMarker: unknown;
+      saveData: (data: unknown) => Promise<void>;
+      reconcileMigration: (stored: unknown) => Promise<void>;
+    };
+    plugin.app = app;
+    plugin.settings = { ...DEFAULT_SETTINGS, rootFolder: marker.to };
+    plugin.pendingMigrationMarker = { migrationInProgress: marker };
+    plugin.saveData = async (data) => {
+      saved = structuredClone(data) as Record<string, unknown>;
+    };
+    setClinicalRoot(marker.to);
+
+    await plugin.reconcileMigration({ migrationInProgress: marker });
+
+    assert.equal(plugin.settings.rootFolder, marker.from);
+    assert.equal(clinicalRootFolder(), marker.from);
+    assert.equal(plugin.pendingMigrationMarker, null);
+    assert.equal(saved.rootFolder, marker.from);
+    assert.equal(Object.hasOwn(saved, "migrationInProgress"), false);
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("workspace activation errors are shown instead of becoming unhandled rejections", async () => {
+  const app = new App();
+  const plugin = new ClinicalWorkspacePlugin(app, {} as never) as unknown as {
+    activateWorkspace: () => Promise<never>;
+    openWorkspace: () => Promise<void>;
+  };
+  plugin.activateWorkspace = async () => {
+    throw new Error("Simulated read-only vault");
+  };
+  StubNotice.history.length = 0;
+
+  await plugin.openWorkspace();
+
+  assert.equal(StubNotice.history.length, 1);
+  assert.equal(StubNotice.history[0]?.message, "Simulated read-only vault");
 });
 
 test("a post-rename link-audit failure cannot roll the plugin back to the old folder", async () => {
@@ -185,6 +236,38 @@ test("identity correction re-points every linked patient label", async () => {
   assert.ok(links.every((link) => link.includes("|Corrected Name]]")));
 });
 
+test("concurrent identity corrections leave one consistent linked label", async () => {
+  const { service, repository, app } = await harness();
+  const created = await service.createEpisode(
+    episodeInput({ patientName: "Original Name", nextAction: "Review result", dueDate: "2026-08-12" })
+  );
+
+  await withLatency(app, 2, () =>
+    Promise.all([
+      service.updatePatientIdentity(created.patient.record.id, {
+        mrn: created.patient.record.mrn,
+        patientName: "First Corrected Name",
+        phone: ""
+      }),
+      service.updatePatientIdentity(created.patient.record.id, {
+        mrn: created.patient.record.mrn,
+        patientName: "Final Corrected Name",
+        phone: ""
+      })
+    ])
+  );
+
+  const links = [
+    ...(await repository.list<EpisodeRecord>("episode")),
+    ...(await repository.list<TaskRecord>("task"))
+  ].map(({ record }) => record.patient);
+  assert.ok(links.every((link) => link.includes("|Final Corrected Name]]")));
+});
+
+test("new records use schema version 3 for merge recovery state", () => {
+  assert.equal(CURRENT_SCHEMA_VERSION, 3);
+});
+
 test("an unreadable task blocks only its own episode when attribution is recoverable", async () => {
   const { service, app } = await harness();
   const affected = await service.createEpisode(
@@ -194,16 +277,55 @@ test("an unreadable task blocks only its own episode when attribution is recover
     episodeInput({ caseName: "Unaffected", nextAction: "Call family", dueDate: "2026-08-13" })
   );
   await service.completeTask(unaffected.task!.record.id);
-  app.vault.files.set(
-    affected.task!.path,
+  const renamedTask = "Clinical Workspace/Tasks/Ahmed Alsynthetic - chase result.md";
+  app.vault.renameRaw(affected.task!.path, renamedTask);
+  app.vault.writeRaw(
+    renamedTask,
     `---\nentity: task\nid: [broken\nepisode_id: ${affected.episode.record.id}\n---\n`
   );
 
   await service.archiveEpisode(unaffected.episode.record.id, "Discharged");
   await assert.rejects(
     () => service.archiveEpisode(affected.episode.record.id, "Discharged"),
-    new RegExp(affected.task!.path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /integrity check/);
+      assert.doesNotMatch(error.message, /Ahmed Alsynthetic/);
+      assert.doesNotMatch(error.message, /Clinical Workspace\/Tasks/);
+      return true;
+    }
   );
+});
+
+test("cachedRead can be stale until a write invalidates the cache", async () => {
+  const app = new App() as unknown as StubApp;
+  const file = await app.vault.create("cache-test.md", "first");
+  assert.equal(await app.vault.cachedRead(file), "first");
+
+  // Direct map mutation models storage changing before Obsidian has delivered
+  // the event that invalidates cachedRead.
+  app.vault.files.set(file.path, "second");
+  assert.equal(await app.vault.cachedRead(file), "first");
+  assert.equal(await app.vault.read(file), "second");
+
+  await app.vault.modify(file, "third");
+  assert.equal(await app.vault.cachedRead(file), "third");
+});
+
+test("unchanged records reuse parsed YAML and changed content replaces it", async () => {
+  const { service, repository, app } = await harness();
+  const created = await service.createEpisode(episodeInput({ caseName: "Original case" }));
+  const first = (await repository.list<EpisodeRecord>("episode"))[0]!;
+  const second = (await repository.list<EpisodeRecord>("episode"))[0]!;
+  assert.equal(first.record, second.record);
+
+  const changed = app.vault.files
+    .get(created.episode.path)!
+    .replace(/^case: Original case$/m, "case: Updated case");
+  app.vault.writeRaw(created.episode.path, changed);
+  const third = (await repository.list<EpisodeRecord>("episode"))[0]!;
+  assert.notEqual(third.record, second.record);
+  assert.equal(third.record.case, "Updated case");
 });
 
 test("a colliding task hash in another episode cannot suppress new work", async () => {
@@ -277,6 +399,8 @@ test("wikilink labels cannot inject link syntax and bidi controls are stripped",
   const link = wikilink("Clinical Workspace/Episodes/EPI-test.md", "Review [[Private]] | #target ^block \\alias");
   assert.equal(link, "[[Clinical Workspace/Episodes/EPI-test|Review Private target block alias]]");
   assert.equal(normalizeText("a\u202Eb"), "ab");
+  assert.equal(normalizeText("می\u200Cرود Testpatient"), "می\u200Cرود Testpatient");
+  assert.equal(normalizeText("क्\u200Dष"), "क्\u200Dष");
 });
 
 test("Arabic-Indic identifiers are normalised to ASCII without losing leading zeroes", () => {

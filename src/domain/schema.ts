@@ -31,7 +31,10 @@ export function normalizeText(value: unknown): string {
         ? String(value)
         : "";
   return text
-    .replace(/\p{Cf}/gu, "")
+    // Strip only directionality controls used for visual spoofing. ZWNJ
+    // (U+200C) and ZWJ (U+200D) are orthographically significant in Persian
+    // and other Arabic-script languages and must be preserved.
+    .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
