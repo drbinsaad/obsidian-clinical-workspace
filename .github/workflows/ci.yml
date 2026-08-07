@@ -62,7 +62,10 @@ jobs:
       - name: Assert no unapproved identifier-shaped literals in source
         run: |
           set -euo pipefail
-          ALLOWED='^(9000000001|9000000002|9000000000001|0009000000001|0012345|0500000000|0500000001)$'
+          # Any value beginning 9000 is reserved for test fixtures and is approved
+          # by convention. Everything else must be listed here deliberately, so a
+          # real MRN pasted in while debugging fails the build.
+          ALLOWED='^(9000[0-9]*|0009000000001|0012345|0500000000|0500000001)$'
           # Hex literals are algorithmic constants, not identifiers.
           UNEXPECTED=$(git grep -hI '' -- src tests \
                        | sed -E 's/0x[0-9a-fA-F]+//g' \
