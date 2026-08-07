@@ -35,6 +35,9 @@ jobs:
       - name: Verify release artefacts
         run: npm run verify-release
 
+      - name: Verify Community review readiness
+        run: npm run verify-community
+
       - name: Assert the tag matches the manifest
         run: |
           set -euo pipefail

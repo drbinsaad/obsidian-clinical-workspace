@@ -44,6 +44,9 @@ jobs:
       - name: Verify release artefacts
         run: npm run verify-release
 
+      - name: Verify Community review readiness
+        run: npm run verify-community
+
       # A vault must never reach the repository. The .gitignore blocks it, but
       # a mistake there should fail the build rather than pass silently.
       - name: Assert no vault or clinical data is tracked

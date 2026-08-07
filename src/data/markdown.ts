@@ -56,7 +56,7 @@ export function parseFrontmatter(content: string): Record<string, unknown> | nul
   const match = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
   if (!match?.[1]) return null;
   try {
-    const parsed = parseYaml(match[1]);
+    const parsed = parseYaml(match[1]) as unknown;
     return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
   } catch {
     return null;
@@ -92,9 +92,9 @@ export function coerceFrontmatterValue(key: string, value: unknown): unknown {
     return DATE_ONLY_FIELDS.has(key) || iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
   }
   if (value === null || value === undefined) return "";
-  if (Array.isArray(value)) return value.map((item) => (item === null || item === undefined ? "" : String(item)));
+  if (Array.isArray(value)) return value.map((item) => safeText(item));
   if (typeof value === "number" || typeof value === "boolean") return value;
-  if (typeof value !== "string") return String(value);
+  if (typeof value !== "string") return safeText(value);
   if (DATE_ONLY_FIELDS.has(key)) {
     const normalized = normalizeIsoDate(value);
     // Preserve an unparseable value so the integrity check can report it.
@@ -102,6 +102,19 @@ export function coerceFrontmatterValue(key: string, value: unknown): unknown {
   }
   if (TIMESTAMP_FIELDS.has(key)) return value.trim();
   return value;
+}
+
+function safeText(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
 }
 
 export function coerceFrontmatter(frontmatter: Record<string, unknown>): Record<string, unknown> {

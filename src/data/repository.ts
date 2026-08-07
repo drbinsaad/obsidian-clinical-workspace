@@ -14,6 +14,7 @@ import { createId, mrnMatchKey, nowIso, SCHEMA_VERSION } from "../domain/schema"
 import { baseFiles, baseSourceFolders, homeNote } from "./bases";
 import { parseClinicalRecord, recordMarkdown, valueMatches } from "./markdown";
 import { isUntouchedBase, isUntouchedHome } from "./scaffold";
+import { markdownFilesInFolder } from "./vault-scope";
 import {
   allClinicalFolders,
   clinicalFolder,
@@ -177,12 +178,14 @@ export class ClinicalRepository {
       if (!(abstract instanceof TFile)) throw new Error(`Clinical record not found: ${normalized}`);
       const expected = { ...changes, updated_at: nowIso() };
       await this.app.fileManager.processFrontMatter(abstract, (frontmatter) => {
-        for (const [key, value] of Object.entries(expected)) frontmatter[key] = value;
+        const values = frontmatter as unknown as Record<string, unknown>;
+        for (const [key, value] of Object.entries(expected)) values[key] = value;
       });
       const verified = await this.read<T>(normalized);
       if (!verified) throw new Error(`Clinical record could not be read after update: ${normalized}`);
+      const verifiedValues = verified.record as unknown as Record<string, unknown>;
       for (const [key, value] of Object.entries(expected)) {
-        const actual = (verified.record as unknown as Record<string, unknown>)[key];
+        const actual = verifiedValues[key];
         if (!valueMatches(actual, value)) {
           throw new Error(`Clinical update verification failed for ${key} in ${normalized}.`);
         }
@@ -192,10 +195,7 @@ export class ClinicalRepository {
   }
 
   async list<T extends ClinicalRecord>(entity: EntityType): Promise<RecordWithPath<T>[]> {
-    const folder = `${folderForEntity(entity)}/`;
-    const files = this.app.vault
-      .getMarkdownFiles()
-      .filter((file) => file.path.startsWith(folder));
+    const files = markdownFilesInFolder(this.app.vault, folderForEntity(entity));
     const records = await Promise.all(files.map((file) => this.read<T>(file.path)));
     return records.filter((record): record is RecordWithPath<T> => Boolean(record?.record.entity === entity));
   }
@@ -211,8 +211,7 @@ export class ClinicalRepository {
    * from a list must also consult this.
    */
   async unreadablePaths(entity: EntityType): Promise<string[]> {
-    const folder = `${folderForEntity(entity)}/`;
-    const files = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(folder));
+    const files = markdownFilesInFolder(this.app.vault, folderForEntity(entity));
     const results = await Promise.all(
       files.map(async (file) => ((await this.read(file.path)) ? null : file.path))
     );

@@ -25,6 +25,9 @@ Expect an acknowledgement within 7 days.
   path that transmits vault content anywhere.
 - **No third-party runtime dependencies.** The bundle imports only the Obsidian
   API. Everything in `package.json` is a build-time or test-time dependency.
+- **Folder-scoped reads.** Runtime record and integrity scans begin at the
+  configured clinical root and recurse only through that folder. The plugin
+  does not enumerate unrelated vault files.
 - **No writes outside its own folder.** Files and folders are only ever created
   or modified under the configured clinical folder.
 - **Plugin settings hold no patient data.** `data.json` inside the plugin folder

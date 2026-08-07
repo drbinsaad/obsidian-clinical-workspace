@@ -62,13 +62,15 @@ function titleCase(value: string): string {
  */
 function labelControl(setting: Setting, name: string): Setting {
   const control = setting.settingEl.querySelector("input, select, textarea");
-  if (control instanceof HTMLElement) control.setAttribute("aria-label", name);
+  if (control?.instanceOf(HTMLElement)) control.setAttribute("aria-label", name);
   return setting;
 }
 
 function namedSetting(container: HTMLElement, name: string): Setting {
   const setting = new Setting(container).setName(name);
-  queueMicrotask(() => labelControl(setting, name));
+  queueMicrotask(() => {
+    labelControl(setting, name);
+  });
   return setting;
 }
 
@@ -182,7 +184,7 @@ export class NewEpisodeModal extends ClinicalModal<NewEpisodeInput> {
     namedSetting(form, "Case / reason").addText((field) => {
       field
         .setValue(this.input.caseName)
-        .setPlaceholder("e.g. Laryngomalacia follow-up")
+        .setPlaceholder("E.g. Laryngomalacia follow-up")
         .onChange((value) => (this.input.caseName = value));
     });
     namedSetting(form, "Care setting").addDropdown((field) => {
@@ -549,7 +551,7 @@ export class CancelTaskModal extends ClinicalModal<string> {
     );
     form.createEl("h3", { text: this.task.task });
     namedSetting(form, "Reason").addText((field) => {
-      field.setPlaceholder("e.g. No longer required").onChange((value) => (this.reason = value));
+      field.setPlaceholder("E.g. No longer required").onChange((value) => (this.reason = value));
     });
     this.addActions(this.contentEl);
   }
