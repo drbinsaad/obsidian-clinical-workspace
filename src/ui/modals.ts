@@ -107,9 +107,21 @@ export abstract class ClinicalModal<T> extends Modal {
       cls: "mod-cta"
     });
     submit.addEventListener("click", () => void this.handleSubmit(submit));
+    this.contentEl.addEventListener("keydown", (event) => {
+      const input = event.target as HTMLInputElement | null;
+      if (event.key !== "Enter" || event.isComposing || input?.tagName !== "INPUT") return;
+      if (!["text", "tel", "number", "search", "email", "url"].includes(input.type)) return;
+      event.preventDefault();
+      void this.handleSubmit(submit);
+    });
+    queueMicrotask(() => {
+      const first = this.contentEl.querySelector("input:not([disabled]), select:not([disabled]), textarea:not([disabled])");
+      if (first?.instanceOf(HTMLElement)) first.focus();
+    });
   }
 
   private async handleSubmit(button: HTMLButtonElement): Promise<void> {
+    if (button.disabled) return;
     button.disabled = true;
     this.errorEl?.hide();
     try {
@@ -380,7 +392,7 @@ export class PatientIdentityModal extends ClinicalModal<PatientIdentityInput> {
   onOpen(): void {
     const form = this.prepare(
       "Correct patient identity",
-      "Fix an MRN, name or phone number recorded against this patient. Episodes, tasks and procedures are unaffected."
+      "Fix an MRN, name or phone number recorded against this patient. Linked episode, task and procedure labels are updated automatically."
     );
     namedSetting(form, "MRN").setDesc("Numbers only; leading zeroes are preserved.").addText((field) => {
       field.setValue(this.input.mrn).setPlaceholder("MRN or leave blank").onChange((value) => (this.input.mrn = value));
@@ -404,6 +416,7 @@ export class PatientIdentityModal extends ClinicalModal<PatientIdentityInput> {
 /** Two-step merge: pick a surviving record, then confirm what will move. */
 export class MergePatientsModal extends Modal {
   private targetId = "";
+  private typedConfirmation = "";
 
   constructor(
     app: App,
@@ -464,6 +477,11 @@ export class MergePatientsModal extends Modal {
         void refresh();
       });
     });
+    namedSetting(form, "Type MERGE to confirm")
+      .setDesc("The source record is retired for audit and every linked record is re-pointed.")
+      .addText((field) => {
+        field.setPlaceholder("MERGE").onChange((value) => (this.typedConfirmation = value));
+      });
     void refresh();
 
     const errorEl = this.contentEl.createDiv({ cls: "clinical-modal-error", attr: { role: "alert", "aria-live": "assertive" } });
@@ -475,6 +493,11 @@ export class MergePatientsModal extends Modal {
     confirm.addEventListener("click", () => {
       void (async () => {
         if (!this.targetId) return;
+        if (this.typedConfirmation.trim().toUpperCase() !== "MERGE") {
+          errorEl.setText("Enter the confirmation word shown above.");
+          errorEl.show();
+          return;
+        }
         confirm.disabled = true;
         errorEl.hide();
         try {
@@ -486,6 +509,16 @@ export class MergePatientsModal extends Modal {
           confirm.disabled = false;
         }
       })();
+    });
+    this.contentEl.addEventListener("keydown", (event) => {
+      const input = event.target as HTMLInputElement | null;
+      if (event.key !== "Enter" || event.isComposing || input?.tagName !== "INPUT") return;
+      event.preventDefault();
+      confirm.click();
+    });
+    queueMicrotask(() => {
+      const first = this.contentEl.querySelector("select:not([disabled]), input:not([disabled])");
+      if (first?.instanceOf(HTMLElement)) first.focus();
     });
   }
 }

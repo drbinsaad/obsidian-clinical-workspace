@@ -31,12 +31,21 @@ export function normalizeText(value: unknown): string {
         ? String(value)
         : "";
   return text
+    .replace(/\p{Cf}/gu, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
+function normalizeArabicDigits(value: string): string {
+  return value.replace(/[\u0660-\u0669\u06F0-\u06F9]/g, (digit) => {
+    const code = digit.codePointAt(0) ?? 0;
+    const zero = code >= 0x06f0 ? 0x06f0 : 0x0660;
+    return String(code - zero);
+  });
+}
+
 export function normalizeMrn(value: unknown): string {
-  return normalizeText(value).replace(/[\s-]/g, "");
+  return normalizeArabicDigits(normalizeText(value)).replace(/[\s-]/g, "");
 }
 
 /**
@@ -49,7 +58,7 @@ export function mrnMatchKey(value: unknown): string {
 }
 
 export function normalizePhone(value: unknown): string {
-  return normalizeText(value).replace(/[^\d+]/g, "");
+  return normalizeArabicDigits(normalizeText(value)).replace(/[^\d+]/g, "");
 }
 
 export function normalizeComparable(value: unknown): string {

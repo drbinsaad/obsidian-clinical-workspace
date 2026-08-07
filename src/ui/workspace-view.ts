@@ -666,30 +666,7 @@ export class ClinicalWorkspaceView extends ItemView {
       new Notice(`File not found: ${path}`);
       return;
     }
-    if (abstract.extension === "base" && !this.basesAvailable()) {
-      new Notice("Enable the core Bases plugin in settings to open database views.", 7000);
-      return;
-    }
     await this.app.workspace.getLeaf(false).openFile(abstract);
-  }
-
-  /**
-   * Best-effort check for the core Bases plugin.
-   *
-   * `app.internalPlugins` is undocumented, so this is wrapped and defaults to
-   * "available" on any surprise: a wrong warning would be worse than letting
-   * Obsidian show its own error when the file opens.
-   */
-  private basesAvailable(): boolean {
-    try {
-      const internal = (this.app as unknown as {
-        internalPlugins?: { getEnabledPluginById?: (id: string) => unknown };
-      }).internalPlugins;
-      if (typeof internal?.getEnabledPluginById !== "function") return true;
-      return Boolean(internal.getEnabledPluginById("bases"));
-    } catch {
-      return true;
-    }
   }
 
   private patientFor(snapshot: ClinicalSnapshot, patientId: string): PatientRecord | undefined {

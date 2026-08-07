@@ -88,5 +88,11 @@ export function pathForRecord(entity: EntityType, id: string, root = clinicalRoo
 
 export function wikilink(path: string, label?: string): string {
   const extensionless = path.replace(/\.md$/i, "");
-  return label ? `[[${extensionless}|${label}]]` : `[[${extensionless}]]`;
+  const safeLabel = label
+    ?.replace(/[|#^\\]/g, " ")
+    .replaceAll("[", " ")
+    .replaceAll("]", " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return safeLabel ? `[[${extensionless}|${safeLabel}]]` : `[[${extensionless}]]`;
 }

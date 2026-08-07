@@ -15,12 +15,31 @@ export interface MigrationPlan {
 export interface MigrationResult extends MigrationPlan {
   /** Wikilinks still pointing at the old root after the move; must be empty. */
   danglingLinks: number;
+  /** True when the post-move link audit itself could not be completed. */
+  linkVerificationFailed: boolean;
 }
 
 /** Persisted across the rename so an interrupted migration can be reconciled. */
 export interface MigrationMarker {
   from: string;
   to: string;
+}
+
+/**
+ * Chooses the only safe root after an interrupted move.
+ *
+ * The destination wins only when it actually contains records. Merely existing
+ * is not evidence: first-run scaffolding can create an otherwise empty root.
+ * Returning `null` deliberately prevents callers from manufacturing a new
+ * empty workspace while the real location is still unknown.
+ */
+export function resolveMigrationRoot(
+  marker: MigrationMarker,
+  holdsRecords: (root: string) => boolean
+): string | null {
+  if (holdsRecords(marker.to)) return marker.to;
+  if (holdsRecords(marker.from)) return marker.from;
+  return null;
 }
 
 /**
@@ -110,7 +129,18 @@ export class MigrationService {
       );
     }
 
-    return { ...plan, danglingLinks: await this.countDanglingLinks(plan.from, plan.to) };
+    let danglingLinks = 0;
+    let linkVerificationFailed = false;
+    try {
+      danglingLinks = await this.countDanglingLinks(plan.from, plan.to);
+    } catch (error) {
+      linkVerificationFailed = true;
+      console.warn(
+        "Clinical Workspace: records moved, but their rewritten links could not be verified. Run the integrity check.",
+        error instanceof Error ? error.message : error
+      );
+    }
+    return { ...plan, danglingLinks, linkVerificationFailed };
   }
 
   /**

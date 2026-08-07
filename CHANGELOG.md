@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.3.4] - 2026-08-07
+
+Independent-review remediation release.
+
+### Fixed
+
+- A failed root-folder rename now restores the original active folder and keeps
+  its recovery marker through unrelated settings writes until reconciliation.
+- Concurrent identical episode submissions are serialised, and integrity now
+  reports duplicate active episodes.
+- Task and procedure duplicate detection is episode-scoped and verifies the
+  complete clinical tuple instead of trusting a 32-bit hash match.
+- Unreadable task notes block only their attributed episode; notes that cannot
+  be attributed still fail closed and report their repair path.
+- Correcting patient identity re-points the patient label on every linked
+  episode, task and procedure.
+- Date-only values derived from `Date` objects preserve the local calendar day.
+- Pending text settings are flushed when the settings pane closes, and settings
+  synced from another device are applied without restarting Obsidian.
+- Wikilink aliases reject link-control characters, bidirectional controls are
+  stripped, and Arabic-Indic MRN/phone digits are normalized to ASCII.
+- Completing a hand-edited task cannot reopen an archived, cancelled or
+  entered-in-error episode.
+
+### Added
+
+- Patient merges require typed confirmation, reject an already-merged target,
+  retain a retryable in-progress marker, and surface interrupted merges through
+  the integrity check.
+- Regression coverage for the independent review findings, including the real
+  plugin migration method and external-settings hook.
+- Linting on every pull request, a refresh debounce maximum wait, cached vault
+  reads, and a 44-pixel mobile refresh target.
+- iPhone manual-install and data-preserving uninstall documentation.
+
+### Security
+
+- Frontmatter coercion now uses a null-prototype object and ignores prototype-
+  mutating keys.
+- The undocumented internal core-plugin probe was removed.
+
 ## [0.3.3] - 2026-08-07
 
 ### Changed

@@ -32,6 +32,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Lint
+        run: npm run lint
+
       # Build before test: the suite asserts on dist/main.js to prove that
       # development tooling is compiled out of a release build. Testing first
       # made that assertion silently unreachable.
