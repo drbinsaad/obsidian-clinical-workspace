@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.3.2] - 2026-08-07
+
+### Security
+
+- Release assets now receive GitHub build-provenance attestations before they
+  are attached to the release, allowing Community reviewers and users to verify
+  that the published files were produced by this repository's workflow.
+
 ## [0.3.1] - 2026-08-07
 
 Community-review readiness and privacy-scope hardening.
