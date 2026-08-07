@@ -119,9 +119,19 @@ export class IntegrityService {
           path: patient.path
         });
       }
+      if (patient.record.merge_in_progress && !patient.record.merged_into) {
+        issues.push({
+          code: "half-merged-patient",
+          severity: "error",
+          message: "Patient merge stopped before every linked record was moved. Retry the same merge.",
+          recordId: patient.record.id,
+          path: patient.path
+        });
+      }
     }
 
     // --- Episodes -----------------------------------------------------------
+    const activeEpisodeKeys = new Map<string, typeof episodes>();
     for (const episode of episodes) {
       if (!patientIds.has(episode.record.patient_id)) {
         issues.push({
@@ -156,6 +166,24 @@ export class IntegrityService {
         ...this.checkEnum(episode.record.priority, PRIORITIES, "priority", episode.record.id, episode.path),
         ...this.checkEnum(episode.record.care_setting, CARE_SETTINGS, "care setting", episode.record.id, episode.path)
       );
+      if (!["archived", "cancelled", "entered-in-error"].includes(episode.record.status)) {
+        const key = `${episode.record.patient_id}\u0000${normalizeText(episode.record.case).toLocaleLowerCase()}`;
+        const current = activeEpisodeKeys.get(key) ?? [];
+        current.push(episode);
+        activeEpisodeKeys.set(key, current);
+      }
+    }
+    for (const matches of activeEpisodeKeys.values()) {
+      if (matches.length < 2) continue;
+      for (const match of matches) {
+        issues.push({
+          code: "duplicate-episode",
+          severity: "error",
+          message: `${matches.length} active episodes describe the same case for one patient. Reconcile the duplicate records.`,
+          recordId: match.record.id,
+          path: match.path
+        });
+      }
     }
 
     // --- Tasks --------------------------------------------------------------
@@ -182,6 +210,19 @@ export class IntegrityService {
           path: task.path
         });
       }
+      if (
+        taskEpisode &&
+        taskIsOpen(task.record) &&
+        ["archived", "cancelled", "entered-in-error"].includes(taskEpisode.record.status)
+      ) {
+        issues.push({
+          code: "open-task-on-closed-episode",
+          severity: "error",
+          message: "An open task is attached to an episode that cannot accept workflow changes.",
+          recordId: task.record.id,
+          path: task.path
+        });
+      }
       if (task.record.due_date && !isIsoDate(task.record.due_date)) {
         issues.push({
           code: "invalid-task-date",
@@ -196,9 +237,10 @@ export class IntegrityService {
         ...this.checkEnum(task.record.priority, PRIORITIES, "priority", task.record.id, task.path)
       );
       if (taskIsOpen(task.record)) {
-        const current = activeTaskKeys.get(task.record.idempotency_key) ?? [];
+        const identity = `${task.record.episode_id}\u0000${normalizeText(task.record.task).toLocaleLowerCase()}\u0000${task.record.due_date}`;
+        const current = activeTaskKeys.get(identity) ?? [];
         current.push(task);
-        activeTaskKeys.set(task.record.idempotency_key, current);
+        activeTaskKeys.set(identity, current);
       }
     }
     for (const matches of activeTaskKeys.values()) {

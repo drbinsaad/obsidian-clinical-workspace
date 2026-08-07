@@ -56,6 +56,20 @@ Download `main.js`, `manifest.json` and `styles.css` from the same GitHub releas
 
 Restart Obsidian, then enable Clinical Workspace under Community plugins. Never copy development builds into a vault holding real patient information.
 
+On iPhone or iPad, BRAT is the recommended route. For a manual installation,
+use the Files app to open the Obsidian vault, reveal its `.obsidian` folder, and
+place the same three release files in
+`.obsidian/plugins/clinical-workspace/`. Reopen Obsidian and enable the plugin.
+If the storage provider does not expose hidden folders, use BRAT instead.
+
+### Uninstalling
+
+Disable and remove Clinical Workspace under **Settings → Community plugins**.
+Removing the plugin deletes only its installed code and settings; it does **not**
+delete the configured clinical folder, patient records, episodes, tasks,
+procedures, event notes, Bases, or home note. Back up the vault and verify those
+notes independently before removing or moving any clinical data yourself.
+
 ## First-use safety checklist
 
 - Use a dedicated test vault and synthetic `9000...` MRNs first.
@@ -108,9 +122,9 @@ Patient ──< Episode ──< Task
 - Patient identity is reused by normalized MRN. MRNs that differ only by leading zeroes resolve to the same patient; the value as typed is what is displayed.
 - Missing MRN and phone remain explicit as `MRN needed` and `NFN` in the interface.
 - Creating a patient without an MRN prompts when an existing record shares the name, so duplicates are a decision rather than an accident.
-- Patient identity can be corrected, and two records can be merged. A merge re-points every episode, task and procedure and retires the source as `entered-in-error` — nothing is deleted.
+- Patient identity can be corrected, and linked labels update with it. Two records can be merged after typing `MERGE`; a recovery marker makes an interrupted merge visible to the integrity check. A completed merge re-points every episode, task and procedure and retires the source as `entered-in-error` — nothing is deleted.
 - Episode is the unit of care: care setting, pathway, priority, next action, due date, and status.
-- Open task duplicates are prevented with deterministic idempotency keys, including across concurrent submissions on one device.
+- Open task and procedure duplicates are prevented with episode-scoped deterministic keys plus full-value comparison, including across concurrent submissions on one device.
 - An episode cannot be archived while an open task remains. Tasks can be cancelled, so an episode is never permanently stuck.
 - Completing the last task changes the episode to `ready-to-close`.
 - Archive is a status, not a physical file move. Restore returns the episode to the pathway it held before archiving and keeps the discharge outcome.
@@ -134,7 +148,7 @@ npm install
 npm run check
 ```
 
-`npm run check` runs strict TypeScript checking, the test suite, and a production build into `dist/`.
+`npm run check` runs strict TypeScript checking, Obsidian Community linting, the test suite, and a production build into `dist/`.
 
 The default build output is the local `dist/` directory. The build does not install into or modify any Obsidian vault.
 

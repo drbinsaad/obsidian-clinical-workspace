@@ -22,7 +22,7 @@ function renderSetting(
 }
 
 export class ClinicalSettingTab extends PluginSettingTab {
-  private debounceTimers = new Map<string, number>();
+  private debounceTimers = new Map<string, { timer: number; run: () => void }>();
 
   constructor(
     app: App,
@@ -35,19 +35,24 @@ export class ClinicalSettingTab extends PluginSettingTab {
   /** Coalesces text-field writes so ordinary typing does not rewrite data.json repeatedly. */
   private debounced(key: string, run: () => void, delay = 400): void {
     const existing = this.debounceTimers.get(key);
-    if (existing !== undefined) window.clearTimeout(existing);
+    if (existing) window.clearTimeout(existing.timer);
     this.debounceTimers.set(
       key,
-      window.setTimeout(() => {
-        this.debounceTimers.delete(key);
-        run();
-      }, delay)
+      {
+        run,
+        timer: window.setTimeout(() => {
+          this.debounceTimers.delete(key);
+          run();
+        }, delay)
+      }
     );
   }
 
   hide(): void {
-    for (const timer of this.debounceTimers.values()) window.clearTimeout(timer);
+    const pending = [...this.debounceTimers.values()];
+    for (const { timer } of pending) window.clearTimeout(timer);
     this.debounceTimers.clear();
+    for (const { run } of pending) run();
     super.hide();
   }
 

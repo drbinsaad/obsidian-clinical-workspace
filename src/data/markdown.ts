@@ -88,8 +88,13 @@ export function isClinicalEntity(value: unknown): value is EntityType {
  */
 export function coerceFrontmatterValue(key: string, value: unknown): unknown {
   if (value instanceof Date) {
-    const iso = value.toISOString();
-    return DATE_ONLY_FIELDS.has(key) || iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
+    if (DATE_ONLY_FIELDS.has(key)) {
+      const year = value.getFullYear();
+      const month = String(value.getMonth() + 1).padStart(2, "0");
+      const day = String(value.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+    return value.toISOString();
   }
   if (value === null || value === undefined) return "";
   if (Array.isArray(value)) return value.map((item) => safeText(item));
@@ -118,8 +123,9 @@ function safeText(value: unknown): string {
 }
 
 export function coerceFrontmatter(frontmatter: Record<string, unknown>): Record<string, unknown> {
-  const coerced: Record<string, unknown> = {};
+  const coerced = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(frontmatter)) {
+    if (["__proto__", "constructor", "prototype"].includes(key)) continue;
     coerced[key] = coerceFrontmatterValue(key, value);
   }
   return coerced;

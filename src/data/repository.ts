@@ -25,6 +25,20 @@ import {
 
 type FrontmatterChange = Record<string, string | number | boolean | string[]>;
 
+export interface UnreadableRecordInfo {
+  path: string;
+  /** Stable internal id only; never patient text. Null means attribution failed. */
+  episodeId: string | null;
+}
+
+function episodeIdFromUnreadableTask(content: string): string | null {
+  const frontmatter = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content)?.[1];
+  if (!frontmatter) return null;
+  const match = /^episode_id\s*:\s*(?:"([^"]+)"|'([^']+)'|([^#\r\n]+))/m.exec(frontmatter);
+  const candidate = (match?.[1] ?? match?.[2] ?? match?.[3] ?? "").trim();
+  return /^EPI-[A-Za-z0-9-]+$/.test(candidate) ? candidate : null;
+}
+
 
 /**
  * Serialises async operations that share a key. Used both for writes to one
@@ -152,7 +166,7 @@ export class ClinicalRepository {
       // for audit notes, fails silently.
       await this.ensureFolder(folderForEntity(record.entity));
       const file = await this.app.vault.create(path, recordMarkdown(record));
-      const verified = await this.read<T>(file.path);
+      const verified = await this.read<T>(file.path, true);
       if (!verified || verified.record.id !== record.id || verified.record.entity !== record.entity) {
         throw new Error(`Clinical record verification failed for ${record.id}.`);
       }
@@ -160,10 +174,12 @@ export class ClinicalRepository {
     });
   }
 
-  async read<T extends ClinicalRecord>(path: string): Promise<RecordWithPath<T> | null> {
+  async read<T extends ClinicalRecord>(path: string, fresh = false): Promise<RecordWithPath<T> | null> {
     const abstract = this.app.vault.getAbstractFileByPath(normalizePath(path));
     if (!(abstract instanceof TFile)) return null;
-    const content = await this.app.vault.read(abstract);
+    const content = fresh
+      ? await this.app.vault.read(abstract)
+      : await this.app.vault.cachedRead(abstract);
     const record = parseClinicalRecord(content);
     return record ? { record: record as T, path: abstract.path } : null;
   }
@@ -181,7 +197,7 @@ export class ClinicalRepository {
         const values = frontmatter as unknown as Record<string, unknown>;
         for (const [key, value] of Object.entries(expected)) values[key] = value;
       });
-      const verified = await this.read<T>(normalized);
+      const verified = await this.read<T>(normalized, true);
       if (!verified) throw new Error(`Clinical record could not be read after update: ${normalized}`);
       const verifiedValues = verified.record as unknown as Record<string, unknown>;
       for (const [key, value] of Object.entries(expected)) {
@@ -211,11 +227,24 @@ export class ClinicalRepository {
    * from a list must also consult this.
    */
   async unreadablePaths(entity: EntityType): Promise<string[]> {
+    return (await this.unreadableRecords(entity)).map(({ path }) => path);
+  }
+
+  /** Unreadable notes plus the episode id recoverable from raw task YAML. */
+  async unreadableRecords(entity: EntityType): Promise<UnreadableRecordInfo[]> {
     const files = markdownFilesInFolder(this.app.vault, folderForEntity(entity));
     const results = await Promise.all(
-      files.map(async (file) => ((await this.read(file.path)) ? null : file.path))
+      files.map(async (file) => {
+        const content = await this.app.vault.cachedRead(file);
+        const record = parseClinicalRecord(content);
+        if (record?.entity === entity) return null;
+        return {
+          path: file.path,
+          episodeId: entity === "task" ? episodeIdFromUnreadableTask(content) : null
+        };
+      })
     );
-    return results.filter((path): path is string => path !== null);
+    return results.filter((item): item is UnreadableRecordInfo => item !== null);
   }
 
   /**

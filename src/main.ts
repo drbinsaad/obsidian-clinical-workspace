@@ -4,7 +4,13 @@ import { ClinicalRepository } from "./data/repository";
 import { markdownFilesInFolder } from "./data/vault-scope";
 import { ClinicalService } from "./services/clinical-service";
 import { IntegrityService } from "./services/integrity";
-import { MigrationService, type MigrationMarker, type MigrationResult } from "./services/migration";
+import {
+  MigrationService,
+  resolveMigrationRoot,
+  type MigrationMarker,
+  type MigrationPlan,
+  type MigrationResult
+} from "./services/migration";
 import { seedSyntheticFixtures } from "./services/synthetic-fixtures";
 import { CARE_SETTINGS, PATHWAYS, PRIORITIES } from "./domain/types";
 import {
@@ -28,6 +34,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   private integrity!: IntegrityService;
   private migration!: MigrationService;
   private refreshTimer: number | null = null;
+  private refreshMaxWaitTimer: number | null = null;
   private structureReady = false;
   private integrityChecked = false;
   private pendingMigrationMarker: unknown = null;
@@ -103,6 +110,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
 
   onunload(): void {
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
+    if (this.refreshMaxWaitTimer !== null) window.clearTimeout(this.refreshMaxWaitTimer);
   }
 
   async loadSettings(): Promise<void> {
@@ -113,7 +121,18 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       priorities: PRIORITIES
     });
     setClinicalRoot(this.settings.rootFolder);
-    this.pendingMigrationMarker = stored;
+    const marker = (stored as { migrationInProgress?: MigrationMarker } | null)?.migrationInProgress;
+    this.pendingMigrationMarker = marker?.from && marker.to ? { migrationInProgress: marker } : null;
+  }
+
+  /** Applies data.json changes delivered by Obsidian Sync without a restart. */
+  async onExternalSettingsChange(): Promise<void> {
+    await this.loadSettings();
+    if (!this.repository) return;
+    this.repository.setActor(auditActor(this.settings));
+    this.structureReady = false;
+    this.integrityChecked = false;
+    await this.refreshOpenViews();
   }
 
   async updateSettings(patch: Partial<ClinicalSettings>): Promise<void> {
@@ -141,20 +160,48 @@ export default class ClinicalWorkspacePlugin extends Plugin {
    * a move was in flight so `reconcileMigration` can settle it on next load.
    */
   async migrateRootFolder(target: string): Promise<MigrationResult> {
-    const result = await this.migration.run(target, async (plan) => {
-      this.settings = { ...this.settings, rootFolder: plan.to };
-      await this.saveData({ ...this.settings, migrationInProgress: { from: plan.from, to: plan.to } });
-      setClinicalRoot(plan.to);
-    });
-    await this.saveData(this.settings);
-    await this.refreshOpenViews();
-    if (result.danglingLinks > 0) {
-      new Notice(
-        `Records moved, but ${result.danglingLinks} note${result.danglingLinks === 1 ? " still refers" : "s still refer"} to the old folder. Run the integrity check.`,
-        12000
-      );
+    const attempt: { plan?: MigrationPlan } = {};
+    try {
+      const result = await this.migration.run(target, async (plan) => {
+        attempt.plan = plan;
+        const marker = { from: plan.from, to: plan.to };
+        this.settings = { ...this.settings, rootFolder: plan.to };
+        this.pendingMigrationMarker = { migrationInProgress: marker };
+        await this.saveData(this.withPendingMarker(this.settings));
+        setClinicalRoot(plan.to);
+      });
+      // `MigrationService.run` never throws after the rename succeeds. Reaching
+      // here therefore proves the destination holds the moved records and the
+      // recovery marker can be retired.
+      this.pendingMigrationMarker = null;
+      await this.saveData(this.settings);
+      await this.refreshOpenViews();
+      if (result.danglingLinks > 0) {
+        new Notice(
+          `Records moved, but ${result.danglingLinks} note${result.danglingLinks === 1 ? " still refers" : "s still refer"} to the old folder. Run the integrity check.`,
+          12000
+        );
+      } else if (result.linkVerificationFailed) {
+        new Notice(
+          "Records moved, but their rewritten links could not be verified. Run the integrity check before continuing clinical work.",
+          12000
+        );
+      }
+      return result;
+    } catch (error) {
+      // A throw can only happen before or during rename. Point back at the
+      // source immediately and keep the marker armed until reconciliation has
+      // inspected the vault. An unrelated settings save must not erase it.
+      const failedPlan = attempt.plan;
+      if (failedPlan) {
+        const marker = { from: failedPlan.from, to: failedPlan.to };
+        this.settings = { ...this.settings, rootFolder: failedPlan.from };
+        this.pendingMigrationMarker = { migrationInProgress: marker };
+        setClinicalRoot(failedPlan.from);
+        await this.saveData(this.withPendingMarker(this.settings));
+      }
+      throw error;
     }
-    return result;
   }
 
   /**
@@ -179,7 +226,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     const holdsRecords = (root: string) =>
       markdownFilesInFolder(this.app.vault, root)
         .some((file) => RECORD_FOLDERS.some((folder) => file.path.startsWith(`${root}/${folder}/`)));
-    const actual = holdsRecords(marker.to) ? marker.to : holdsRecords(marker.from) ? marker.from : null;
+    const actual = resolveMigrationRoot(marker, holdsRecords);
+    if (!actual) {
+      this.pendingMigrationMarker = { migrationInProgress: marker };
+      await this.saveData(this.withPendingMarker(this.settings));
+      throw new Error(
+        "Clinical Workspace could not determine where an interrupted folder move left the records. The recovery marker was preserved; inspect both folders before continuing."
+      );
+    }
     if (actual && actual !== this.settings.rootFolder) {
       this.settings = { ...this.settings, rootFolder: actual };
       setClinicalRoot(actual);
@@ -235,9 +289,19 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   private scheduleRefresh(path: string): void {
     if (!path.startsWith(`${clinicalRootFolder()}/`)) return;
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
-    this.refreshTimer = window.setTimeout(() => {
+    const refresh = () => {
+      if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
+      if (this.refreshMaxWaitTimer !== null) window.clearTimeout(this.refreshMaxWaitTimer);
       this.refreshTimer = null;
+      this.refreshMaxWaitTimer = null;
       void this.refreshOpenViews();
+    };
+    this.refreshMaxWaitTimer ??= window.setTimeout(
+      refresh,
+      Math.max(2000, this.settings.refreshDebounceMs)
+    );
+    this.refreshTimer = window.setTimeout(() => {
+      refresh();
     }, this.settings.refreshDebounceMs);
   }
 
@@ -254,7 +318,6 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // the interrupted destination and reconciliation would then "find" it.
     if (this.pendingMigrationMarker) {
       const marker = this.pendingMigrationMarker;
-      this.pendingMigrationMarker = null;
       await this.reconcileMigration(marker);
     }
     await this.ensureStructure();

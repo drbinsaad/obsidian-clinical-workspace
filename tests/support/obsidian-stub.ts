@@ -103,6 +103,10 @@ export class Vault {
     return content;
   }
 
+  async cachedRead(file: TFile): Promise<string> {
+    return this.read(file);
+  }
+
   async modify(file: TFile, content: string): Promise<void> {
     await this.tick();
     this.files.set(normalizePath(file.path), content);
@@ -190,5 +194,8 @@ export class Plugin {}
 export class ItemView {}
 export class Modal {}
 export class Setting {}
+export class PluginSettingTab {
+  hide(): void {}
+}
 export class WorkspaceLeaf {}
 export function setIcon(): void {}

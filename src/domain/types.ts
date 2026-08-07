@@ -94,6 +94,8 @@ export interface PatientRecord extends BaseRecord {
   status: PatientStatus;
   /** Set when this record was merged into another patient; never deleted. */
   merged_into: string;
+  /** Recovery marker retained while linked records are being re-pointed. */
+  merge_in_progress?: string;
 }
 
 export interface EpisodeRecord extends BaseRecord {
