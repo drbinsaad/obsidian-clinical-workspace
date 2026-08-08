@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- Added a repository-side surgery-logbook CSV exporter that joins completed
+  procedures to their episode context. Exports are de-identified by default,
+  protect spreadsheet cells from formula injection, and require an explicit
+  `--identifiers` flag before including MRNs or patient names.
 
 ## [0.3.5] - 2026-08-07
 
