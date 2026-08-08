@@ -31,7 +31,7 @@ Clinical Workspace requires Obsidian 1.13.0 or later and supports desktop and mo
 
 ### BRAT beta installation
 
-Until the Community directory listing is approved:
+BRAT remains available as an alternative installation route and for beta testing:
 
 1. Install and enable **BRAT** from Obsidian's Community plugins browser.
 2. Open the command palette and run **BRAT: Add a beta plugin for testing**.
@@ -44,7 +44,7 @@ BRAT can check for releases on startup or through **BRAT: Check for updates to a
 
 ### Community directory
 
-After approval, install from **Settings → Community plugins → Browse**, search for **Clinical Workspace**, then select **Install** and **Enable**. Future stable releases appear under **Community plugins → Check for updates**.
+Clinical Workspace is officially available in the Obsidian Community directory. Install it from **Settings → Community plugins → Browse**, search for **Clinical Workspace**, then select **Install** and **Enable**. The current public version is **0.3.5**; future stable releases appear under **Community plugins → Check for updates**.
 
 ### Manual installation
 
