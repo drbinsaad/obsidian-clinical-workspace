@@ -14,7 +14,8 @@
     "verify-release": "node scripts/verify-release.mjs",
     "verify-community": "node scripts/verify-community.mjs",
     "review": "npm run check && npm run verify-release && npm run verify-community",
-    "install:vault": "node scripts/install-to-vault.mjs"
+    "install:vault": "node scripts/install-to-vault.mjs",
+    "export:logbook": "node scripts/export-logbook.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -180,6 +180,28 @@ Never install a build made this way into a vault holding real patient informatio
 
 The published `obsidian` package is type definitions only, so the plugin cannot be executed under Node as-is. `tests/support/` provides an in-memory stand-in for the vault APIs, registered through a module hook. Its YAML behaviour mirrors what Obsidian actually writes, verified against records produced in a real vault.
 
+### Exporting a surgery logbook
+
+The repository includes an optional command-line exporter for appraisal or
+training records. It reads only the configured clinical folder, joins completed
+procedure notes to their episode context, and writes a CSV outside Obsidian:
+
+```bash
+npm run export:logbook -- "/path/to/vault" --out "/path/to/surgery-logbook.csv"
+```
+
+The default export is de-identified: it includes a stable case reference but no
+MRN or patient name. Add `--identifiers` only when there is a documented need:
+
+```bash
+npm run export:logbook -- "/path/to/vault" --out "/secure/path/logbook.csv" --identifiers
+```
+
+An identified CSV is a separate clinical record. Store, transfer, retain, and
+dispose of it under the same institutional policy as the source vault. The
+exporter does not alter vault notes and is not included in the Obsidian runtime
+bundle.
+
 ## Releasing
 
 ```bash
