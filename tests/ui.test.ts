@@ -173,7 +173,7 @@ test("Episode picker controls have context-specific accessible names", () => {
       id,
       case: "Synthetic airway review"
     },
-    patientLabel: "MRN 0000000 · Synthetic Patient",
+    patientLabel: "MRN 9000000 · Synthetic Patient",
     isCurrent: false
   }) as Parameters<typeof episodeChoiceAccessibleLabel>[1];
   const first = episodeChoiceAccessibleLabel("a task / follow-up", makeChoice("EPI-SYNTHETIC-1"));
