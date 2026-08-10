@@ -145,6 +145,19 @@
   gap: var(--clinical-card-gap);
 }
 
+.clinical-pagination {
+  display: grid;
+  grid-template-columns: minmax(104px, auto) 1fr minmax(104px, auto);
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 20px;
+  text-align: center;
+}
+
+.clinical-pagination .clinical-card-button {
+  width: 100%;
+}
+
 .clinical-card {
   padding: 15px;
   overflow-wrap: anywhere;
@@ -352,6 +365,15 @@
    action button and slices the last section of every tab. Measured on iPhone. */
 .is-mobile .clinical-workspace-shell {
   padding-bottom: calc(200px + env(safe-area-inset-bottom));
+}
+
+.is-mobile .clinical-pagination {
+  grid-template-columns: 1fr 1fr;
+}
+
+.is-mobile .clinical-pagination .clinical-section-note {
+  grid-column: 1 / -1;
+  grid-row: 1;
 }
 
 /* The floating action button sits over the bottom-right of the view. When a tab

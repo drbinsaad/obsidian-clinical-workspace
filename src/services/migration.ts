@@ -37,9 +37,12 @@ export function resolveMigrationRoot(
   marker: MigrationMarker,
   holdsRecords: (root: string) => boolean
 ): string | null {
-  if (holdsRecords(marker.to)) return marker.to;
-  if (holdsRecords(marker.from)) return marker.from;
-  return null;
+  const sourceHasRecords = holdsRecords(marker.from);
+  const destinationHasRecords = holdsRecords(marker.to);
+  // Two populated roots are a Sync conflict, not evidence that the destination
+  // is newer. Picking either one could hide records held only by the other.
+  if (sourceHasRecords === destinationHasRecords) return null;
+  return destinationHasRecords ? marker.to : marker.from;
 }
 
 /**
@@ -122,10 +125,11 @@ export class MigrationService {
         const current = await this.app.vault.read(home);
         if (isUntouchedHome(current)) await this.app.vault.modify(home, homeNote(plan.to));
       }
-    } catch (error) {
+    } catch {
+      // I/O errors can contain full vault paths and patient-named filenames.
+      // Keep developer-console output identifier-free.
       console.warn(
-        "Clinical Workspace: records moved, but database views could not be regenerated. They will be rebuilt on next open.",
-        error instanceof Error ? error.message : error
+        "Clinical Workspace: records moved, but database views could not be regenerated. They will be rebuilt on next open."
       );
     }
 
@@ -133,11 +137,10 @@ export class MigrationService {
     let linkVerificationFailed = false;
     try {
       danglingLinks = await this.countDanglingLinks(plan.from, plan.to);
-    } catch (error) {
+    } catch {
       linkVerificationFailed = true;
       console.warn(
-        "Clinical Workspace: records moved, but their rewritten links could not be verified. Run the integrity check.",
-        error instanceof Error ? error.message : error
+        "Clinical Workspace: records moved, but their rewritten links could not be verified. Run the integrity check."
       );
     }
     return { ...plan, danglingLinks, linkVerificationFailed };

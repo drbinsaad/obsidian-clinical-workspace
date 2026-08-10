@@ -172,18 +172,32 @@ test("a failed audit write does not fail or roll back the clinical action", asyn
   const created = await service.createEpisode(episodeInput({ nextAction: "Chase result", dueDate: "2026-08-10" }));
 
   const realCreate = app.vault.create.bind(app.vault);
+  const realWarn = console.warn;
+  const warnings: unknown[][] = [];
   app.vault.create = (async (path: string, content: string) => {
-    if (path.includes("/Events/")) throw new Error("EIO: simulated write failure");
+    if (path.includes("/Events/")) {
+      throw new Error("EIO: Clinical Workspace/Patients/Jane Patient.md");
+    }
     return realCreate(path, content);
   }) as typeof app.vault.create;
+  console.warn = (...values: unknown[]) => {
+    warnings.push(values);
+  };
 
-  await service.completeTask(created.task!.record.id);
-  app.vault.create = realCreate;
+  try {
+    await service.completeTask(created.task!.record.id);
+  } finally {
+    app.vault.create = realCreate;
+    console.warn = realWarn;
+  }
 
   const task = (await repository.findById<TaskRecord>("task", created.task!.record.id))!.record;
   assert.equal(task.status, "completed", "the clinical action still commits");
   const episode = (await repository.findById<EpisodeRecord>("episode", created.episode.record.id))!.record;
   assert.equal(episode.status, "ready-to-close");
+  assert.equal(warnings.length, 1);
+  assert.ok(warnings[0]?.length === 1);
+  assert.doesNotMatch(JSON.stringify(warnings), /Jane Patient|Patients\/|EIO/);
 });
 
 // --- Build output ------------------------------------------------------------

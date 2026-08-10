@@ -25,6 +25,13 @@ import {
 
 type FrontmatterChange = Record<string, string | number | boolean | string[]>;
 
+/**
+ * Intentionally contains no record ids, paths, patient text, or configured
+ * folder names: it can reach Notices and the developer console.
+ */
+export const CLINICAL_WRITES_BLOCKED_MESSAGE =
+  "Clinical Workspace is temporarily read-only while a synced folder move is being reconciled. After Sync finishes, run “Retry pending folder move recovery” from the Command Palette.";
+
 export interface UnreadableRecordInfo {
   path: string;
   /** Stable internal id only; never patient text. Null means attribution failed. */
@@ -66,11 +73,31 @@ export class ClinicalRepository {
   private readonly parsedRecords = new Map<string, { content: string; record: ClinicalRecord | null }>();
   /** Recorded as the actor on audit notes; set from settings on load. */
   private actor = "local-user";
+  /** Non-null while Sync/migration recovery cannot identify one writable root. */
+  private writeBlockReason: string | null = null;
+  /** Persists path-free safety state when the first managed record is written. */
+  private managedRecordWriteObserver: (() => Promise<void>) | null = null;
 
   constructor(private readonly app: App) {}
 
   setActor(actor: string): void {
     this.actor = actor.trim() || "local-user";
+  }
+
+  /**
+   * Enables or clears the fail-closed write barrier used during folder-move
+   * recovery. Reads deliberately remain available from the last safe root.
+   */
+  setWriteBlock(reason: string | null): void {
+    this.writeBlockReason = reason;
+  }
+
+  setManagedRecordWriteObserver(observer: (() => Promise<void>) | null): void {
+    this.managedRecordWriteObserver = observer;
+  }
+
+  private assertWritesAllowed(): void {
+    if (this.writeBlockReason) throw new Error(this.writeBlockReason);
   }
 
   /** Drops memoized YAML after Obsidian reports a vault change for this path. */
@@ -94,15 +121,22 @@ export class ClinicalRepository {
    * yet when the check runs.
    */
   async withLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
-    return this.queue.run(`lock:${key}`, operation);
+    return this.queue.run(`lock:${key}`, async () => {
+      // Check inside the queue as well as in create/update. A write can have
+      // been waiting behind another operation when Sync arms the barrier.
+      this.assertWritesAllowed();
+      return operation();
+    });
   }
 
   async ensureStructure(): Promise<void> {
+    this.assertWritesAllowed();
     await this.ensureFolder(clinicalRootFolder());
     for (const folder of allClinicalFolders()) await this.ensureFolder(folder);
     for (const [path, content] of Object.entries(baseFiles())) {
       const existing = this.app.vault.getAbstractFileByPath(path);
       if (!existing) {
+        this.assertWritesAllowed();
         await this.app.vault.create(normalizePath(path), content);
         continue;
       }
@@ -122,6 +156,7 @@ export class ClinicalRepository {
           );
           continue;
         }
+        this.assertWritesAllowed();
         await this.app.vault.modify(existing, content);
       }
     }
@@ -129,6 +164,7 @@ export class ClinicalRepository {
     const expectedHome = homeNote();
     const existingHome = this.app.vault.getAbstractFileByPath(homePath);
     if (!existingHome) {
+      this.assertWritesAllowed();
       await this.app.vault.create(normalizePath(homePath), expectedHome);
     } else if (existingHome instanceof TFile) {
       // Version 0.1.0 embedded a view name that no longer exists, because the
@@ -141,6 +177,7 @@ export class ClinicalRepository {
       // A note the user has written in is theirs. Repair only the untouched
       // scaffolding this plugin generated.
       if (stale && isUntouchedHome(current)) {
+        this.assertWritesAllowed();
         await this.app.vault.modify(existingHome, expectedHome);
       } else if (stale) {
         console.warn(
@@ -156,6 +193,7 @@ export class ClinicalRepository {
   }
 
   private async ensureFolder(path: string): Promise<void> {
+    this.assertWritesAllowed();
     const normalized = normalizePath(path);
     if (this.app.vault.getAbstractFileByPath(normalized)) return;
     const segments = normalized.split("/");
@@ -163,6 +201,7 @@ export class ClinicalRepository {
     for (const segment of segments) {
       current = current ? `${current}/${segment}` : segment;
       if (!this.app.vault.getAbstractFileByPath(current)) {
+        this.assertWritesAllowed();
         await this.app.vault.createFolder(current);
       }
     }
@@ -171,6 +210,7 @@ export class ClinicalRepository {
   async create<T extends ClinicalRecord>(record: T): Promise<RecordWithPath<T>> {
     const path = normalizePath(pathForRecord(record.entity, record.id));
     return this.queue.run(path, async () => {
+      this.assertWritesAllowed();
       if (this.app.vault.getAbstractFileByPath(path)) {
         const existing = await this.read<T>(path);
         if (existing) return existing;
@@ -181,11 +221,13 @@ export class ClinicalRepository {
       // displaced folder degrades nothing; without this the write fails and,
       // for audit notes, fails silently.
       await this.ensureFolder(folderForEntity(record.entity));
+      this.assertWritesAllowed();
       const file = await this.app.vault.create(path, recordMarkdown(record));
       const verified = await this.read<T>(file.path, true);
       if (!verified || verified.record.id !== record.id || verified.record.entity !== record.entity) {
         throw new Error(`Clinical record verification failed for ${record.id}.`);
       }
+      if (this.managedRecordWriteObserver) await this.managedRecordWriteObserver();
       return verified;
     });
   }
@@ -206,9 +248,11 @@ export class ClinicalRepository {
   ): Promise<RecordWithPath<T>> {
     const normalized = normalizePath(path);
     return this.queue.run(normalized, async () => {
+      this.assertWritesAllowed();
       const abstract = this.app.vault.getAbstractFileByPath(normalized);
       if (!(abstract instanceof TFile)) throw new Error(`Clinical record not found: ${normalized}`);
       const expected = { ...changes, updated_at: nowIso() };
+      this.assertWritesAllowed();
       await this.app.fileManager.processFrontMatter(abstract, (frontmatter) => {
         const values = frontmatter as unknown as Record<string, unknown>;
         for (const [key, value] of Object.entries(expected)) values[key] = value;
@@ -340,12 +384,11 @@ export class ClinicalRepository {
     };
     try {
       return await this.create(event);
-    } catch (error) {
+    } catch {
       // No identifiers in this message: it reaches the developer console.
-      console.warn(
-        `Clinical Workspace: audit event "${input.action}" could not be written.`,
-        error instanceof Error ? error.message : error
-      );
+      // I/O exceptions can embed a patient-named vault path, so the caught
+      // value is intentionally not forwarded.
+      console.warn(`Clinical Workspace: audit event "${input.action}" could not be written.`);
       return null;
     }
   }

@@ -6,7 +6,12 @@ import type { ClinicalRepository } from "../src/data/repository";
 import type { ClinicalService } from "../src/services/clinical-service";
 import type { IntegrityService } from "../src/services/integrity";
 import { NewEpisodeModal, patientIdentityLabel } from "../src/ui/modals";
-import { CLINICAL_WORKSPACE_VIEW, ClinicalWorkspaceView } from "../src/ui/workspace-view";
+import {
+  CLINICAL_PAGE_SIZE,
+  CLINICAL_WORKSPACE_VIEW,
+  ClinicalWorkspaceView,
+  pageWindow
+} from "../src/ui/workspace-view";
 
 const EMPTY_SNAPSHOT: ClinicalSnapshot = {
   patients: [],
@@ -26,6 +31,23 @@ test("workspace view exposes stable Obsidian identity", () => {
   assert.equal(view.getViewType(), CLINICAL_WORKSPACE_VIEW);
   assert.equal(view.getDisplayText(), "Clinical Workspace");
   assert.equal(view.getIcon(), "stethoscope");
+});
+
+test("mobile lists render one bounded page and clamp after synced deletions", () => {
+  const values = Array.from({ length: CLINICAL_PAGE_SIZE * 2 + 3 }, (_, index) => index);
+  const middle = pageWindow(values, 1);
+  assert.equal(middle.items.length, CLINICAL_PAGE_SIZE);
+  assert.equal(middle.items[0], CLINICAL_PAGE_SIZE);
+  assert.equal(middle.page, 1);
+  assert.equal(middle.pages, 3);
+  assert.equal(middle.total, values.length);
+
+  const clamped = pageWindow(values.slice(0, 2), 99);
+  assert.deepEqual(clamped.items, [0, 1]);
+  assert.equal(clamped.page, 0);
+  assert.equal(clamped.pages, 1);
+
+  assert.equal(pageWindow(values, Number.NaN).page, 0);
 });
 
 test("a refresh requested during rendering is queued rather than dropped", async () => {

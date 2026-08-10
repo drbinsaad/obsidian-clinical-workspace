@@ -36,3 +36,10 @@ vaults/
 **/TSK-*.md
 **/PRC-*.md
 **/EVT-*.md
+
+# Defence in depth for the repository-side logbook exporter. Custom output
+# names still require operator review; do not broadly ignore every CSV.
+**/surgery-logbook.csv
+**/surgery-logbook-*.csv
+**/.surgery-logbook*.tmp
+**/.clinical-workspace-export-*.tmp

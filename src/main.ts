@@ -1,6 +1,9 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, TFile, TFolder, WorkspaceLeaf } from "obsidian";
 import { clinicalRootFolder, setClinicalRoot } from "./data/paths";
-import { ClinicalRepository } from "./data/repository";
+import {
+  CLINICAL_WRITES_BLOCKED_MESSAGE,
+  ClinicalRepository
+} from "./data/repository";
 import { markdownFilesInFolder } from "./data/vault-scope";
 import { ClinicalService } from "./services/clinical-service";
 import { IntegrityService } from "./services/integrity";
@@ -16,15 +19,34 @@ import { CARE_SETTINGS, PATHWAYS, PRIORITIES } from "./domain/types";
 import {
   auditActor,
   DEFAULT_SETTINGS,
+  normalizeFolderPath,
   normalizeSettings,
+  validateRootFolder,
   type ClinicalSettings
 } from "./domain/settings";
-import { IntegrityReportModal } from "./ui/modals";
+import { InitializeWorkspaceModal, IntegrityReportModal } from "./ui/modals";
 import { ClinicalSettingTab } from "./ui/settings-tab";
 import {
   CLINICAL_WORKSPACE_VIEW,
   ClinicalWorkspaceView
 } from "./ui/workspace-view";
+
+const CLINICAL_ROOT_UNAVAILABLE_MESSAGE =
+  "Clinical Workspace is temporarily read-only because the configured folder is unavailable. After Sync finishes or the folder is restored, run “Retry pending folder move recovery” from the Command Palette.";
+const CLINICAL_INITIALIZATION_REQUIRED_MESSAGE =
+  "Clinical Workspace needs a trusted baseline. After Sync finishes, use “Initialize new workspace” to adopt the current records or initialize a genuinely new workspace.";
+const CLINICAL_INITIALIZATION_SAVE_FAILED_MESSAGE =
+  "Clinical Workspace could not save its initialization state. No workspace folders were created; the plugin remains read-only.";
+
+interface PersistedWorkspaceSafety {
+  version: 1;
+  initialized: boolean;
+  initializationApproved: boolean;
+  managedRecordsExpected: boolean;
+  expectedManagedRecordCount: number;
+  rootRecoveryRequired: boolean;
+  recoveryRequiresRecords: boolean;
+}
 
 export default class ClinicalWorkspacePlugin extends Plugin {
   settings: ClinicalSettings = { ...DEFAULT_SETTINGS };
@@ -38,6 +60,33 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   private structureReady = false;
   private integrityChecked = false;
   private pendingMigrationMarker: unknown = null;
+  /** Root named by the data.json version that supplied the pending marker. */
+  private pendingMigrationConfiguredRoot: string | null = null;
+  private migrationRecoveryBlocked = false;
+  private missingRootRecoveryBlocked = false;
+  private missingRootRequiresRecords = false;
+  /** True only when data.json is absent and no managed record proves prior use. */
+  private firstUseInitializationPending = false;
+  /** A durable first-use approval whose scaffolding has not fully finalized. */
+  private initializationScaffoldApproved = false;
+  private firstUseInitializationPromise: Promise<boolean> | null = null;
+  /** Managed-record count shown when the adoption confirmation opened. */
+  private pendingAdoptionRecordCount: number | null = null;
+  private pendingAdoptionRoot: string | null = null;
+  private pendingAdoptionDataFingerprint: string | null = null;
+  private workspaceInitialized = false;
+  /** Once true, deletion recovery must not accept an empty parent folder. */
+  private managedRecordsExpected = false;
+  private expectedManagedRecordCount = 0;
+  /** True until path-free v1 safety metadata is durably saved. */
+  private workspaceSafetyNeedsPersistence = false;
+  /** Distinguishes overlapping safety saves so an older completion cannot clear a newer retry. */
+  private workspaceSafetyRevision = 0;
+  private recoveryBlockMessage = CLINICAL_WRITES_BLOCKED_MESSAGE;
+  private migrationReconciliationPromise: Promise<boolean> | null = null;
+  /** Serializes data.json writes so a delayed older snapshot cannot win. */
+  private pluginDataWriteQueue: Promise<unknown> = Promise.resolve();
+  private localMigrationRunning = false;
   /** In-flight guards: concurrent first-run calls otherwise race on createFolder. */
   private structurePromise: Promise<void> | null = null;
   private activationPromise: Promise<ClinicalWorkspaceView> | null = null;
@@ -47,6 +96,11 @@ export default class ClinicalWorkspacePlugin extends Plugin {
 
     this.repository = new ClinicalRepository(this.app);
     this.repository.setActor(auditActor(this.settings));
+    this.repository.setWriteBlock(
+      this.migrationRecoveryBlocked ? this.recoveryBlockMessage : null
+    );
+    this.repository.setManagedRecordWriteObserver(() => this.noteManagedRecordWrite());
+    if (this.workspaceSafetyNeedsPersistence) await this.persistWorkspaceSafety();
     this.service = new ClinicalService(this.repository);
     this.integrity = new IntegrityService(this.repository);
     this.migration = new MigrationService(this.app);
@@ -77,6 +131,28 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       id: "run-integrity-check",
       name: "Run clinical data integrity check",
       callback: () => void this.runIntegrityCheck()
+    });
+    this.addCommand({
+      id: "initialize-new-workspace",
+      name: "Initialize new workspace",
+      checkCallback: (checking) => {
+        if (!this.firstUseInitializationPending) return false;
+        if (!checking) void this.openWorkspace();
+        return true;
+      }
+    });
+    this.addCommand({
+      id: "retry-folder-move-recovery",
+      name: "Retry pending folder move recovery",
+      checkCallback: (checking) => {
+        if (!this.currentMigrationMarker() && !this.missingRootRecoveryBlocked) return false;
+        if (!checking) {
+          void this.retryPendingMigrationRecovery().catch(() => {
+            this.showMigrationRecoveryNotice();
+          });
+        }
+        return true;
+      }
     });
 
     // Compiled out of release builds; see esbuild.config.mjs. The seeding logic
@@ -115,19 +191,201 @@ export default class ClinicalWorkspacePlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     const stored = (await this.loadData()) as unknown;
-    this.settings = normalizeSettings(stored, {
+    const incoming = normalizeSettings(stored, {
       careSettings: CARE_SETTINGS,
       pathways: PATHWAYS,
       priorities: PRIORITIES
     });
+    const marker = this.markerFrom(stored);
+    // A restored view can refresh before the command-driven activation path.
+    // Keep it on the source while a valid marker is unresolved; the stored
+    // destination remains intent, not proof that its folder has arrived.
+    this.settings = marker ? { ...incoming, rootFolder: marker.from } : incoming;
     setClinicalRoot(this.settings.rootFolder);
-    const marker = (stored as { migrationInProgress?: MigrationMarker } | null)?.migrationInProgress;
-    this.pendingMigrationMarker = marker?.from && marker.to ? { migrationInProgress: marker } : null;
+    this.pendingMigrationMarker = marker ? { migrationInProgress: marker } : null;
+    this.pendingMigrationConfiguredRoot = marker ? incoming.rootFolder : null;
+    const safety = this.workspaceSafetyFrom(stored);
+    const rootRecordCount = this.rootManagedRecordCount(this.settings.rootFolder);
+    const rootHasRecords = rootRecordCount > 0;
+    const rootExists = this.rootExists(this.settings.rootFolder);
+    const initializationApproved =
+      safety?.initializationApproved === true && safety.initialized !== true;
+    const trustedSafety = this.isWorkspaceSafetyTrusted(safety, this.settings.rootFolder);
+    // Pre-0.3.6 workspaces have no trusted aggregate count. Whatever is visible
+    // may be a partial Sync delivery, so the current baseline must be adopted
+    // explicitly even when records or an empty scaffold are already present.
+    this.firstUseInitializationPending = !trustedSafety;
+    this.initializationScaffoldApproved = initializationApproved && trustedSafety;
+    this.workspaceInitialized = safety?.initialized === true;
+    this.managedRecordsExpected =
+      safety?.managedRecordsExpected === true || rootHasRecords;
+    this.expectedManagedRecordCount = Math.max(
+      safety?.expectedManagedRecordCount ?? 0,
+      rootRecordCount,
+      this.managedRecordsExpected ? 1 : 0
+    );
+    this.missingRootRequiresRecords =
+      safety?.recoveryRequiresRecords === true || this.managedRecordsExpected;
+    this.missingRootRecoveryBlocked = (
+      !marker && !this.firstUseInitializationPending && !initializationApproved && (
+        safety?.rootRecoveryRequired === true ||
+        (this.workspaceInitialized && !rootExists)
+      )
+    );
+    this.migrationRecoveryBlocked =
+      Boolean(this.pendingMigrationMarker) ||
+      this.missingRootRecoveryBlocked ||
+      this.firstUseInitializationPending;
+    this.recoveryBlockMessage = this.firstUseInitializationPending
+      ? CLINICAL_INITIALIZATION_REQUIRED_MESSAGE
+      : this.missingRootRecoveryBlocked
+        ? CLINICAL_ROOT_UNAVAILABLE_MESSAGE
+        : CLINICAL_WRITES_BLOCKED_MESSAGE;
+    this.workspaceSafetyNeedsPersistence = false;
   }
 
   /** Applies data.json changes delivered by Obsidian Sync without a restart. */
   async onExternalSettingsChange(): Promise<void> {
-    await this.loadSettings();
+    const stored = (await this.loadData()) as unknown;
+    const incoming = normalizeSettings(stored, {
+      careSettings: CARE_SETTINGS,
+      pathways: PATHWAYS,
+      priorities: PRIORITIES
+    });
+    const previousRoot = clinicalRootFolder();
+    const deliveredMarker = this.markerFrom(stored);
+    const existingMarker = this.currentMigrationMarker();
+    const marker = deliveredMarker ?? existingMarker;
+    const deliveredSafety = this.workspaceSafetyFrom(stored);
+    const deliveredInitializationApproved =
+      deliveredSafety?.initializationApproved === true &&
+      deliveredSafety.initialized !== true;
+    const deliveredTrustedSafety = this.isWorkspaceSafetyTrusted(
+      deliveredSafety,
+      incoming.rootFolder
+    );
+    this.workspaceInitialized ||= deliveredSafety?.initialized === true;
+    this.managedRecordsExpected ||= deliveredSafety?.managedRecordsExpected === true;
+    this.expectedManagedRecordCount = Math.max(
+      this.expectedManagedRecordCount,
+      deliveredSafety?.expectedManagedRecordCount ?? 0,
+      this.managedRecordsExpected ? 1 : 0
+    );
+    // A versioned safety state supersedes the one-time legacy adoption prompt.
+    // A safetyless file remains ambiguous and is handled below without saving.
+    if (this.firstUseInitializationPending && deliveredTrustedSafety) {
+      this.firstUseInitializationPending = false;
+      this.initializationScaffoldApproved = deliveredInitializationApproved;
+      this.workspaceInitialized = !deliveredInitializationApproved;
+      const incomingRootExists = this.rootExists(incoming.rootFolder);
+      const incomingRecordCount = this.rootManagedRecordCount(incoming.rootFolder);
+      const deliveredExpectedCount = deliveredSafety?.expectedManagedRecordCount ?? 0;
+      if (deliveredInitializationApproved && !marker) {
+        if (incomingRecordCount < deliveredExpectedCount) {
+          this.setMissingRootRecoveryBlocked(deliveredExpectedCount > 0);
+        } else {
+          this.missingRootRecoveryBlocked = false;
+          this.missingRootRequiresRecords = false;
+          this.setMigrationRecoveryBlocked(false);
+        }
+      } else if (!marker && !incomingRootExists) {
+        const unknownLegacyRecordCount = !deliveredSafety;
+        this.managedRecordsExpected ||=
+          deliveredSafety?.managedRecordsExpected === true || unknownLegacyRecordCount;
+        this.expectedManagedRecordCount = Math.max(
+          this.expectedManagedRecordCount,
+          this.managedRecordsExpected ? 1 : 0
+        );
+        this.setMissingRootRecoveryBlocked(this.managedRecordsExpected);
+      } else if (
+        !marker &&
+        deliveredExpectedCount > 0 &&
+        incomingRecordCount < deliveredExpectedCount
+      ) {
+        this.setMissingRootRecoveryBlocked(true);
+      } else if (!marker) {
+        this.setMigrationRecoveryBlocked(false);
+      }
+    }
+    if (deliveredSafety?.rootRecoveryRequired === true && !marker) {
+      this.setMissingRootRecoveryBlocked(
+        deliveredSafety.recoveryRequiresRecords || this.managedRecordsExpected
+      );
+    }
+
+    // Apply non-path settings immediately, but keep reads pointed at the last
+    // safe root until the folder delivery itself proves the new root usable.
+    this.settings = { ...incoming, rootFolder: previousRoot };
+
+    if (this.firstUseInitializationPending && !deliveredTrustedSafety) {
+      // A safetyless settings file or migration marker is another pre-0.3.6
+      // candidate, not proof that Sync is complete. Preserve any marker intent
+      // but never reconcile or baseline it automatically.
+      if (marker) {
+        this.pendingMigrationMarker = { migrationInProgress: marker };
+        this.pendingMigrationConfiguredRoot = incoming.rootFolder;
+      }
+      this.setMigrationRecoveryBlocked(true, CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
+      if (!this.repository) return;
+      this.repository.setActor(auditActor(this.settings));
+      await this.refreshOpenViews();
+      return;
+    }
+
+    if (marker) {
+      this.pendingMigrationMarker = { migrationInProgress: marker };
+      const configuredRoot = deliveredMarker
+        ? incoming.rootFolder
+        : (this.pendingMigrationConfiguredRoot ?? incoming.rootFolder);
+      this.pendingMigrationConfiguredRoot = configuredRoot;
+      this.setMigrationRecoveryBlocked(true);
+      const settled = await this.reconcileMigration({
+        ...incoming,
+        rootFolder: configuredRoot,
+        migrationInProgress: marker
+      });
+      if (!settled) {
+        // A safety-state write can already be in flight when Sync delivers the
+        // marker. Queue a canonical marker-bearing snapshot behind it so that
+        // the older write cannot be the final data.json state.
+        await this.persistPluginData();
+        this.showMigrationRecoveryNotice();
+      }
+    } else if (incoming.rootFolder === previousRoot) {
+      this.settings = incoming;
+      setClinicalRoot(incoming.rootFolder);
+      // Do not let an unrelated data.json update clear a barrier armed because
+      // the configured root disappeared during a split Sync delivery.
+      if (!this.migrationRecoveryBlocked) {
+        this.setMigrationRecoveryBlocked(false);
+      }
+    } else if (this.canActivateSyncedRoot(previousRoot, incoming.rootFolder)) {
+      this.settings = incoming;
+      setClinicalRoot(incoming.rootFolder);
+      this.workspaceInitialized = true;
+      const deliveredRecordCount = this.rootManagedRecordCount(incoming.rootFolder);
+      this.managedRecordsExpected ||= deliveredRecordCount > 0;
+      this.expectedManagedRecordCount = Math.max(
+        this.expectedManagedRecordCount,
+        deliveredRecordCount
+      );
+      this.setMigrationRecoveryBlocked(false);
+      // The incoming data may still carry a recovery flag from the old root.
+      // Persist the proven root change so a restart cannot re-arm that stale
+      // barrier after this device has already reconciled safely.
+      await this.persistPluginData();
+    } else {
+      // A final data.json can overtake the folder rename and arrive without the
+      // intermediate marker. Reconstruct recovery metadata, but persist the
+      // *incoming* configured root so another restart cannot manufacture it.
+      const inferred = { from: previousRoot, to: incoming.rootFolder };
+      this.pendingMigrationMarker = { migrationInProgress: inferred };
+      this.pendingMigrationConfiguredRoot = incoming.rootFolder;
+      this.setMigrationRecoveryBlocked(true);
+      await this.persistPluginData();
+      this.showMigrationRecoveryNotice();
+    }
+
     if (!this.repository) return;
     this.repository.setActor(auditActor(this.settings));
     this.structureReady = false;
@@ -135,15 +393,258 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     await this.refreshOpenViews();
   }
 
+  private markerFrom(value: unknown): MigrationMarker | null {
+    const marker = (value as { migrationInProgress?: MigrationMarker } | null)?.migrationInProgress;
+    if (typeof marker?.from !== "string" || typeof marker.to !== "string") return null;
+    const from = normalizeFolderPath(marker.from);
+    const to = normalizeFolderPath(marker.to);
+    if (from === to || validateRootFolder(from) || validateRootFolder(to)) return null;
+    return { from, to };
+  }
+
+  private workspaceSafetyFrom(value: unknown): PersistedWorkspaceSafety | null {
+    const state = (value as { workspaceSafety?: Partial<PersistedWorkspaceSafety> } | null)
+      ?.workspaceSafety;
+    if (!state || state.version !== 1) return null;
+    return {
+      version: 1,
+      initialized: state.initialized === true,
+      initializationApproved: state.initializationApproved === true,
+      managedRecordsExpected: state.managedRecordsExpected === true,
+      expectedManagedRecordCount:
+        typeof state.expectedManagedRecordCount === "number" &&
+        Number.isSafeInteger(state.expectedManagedRecordCount) &&
+        state.expectedManagedRecordCount >= 0
+          ? state.expectedManagedRecordCount
+          : 0,
+      rootRecoveryRequired: state.rootRecoveryRequired === true,
+      recoveryRequiresRecords: state.recoveryRequiresRecords === true
+    };
+  }
+
+  private isWorkspaceSafetyTrusted(
+    safety: PersistedWorkspaceSafety | null,
+    root: string
+  ): boolean {
+    if (safety?.initialized === true) return true;
+    if (safety?.initializationApproved !== true) return false;
+    // A crash-resumable approval applies only to the exact record count the
+    // user saw. A Sync change requires a fresh adoption confirmation.
+    return this.rootManagedRecordCount(root) === safety.expectedManagedRecordCount;
+  }
+
+  private workspaceSafety(): PersistedWorkspaceSafety {
+    return {
+      version: 1,
+      initialized: this.workspaceInitialized,
+      initializationApproved: this.initializationScaffoldApproved,
+      managedRecordsExpected: this.managedRecordsExpected,
+      expectedManagedRecordCount: this.expectedManagedRecordCount,
+      rootRecoveryRequired: this.missingRootRecoveryBlocked,
+      recoveryRequiresRecords: this.missingRootRequiresRecords
+    };
+  }
+
+  private currentMigrationMarker(): MigrationMarker | null {
+    return this.markerFrom(this.pendingMigrationMarker);
+  }
+
+  private setMigrationRecoveryBlocked(
+    blocked: boolean,
+    message = CLINICAL_WRITES_BLOCKED_MESSAGE
+  ): void {
+    const baselineBlocked = !blocked && this.firstUseInitializationPending;
+    const effectiveBlocked = blocked || baselineBlocked;
+    const effectiveMessage = baselineBlocked
+      ? CLINICAL_INITIALIZATION_REQUIRED_MESSAGE
+      : message;
+    this.migrationRecoveryBlocked = effectiveBlocked;
+    this.recoveryBlockMessage = effectiveBlocked
+      ? effectiveMessage
+      : CLINICAL_WRITES_BLOCKED_MESSAGE;
+    if (!effectiveBlocked || effectiveMessage === CLINICAL_WRITES_BLOCKED_MESSAGE) {
+      this.missingRootRecoveryBlocked = false;
+      this.missingRootRequiresRecords = false;
+    }
+    if (this.repository) {
+      this.repository.setWriteBlock(effectiveBlocked ? effectiveMessage : null);
+    }
+  }
+
+  private showMigrationRecoveryNotice(): void {
+    new Notice(this.recoveryBlockMessage, 12000);
+  }
+
+  private setMissingRootRecoveryBlocked(
+    requiresRecords = this.managedRecordsExpected
+  ): void {
+    this.missingRootRecoveryBlocked = true;
+    this.missingRootRequiresRecords = requiresRecords;
+    this.setMigrationRecoveryBlocked(true, CLINICAL_ROOT_UNAVAILABLE_MESSAGE);
+  }
+
+  private async noteManagedRecordWrite(): Promise<void> {
+    const currentCount = this.rootManagedRecordCount(clinicalRootFolder());
+    if (
+      this.workspaceInitialized &&
+      this.managedRecordsExpected &&
+      currentCount <= this.expectedManagedRecordCount &&
+      !this.workspaceSafetyNeedsPersistence
+    ) return;
+    this.workspaceInitialized = true;
+    this.managedRecordsExpected = currentCount > 0;
+    this.expectedManagedRecordCount = Math.max(this.expectedManagedRecordCount, currentCount);
+    this.workspaceSafetyNeedsPersistence = true;
+    await this.persistWorkspaceSafety();
+  }
+
+  private rootManagedRecordCount(root: string): number {
+    const RECORD_FOLDERS = ["Patients", "Episodes", "Tasks", "Procedures"];
+    return markdownFilesInFolder(this.app.vault, root)
+      .filter((file) => RECORD_FOLDERS.some((folder) => file.path.startsWith(`${root}/${folder}/`)))
+      .length;
+  }
+
+  private rootExists(root: string): boolean {
+    return this.app.vault.getAbstractFileByPath(root) instanceof TFolder;
+  }
+
+  /** A marker-free root change is safe only after one complete root wins. */
+  private canActivateSyncedRoot(from: string, to: string): boolean {
+    const sourceRecordCount = this.rootManagedRecordCount(from);
+    const destinationRecordCount = this.rootManagedRecordCount(to);
+    const sourceHasRecords = sourceRecordCount > 0;
+    const destinationHasRecords = destinationRecordCount > 0;
+    if (sourceHasRecords || destinationHasRecords) {
+      if (!destinationHasRecords || sourceHasRecords) return false;
+      return !this.managedRecordsExpected ||
+        destinationRecordCount >= Math.max(1, this.expectedManagedRecordCount);
+    }
+    if (this.managedRecordsExpected) return false;
+    // A record-free workspace may legitimately contain only scaffolding. Wait
+    // until the old root is gone so a folder-before-file delivery cannot make
+    // the plugin create a second tree.
+    return this.rootExists(to) && !this.rootExists(from);
+  }
+
+  /**
+   * Requires a deliberate user decision before any pre-safety workspace can
+   * become writable. The visible root and record count are frozen while the
+   * confirmation is open so late Sync cannot be silently baselined.
+   */
+  private requestFirstUseInitialization(): Promise<boolean> {
+    if (!this.firstUseInitializationPending) return Promise.resolve(false);
+    if (this.firstUseInitializationPromise) return this.firstUseInitializationPromise;
+    if (this.currentMigrationMarker()) {
+      new Notice(
+        "A legacy folder move is still pending. Let synchronization finish, then use the recovery command before adopting the current workspace baseline.",
+        12000
+      );
+      return Promise.resolve(false);
+    }
+    this.firstUseInitializationPromise = (async () => {
+      const stored = (await this.loadData()) as unknown;
+      const safety = this.workspaceSafetyFrom(stored);
+      const trustedSafety = this.isWorkspaceSafetyTrusted(safety, this.settings.rootFolder);
+      if (trustedSafety || this.markerFrom(stored)) {
+        await this.loadSettings();
+        this.repository.setWriteBlock(
+          this.migrationRecoveryBlocked ? this.recoveryBlockMessage : null
+        );
+        return false;
+      }
+      const root = this.settings.rootFolder;
+      const recordCount = this.rootManagedRecordCount(root);
+      this.pendingAdoptionRoot = root;
+      this.pendingAdoptionRecordCount = recordCount;
+      this.pendingAdoptionDataFingerprint = JSON.stringify(stored) ?? "undefined";
+      return new Promise<boolean>((resolve) => {
+        new InitializeWorkspaceModal(this.app, recordCount > 0, resolve).open();
+      });
+    })().finally(() => {
+      this.firstUseInitializationPromise = null;
+    });
+    return this.firstUseInitializationPromise;
+  }
+
+  /** Persists the one-time decision before creating any folder or note. */
+  private async initializeNewWorkspace(): Promise<void> {
+    if (!this.firstUseInitializationPending) {
+      throw new Error(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
+    }
+
+    // The modal may have remained open while Sync delivered old state. Never
+    // reinterpret that changed vault as a new workspace.
+    const latest = (await this.loadData()) as unknown;
+    const latestSafety = this.workspaceSafetyFrom(latest);
+    const latestTrustedSafety = this.isWorkspaceSafetyTrusted(
+      latestSafety,
+      this.settings.rootFolder
+    );
+    const currentRecordCount = this.rootManagedRecordCount(this.settings.rootFolder);
+    if (
+      latestTrustedSafety ||
+      this.markerFrom(latest) ||
+      this.pendingAdoptionRecordCount === null ||
+      currentRecordCount !== this.pendingAdoptionRecordCount ||
+      this.pendingAdoptionRoot !== this.settings.rootFolder ||
+      this.pendingAdoptionDataFingerprint !== (JSON.stringify(latest) ?? "undefined")
+    ) {
+      await this.loadSettings();
+      this.repository.setWriteBlock(
+        this.migrationRecoveryBlocked ? this.recoveryBlockMessage : null
+      );
+      throw new Error(
+        "Clinical Workspace state changed while the confirmation was open. Initialization was cancelled; wait for Sync to finish, then open the workspace again."
+      );
+    }
+
+    this.firstUseInitializationPending = false;
+    this.initializationScaffoldApproved = true;
+    this.workspaceInitialized = false;
+    this.managedRecordsExpected = currentRecordCount > 0;
+    this.expectedManagedRecordCount = currentRecordCount;
+    this.missingRootRecoveryBlocked = false;
+    this.missingRootRequiresRecords = false;
+    // Keep the write barrier armed until the durable approval has completed;
+    // a second ribbon tap must not race ahead and scaffold early.
+    this.migrationRecoveryBlocked = true;
+    this.recoveryBlockMessage = CLINICAL_INITIALIZATION_REQUIRED_MESSAGE;
+    try {
+      // This must finish before ensureStructure is reachable. If it fails, no
+      // folder is created and the original fail-closed state is restored.
+      await this.persistPluginData();
+      this.migrationRecoveryBlocked = false;
+      this.recoveryBlockMessage = CLINICAL_WRITES_BLOCKED_MESSAGE;
+      this.repository.setWriteBlock(null);
+      this.pendingAdoptionRecordCount = null;
+      this.pendingAdoptionRoot = null;
+      this.pendingAdoptionDataFingerprint = null;
+    } catch {
+      this.firstUseInitializationPending = true;
+      this.initializationScaffoldApproved = false;
+      this.workspaceInitialized = false;
+      this.migrationRecoveryBlocked = true;
+      this.recoveryBlockMessage = CLINICAL_INITIALIZATION_REQUIRED_MESSAGE;
+      this.repository.setWriteBlock(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
+      this.pendingAdoptionRecordCount = null;
+      this.pendingAdoptionRoot = null;
+      this.pendingAdoptionDataFingerprint = null;
+      throw new Error(CLINICAL_INITIALIZATION_SAVE_FAILED_MESSAGE);
+    }
+  }
+
   async updateSettings(patch: Partial<ClinicalSettings>): Promise<void> {
+    if (this.firstUseInitializationPending || this.initializationScaffoldApproved) {
+      throw new Error(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
+    }
     this.settings = normalizeSettings(
       { ...this.settings, ...patch },
       { careSettings: CARE_SETTINGS, pathways: PATHWAYS, priorities: PRIORITIES }
     );
-    // normalizeSettings drops unknown keys, so an unrelated settings change would
-    // otherwise erase an in-flight migration marker and with it the only record
-    // that a move was interrupted.
-    await this.saveData(this.withPendingMarker(this.settings));
+    // The queued persistence helper preserves any in-flight marker and its
+    // configured destination while applying this unrelated settings change.
+    await this.persistPluginData();
     this.repository.setActor(auditActor(this.settings));
     setClinicalRoot(this.settings.rootFolder);
     await this.refreshOpenViews();
@@ -160,21 +661,29 @@ export default class ClinicalWorkspacePlugin extends Plugin {
    * a move was in flight so `reconcileMigration` can settle it on next load.
    */
   async migrateRootFolder(target: string): Promise<MigrationResult> {
+    if (this.migrationRecoveryBlocked) throw new Error(this.recoveryBlockMessage);
+    this.setMigrationRecoveryBlocked(true);
+    this.localMigrationRunning = true;
     const attempt: { plan?: MigrationPlan } = {};
+    let recordsMoved = false;
     try {
       const result = await this.migration.run(target, async (plan) => {
         attempt.plan = plan;
         const marker = { from: plan.from, to: plan.to };
         this.settings = { ...this.settings, rootFolder: plan.to };
         this.pendingMigrationMarker = { migrationInProgress: marker };
-        await this.saveData(this.withPendingMarker(this.settings));
+        this.pendingMigrationConfiguredRoot = plan.to;
+        await this.persistPluginData();
         setClinicalRoot(plan.to);
       });
+      recordsMoved = true;
       // `MigrationService.run` never throws after the rename succeeds. Reaching
       // here therefore proves the destination holds the moved records and the
       // recovery marker can be retired.
       this.pendingMigrationMarker = null;
-      await this.saveData(this.settings);
+      this.pendingMigrationConfiguredRoot = null;
+      this.setMigrationRecoveryBlocked(false);
+      await this.persistPluginData();
       await this.refreshOpenViews();
       if (result.danglingLinks > 0) {
         new Notice(
@@ -189,69 +698,206 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       }
       return result;
     } catch (error) {
-      // A throw can only happen before or during rename. Point back at the
-      // source immediately and keep the marker armed until reconciliation has
-      // inspected the vault. An unrelated settings save must not erase it.
+      // MigrationService itself never throws after rename, but the subsequent
+      // marker-clear save or view refresh can. Never point back at the source
+      // after records have physically moved; retain a marker on the proven
+      // destination and keep writes blocked until recovery can persist cleanly.
       const failedPlan = attempt.plan;
       if (failedPlan) {
         const marker = { from: failedPlan.from, to: failedPlan.to };
-        this.settings = { ...this.settings, rootFolder: failedPlan.from };
+        const recoveryRoot = recordsMoved ? failedPlan.to : failedPlan.from;
+        this.settings = { ...this.settings, rootFolder: recoveryRoot };
         this.pendingMigrationMarker = { migrationInProgress: marker };
-        setClinicalRoot(failedPlan.from);
-        await this.saveData(this.withPendingMarker(this.settings));
+        this.pendingMigrationConfiguredRoot = recoveryRoot;
+        setClinicalRoot(recoveryRoot);
+        this.setMigrationRecoveryBlocked(true);
+        try {
+          await this.persistPluginData();
+        } catch {
+          // The in-memory barrier remains armed. Preserve the original failure,
+          // which is the actionable error the initiating UI should report.
+        }
+      } else {
+        this.setMigrationRecoveryBlocked(false);
       }
       throw error;
+    } finally {
+      this.localMigrationRunning = false;
     }
   }
 
-  /**
-   * Settles a migration that was interrupted between the marker being written
-   * and the move completing. Whichever of the two folders actually exists wins,
-   * because that is where the records are.
-   */
   /** Re-attaches an in-flight migration marker to whatever is being saved. */
   private withPendingMarker(settings: ClinicalSettings): Record<string, unknown> {
     const marker = (this.pendingMigrationMarker as { migrationInProgress?: MigrationMarker } | null)
       ?.migrationInProgress;
-    return marker ? { ...settings, migrationInProgress: marker } : { ...settings };
+    const data: Record<string, unknown> = {
+      ...settings,
+      workspaceSafety: this.workspaceSafety()
+    };
+    if (marker) data.migrationInProgress = marker;
+    return data;
   }
 
-  private async reconcileMigration(stored: unknown): Promise<void> {
-    const marker = (stored as { migrationInProgress?: MigrationMarker } | null)?.migrationInProgress;
-    if (!marker?.from || !marker?.to) return;
-    // "Holds records", not "exists" and not "contains any markdown": ensureStructure
-    // writes a home note and database views, so a freshly created empty root would
-    // otherwise look occupied — which is the exact failure this is here to prevent.
-    const RECORD_FOLDERS = ["Patients", "Episodes", "Tasks", "Procedures"];
-    const holdsRecords = (root: string) =>
-      markdownFilesInFolder(this.app.vault, root)
-        .some((file) => RECORD_FOLDERS.some((folder) => file.path.startsWith(`${root}/${folder}/`)));
-    const sourceHasRecords = holdsRecords(marker.from);
-    const destinationHasRecords = holdsRecords(marker.to);
+  /** Builds the snapshot only when its turn reaches the head of the queue. */
+  private persistPluginData(): Promise<void> {
+    const write = this.pluginDataWriteQueue
+      .catch(() => undefined)
+      .then(async () => {
+        const marker = this.currentMigrationMarker();
+        const settings = marker && this.pendingMigrationConfiguredRoot
+          ? { ...this.settings, rootFolder: this.pendingMigrationConfiguredRoot }
+          : this.settings;
+        await this.saveData(this.withPendingMarker(settings));
+      });
+    this.pluginDataWriteQueue = write;
+    return write;
+  }
+
+  /**
+   * Settles an interrupted/synced move only when exactly one record root wins.
+   * A source-only state whose stored settings still name the destination is
+   * deliberately pending: Sync may have delivered data.json before the folder.
+   */
+  private async reconcileMigration(
+    stored: unknown,
+    options: { allowSourceRollback?: boolean } = {}
+  ): Promise<boolean> {
+    const marker = this.markerFrom(stored) ?? this.currentMigrationMarker();
+    if (!marker) return true;
+    const configuredRoot = normalizeSettings(stored, {
+      careSettings: CARE_SETTINGS,
+      pathways: PATHWAYS,
+      priorities: PRIORITIES
+    }).rootFolder;
+    this.pendingMigrationConfiguredRoot = configuredRoot;
+
+    const sourceRecordCount = this.rootManagedRecordCount(marker.from);
+    const destinationRecordCount = this.rootManagedRecordCount(marker.to);
+    const sourceHasRecords = sourceRecordCount > 0;
+    const destinationHasRecords = destinationRecordCount > 0;
     const actual = resolveMigrationRoot(marker, (root) =>
       root === marker.from ? sourceHasRecords : destinationHasRecords
     );
+
+    // Both populated roots are ambiguous. Neither can be made writable until
+    // Sync removes one or the user explicitly resolves the duplicate records.
     if (!actual && (sourceHasRecords || destinationHasRecords)) {
       this.pendingMigrationMarker = { migrationInProgress: marker };
-      await this.saveData(this.withPendingMarker(this.settings));
-      throw new Error(
-        "Clinical Workspace could not determine where an interrupted folder move left the records. The recovery marker was preserved; inspect both folders before continuing."
-      );
+      this.setMigrationRecoveryBlocked(true);
+      return false;
     }
-    // A newly scaffolded workspace legitimately has no records at either path.
-    // If its rename failed, the source remains authoritative; preserving the
-    // marker would otherwise make every future activation fail forever.
-    const resolvedRoot = actual ?? marker.from;
-    if (resolvedRoot !== this.settings.rootFolder) {
-      this.settings = { ...this.settings, rootFolder: resolvedRoot };
-      setClinicalRoot(resolvedRoot);
+
+    const requiredRecordCount = this.managedRecordsExpected
+      ? Math.max(1, this.expectedManagedRecordCount)
+      : 0;
+    const actualRecordCount = actual === marker.from
+      ? sourceRecordCount
+      : actual === marker.to
+        ? destinationRecordCount
+        : 0;
+    // A single early-delivered file is not convergence. Require the complete
+    // previously healthy count at either destination or explicit source
+    // rollback; true record-free workspaces retain folder-presence recovery.
+    if (requiredRecordCount > 0 && actualRecordCount < requiredRecordCount) {
+      if (actual === marker.from) {
+        this.settings = { ...this.settings, rootFolder: marker.from };
+        setClinicalRoot(marker.from);
+      }
+      this.pendingMigrationMarker = { migrationInProgress: marker };
+      this.setMigrationRecoveryBlocked(true);
+      return false;
     }
-    this.pendingMigrationMarker = null;
-    await this.saveData(this.settings);
-    new Notice(
-      `Clinical Workspace recovered an interrupted folder move. Records are in "${this.settings.rootFolder}".`,
-      12000
+
+    // Source-only + destination-configured is the marker-before-folder state.
+    // Keep reads on the source, preserve the marker, and wait. An explicit user
+    // retry may instead confirm that Sync has settled and roll back to source.
+    if (
+      actual === marker.from &&
+      configuredRoot !== marker.from &&
+      !options.allowSourceRollback
+    ) {
+      this.settings = { ...this.settings, rootFolder: marker.from };
+      setClinicalRoot(marker.from);
+      this.pendingMigrationMarker = { migrationInProgress: marker };
+      this.setMigrationRecoveryBlocked(true);
+      return false;
+    }
+
+    // With no records at either path, a completed folder rename is still
+    // observable from folder presence. Otherwise retain the established
+    // record-free failed-move recovery and return to the source.
+    const resolvedRoot = actual ?? (
+      configuredRoot === marker.to && this.rootExists(marker.to) && !this.rootExists(marker.from)
+        ? marker.to
+        : marker.from
     );
+    this.settings = { ...this.settings, rootFolder: resolvedRoot };
+    setClinicalRoot(resolvedRoot);
+    this.pendingMigrationMarker = null;
+    this.pendingMigrationConfiguredRoot = null;
+    this.setMigrationRecoveryBlocked(false);
+    this.structureReady = false;
+    await this.persistPluginData();
+    new Notice("Clinical Workspace recovered the interrupted folder move.", 12000);
+    return true;
+  }
+
+  /**
+   * User-initiated retry after Sync reports completion. It may confirm a
+   * source-only rollback, but still refuses to choose between two populated
+   * roots. The settings UI/command can call this without exposing paths.
+   */
+  async retryPendingMigrationRecovery(): Promise<boolean> {
+    const marker = this.currentMigrationMarker();
+    if (!marker) {
+      if (!this.missingRootRecoveryBlocked) return true;
+      // This is intentionally user-confirmed rather than automatic: Sync can
+      // create the parent folder before delivering its child records.
+      if (
+        !this.rootExists(clinicalRootFolder()) ||
+        (
+          this.missingRootRequiresRecords &&
+          this.rootManagedRecordCount(clinicalRootFolder()) <
+            Math.max(1, this.expectedManagedRecordCount)
+        )
+      ) {
+        this.showMigrationRecoveryNotice();
+        return false;
+      }
+      this.setMigrationRecoveryBlocked(false);
+      this.structureReady = false;
+      await this.persistPluginData();
+      await this.refreshOpenViews();
+      new Notice("Clinical Workspace folder access was restored.", 7000);
+      return true;
+    }
+    const configuredRoot = this.pendingMigrationConfiguredRoot ?? this.settings.rootFolder;
+    const settled = await this.reconcileMigration(
+      { ...this.settings, rootFolder: configuredRoot, migrationInProgress: marker },
+      { allowSourceRollback: true }
+    );
+    if (!settled) this.showMigrationRecoveryNotice();
+    else await this.refreshOpenViews();
+    return settled;
+  }
+
+  /** Automatic retries stay conservative: source-only is still in flight. */
+  private async retryMigrationReconciliation(): Promise<boolean> {
+    if (this.firstUseInitializationPending) return false;
+    if (this.migrationReconciliationPromise) return this.migrationReconciliationPromise;
+    const marker = this.currentMigrationMarker();
+    if (!marker) return true;
+    const configuredRoot = this.pendingMigrationConfiguredRoot ?? this.settings.rootFolder;
+    this.migrationReconciliationPromise = this.reconcileMigration({
+      ...this.settings,
+      rootFolder: configuredRoot,
+      migrationInProgress: marker
+    }).finally(() => {
+      this.migrationReconciliationPromise = null;
+    });
+    const settled = await this.migrationReconciliationPromise;
+    if (settled) await this.refreshOpenViews();
+    return settled;
   }
 
   /**
@@ -262,12 +908,41 @@ export default class ClinicalWorkspacePlugin extends Plugin {
    */
   private async ensureStructure(): Promise<void> {
     if (this.structureReady) return;
+    if (
+      this.initializationScaffoldApproved &&
+      this.rootManagedRecordCount(clinicalRootFolder()) !== this.expectedManagedRecordCount
+    ) {
+      // Sync changed the record set after approval but before scaffolding. The
+      // persisted approval remains as crash evidence, while this session goes
+      // back to an explicit re-adoption prompt without writing anything.
+      this.initializationScaffoldApproved = false;
+      this.firstUseInitializationPending = true;
+      this.setMigrationRecoveryBlocked(true, CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
+      throw new Error(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
+    }
     // Shared promise rather than a boolean: two callers arriving together would
     // both see structureReady === false and both start creating folders.
     this.structurePromise ??= (async () => {
       try {
         await this.repository.ensureStructure();
         this.structureReady = true;
+        const rootRecordCount = this.rootManagedRecordCount(clinicalRootFolder());
+        const rootHasRecords = rootRecordCount > 0;
+        const completingApprovedInitialization = this.initializationScaffoldApproved;
+        const safetyChanged =
+          this.workspaceSafetyNeedsPersistence ||
+          !this.workspaceInitialized ||
+          completingApprovedInitialization ||
+          (rootHasRecords && !this.managedRecordsExpected) ||
+          rootRecordCount > this.expectedManagedRecordCount;
+        this.workspaceInitialized = true;
+        this.initializationScaffoldApproved = false;
+        this.managedRecordsExpected ||= rootHasRecords;
+        this.expectedManagedRecordCount = Math.max(
+          this.expectedManagedRecordCount,
+          rootRecordCount
+        );
+        if (safetyChanged) await this.persistWorkspaceSafety();
       } finally {
         this.structurePromise = null;
       }
@@ -285,24 +960,155 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   private registerVaultEvents(): void {
     this.registerEvent(this.app.vault.on("create", (file) => {
       this.repository.invalidatePath(file.path);
+      this.observeManagedRecordDelivery(file.path);
+      this.retryMigrationForPath(file.path);
       this.scheduleRefresh(file.path);
     }));
     this.registerEvent(this.app.vault.on("modify", (file) => {
       this.repository.invalidatePath(file.path);
+      this.retryMigrationForPath(file.path);
       this.scheduleRefresh(file.path);
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
       this.repository.invalidatePath(file.path);
+      this.blockIfActiveRootDisappeared(file.path);
+      this.retryMigrationForPath(file.path);
       this.scheduleRefresh(file.path);
     }));
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        this.repository.invalidatePath(file.path);
-        this.repository.invalidatePath(oldPath);
+        this.handleVaultRename(file, oldPath);
         this.scheduleRefresh(file.path);
         this.scheduleRefresh(oldPath);
       })
     );
+  }
+
+  /** Applies the safety-sensitive part of a vault rename synchronously. */
+  private handleVaultRename(file: { path: string }, oldPath: string): void {
+    this.repository.invalidatePath(file.path);
+    this.repository.invalidatePath(oldPath);
+    this.observeManagedRecordDelivery(file.path);
+    const rootRenameHandled = this.handleExternalRootRename(file, oldPath);
+    if (rootRenameHandled) return;
+
+    // Obsidian reports a move as rename(newPath, oldPath). Deletion handling
+    // therefore never sees a managed record or child folder moved out of the
+    // active root. Re-use the count-based loss check on the old path. A rename
+    // within managed folders keeps the count unchanged and remains writable.
+    this.blockIfActiveRootDisappeared(oldPath);
+    this.retryMigrationForPath(file.path);
+    this.retryMigrationForPath(oldPath);
+  }
+
+  private observeManagedRecordDelivery(path: string): void {
+    if (this.migrationRecoveryBlocked || !path.startsWith(`${clinicalRootFolder()}/`)) return;
+    void this.noteManagedRecordWrite().catch(() => {
+      new Notice(
+        "Clinical Workspace could not save its folder-recovery state. Keep the plugin open and do not edit records.",
+        12000
+      );
+    });
+  }
+
+  /**
+   * Sync can deliver the folder rename before data.json. Arm the write barrier
+   * synchronously in the event callback, then persist inferred intent before
+   * attempting to activate the destination.
+   */
+  private handleExternalRootRename(file: unknown, oldPath: string): boolean {
+    if (
+      this.localMigrationRunning ||
+      this.currentMigrationMarker() ||
+      !(file instanceof TFolder) ||
+      oldPath !== clinicalRootFolder() ||
+      file.path === oldPath
+    ) {
+      return false;
+    }
+    const normalizedDestination = normalizeFolderPath(file.path);
+    if (
+      normalizedDestination !== file.path ||
+      validateRootFolder(normalizedDestination)
+    ) {
+      this.setMissingRootRecoveryBlocked();
+      void this.persistWorkspaceSafety();
+      this.showMigrationRecoveryNotice();
+      return true;
+    }
+    const marker = { from: oldPath, to: normalizedDestination };
+    this.pendingMigrationMarker = { migrationInProgress: marker };
+    this.pendingMigrationConfiguredRoot = marker.to;
+    this.setMigrationRecoveryBlocked(true);
+    if (this.firstUseInitializationPending) {
+      new Notice(
+        "A legacy folder move was detected. Let synchronization finish, then use the recovery command before adopting the current workspace baseline.",
+        12000
+      );
+      return true;
+    }
+    void (async () => {
+      await this.persistPluginData();
+      const settled = await this.retryMigrationReconciliation();
+      if (!settled) this.showMigrationRecoveryNotice();
+    })().catch(() => this.showMigrationRecoveryNotice());
+    return true;
+  }
+
+  /** A split delete/create delivery must never leave a depleted root writable. */
+  private blockIfActiveRootDisappeared(path: string): void {
+    const activeRoot = clinicalRootFolder();
+    const isManagedPath = ["Patients", "Episodes", "Tasks", "Procedures"]
+      .some((folder) =>
+        path === `${activeRoot}/${folder}` ||
+        path.startsWith(`${activeRoot}/${folder}/`)
+      );
+    const managedCountDropped =
+      isManagedPath &&
+      this.managedRecordsExpected &&
+      this.rootManagedRecordCount(activeRoot) < Math.max(1, this.expectedManagedRecordCount);
+    if (
+      this.localMigrationRunning ||
+      this.currentMigrationMarker() ||
+      (path !== activeRoot && !managedCountDropped)
+    ) {
+      return;
+    }
+    this.setMissingRootRecoveryBlocked(this.managedRecordsExpected || managedCountDropped);
+    void this.persistWorkspaceSafety();
+    this.showMigrationRecoveryNotice();
+  }
+
+  private async persistWorkspaceSafety(): Promise<void> {
+    this.workspaceSafetyNeedsPersistence = true;
+    const revision = ++this.workspaceSafetyRevision;
+    try {
+      await this.persistPluginData();
+      if (this.workspaceSafetyRevision === revision) {
+        this.workspaceSafetyNeedsPersistence = false;
+      }
+    } catch {
+      this.workspaceSafetyNeedsPersistence = true;
+      new Notice(
+        "Clinical Workspace could not save its folder-recovery state. Keep the plugin open and do not edit records.",
+        12000
+      );
+    }
+  }
+
+  private retryMigrationForPath(path: string): void {
+    if (this.localMigrationRunning || this.firstUseInitializationPending) return;
+    const marker = this.currentMigrationMarker();
+    const touches = (root: string) => path === root || path.startsWith(`${root}/`);
+    if (!marker) {
+      return;
+    }
+    if (!touches(marker.from) && !touches(marker.to)) return;
+    void this.retryMigrationReconciliation().catch(() => {
+      // The repository stays fail-closed. The next relevant Sync event or the
+      // explicit retry command will try again; no clinical details are logged.
+      this.showMigrationRecoveryNotice();
+    });
   }
 
   private scheduleRefresh(path: string): void {
@@ -334,6 +1140,11 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   /** User-facing entry point: command and ribbon failures must never be silent. */
   private async openWorkspace(): Promise<void> {
     try {
+      if (this.firstUseInitializationPending) {
+        const confirmed = await this.requestFirstUseInitialization();
+        if (!confirmed) return;
+        await this.initializeNewWorkspace();
+      }
       await this.activateWorkspace();
     } catch (error) {
       new Notice(
@@ -348,9 +1159,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // settings name, so running it first would manufacture an empty folder at
     // the interrupted destination and reconciliation would then "find" it.
     if (this.pendingMigrationMarker) {
-      const marker = this.pendingMigrationMarker;
-      await this.reconcileMigration(marker);
+      const settled = await this.retryMigrationReconciliation();
+      if (!settled) throw new Error(CLINICAL_WRITES_BLOCKED_MESSAGE);
     }
+    if (this.migrationRecoveryBlocked) throw new Error(this.recoveryBlockMessage);
     await this.ensureStructure();
     const existing = this.app.workspace.getLeavesOfType(CLINICAL_WORKSPACE_VIEW)[0];
     const leaf = existing ?? this.app.workspace.getLeaf(true);
@@ -372,6 +1184,11 @@ export default class ClinicalWorkspacePlugin extends Plugin {
 
   private async openAddPatient(): Promise<void> {
     try {
+      if (this.firstUseInitializationPending) {
+        const confirmed = await this.requestFirstUseInitialization();
+        if (!confirmed) return;
+        await this.initializeNewWorkspace();
+      }
       const view = await this.activateWorkspace();
       view.openAddPatient();
     } catch (error) {

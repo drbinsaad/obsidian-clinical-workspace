@@ -7,12 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-08-10
+
 ### Added
 
 - Added a repository-side surgery-logbook CSV exporter that joins completed
-  procedures to their episode context. Exports are de-identified by default,
-  protect spreadsheet cells from formula injection, and require an explicit
-  `--identifiers` flag before including MRNs or patient names.
+  procedures to their episode context. Default exports are pseudonymized and
+  confidential, protect spreadsheet cells from formula injection, and require
+  an explicit `--identifiers` flag before including MRNs or patient names.
+- Added a mobile-safe, explicit **Initialize new workspace** confirmation that
+  lets pre-0.3.6 users adopt the current records as a trusted recovery baseline
+  only after Sync is complete, or initialize a genuinely new/record-free
+  workspace. A two-phase path-free approval marker makes an interruption before
+  scaffolding safely resumable.
+
+### Changed
+
+- Documentation now separates the desktop/mobile Obsidian plugin runtime from
+  the desktop-only Node.js exporter, lists every default export field and its
+  residual disclosure risk, and defines institutional handling for both
+  pseudonymized and identified CSVs.
+- Repository linting now covers the Node.js scripts as well as plugin source;
+  Obsidian runtime-only lint rules remain scoped away from those desktop CLIs.
+- Long clinical lists render in bounded 40-record pages. Paging preserves the
+  mobile scroll position and keyboard focus, with list-specific accessible
+  navigation labels.
+
+### Fixed
+
+- The exporter now requires an explicit output path outside the vault, rejects
+  a clinical root or record-tree symlink that escapes the vault, requires an
+  existing parent and `.csv` extension, rejects output symlinks, and refuses to
+  replace an existing regular output unless `--force` is supplied.
+- Logbook export now fails closed on unreadable/malformed records, invalid
+  field types, dates or enums, duplicate IDs, missing links, and
+  patient/episode mismatches. Pseudonymized mode does not read Patients;
+  successful files use owner-only permissions where supported and
+  same-directory atomic publication, while console summaries omit paths,
+  filenames, IDs, and clinical free text.
+- Conventional surgery-logbook CSV names and exporter temporary artifacts are
+  ignored as defence in depth against accidental source-control publication.
+- A clinical root received through Sync is no longer activated before the
+  corresponding workspace arrives. Incomplete or split migration state keeps
+  the known source active, preserves the recovery marker, and blocks clinical
+  and scaffolding writes until vault evidence identifies one safe root.
+- Migration reconciliation now retries on vault changes, settles destination-
+  only records to the destination, requires explicit recovery after Sync for a
+  source-only rollback, and fails closed when both roots contain managed
+  records.
+- Path-free workspace safety state now survives restarts. A missing previously
+  populated root remains
+  read-only until its prior aggregate managed-file count returns. Legacy
+  workspaces with or without `data.json` stay read-only on their first 0.3.6
+  open until the user confirms the visible, fully synced record count as the
+  baseline. This prevents an empty parent or partial Sync delivery from being
+  mistaken for a complete workspace.
 
 ## [0.3.5] - 2026-08-07
 
