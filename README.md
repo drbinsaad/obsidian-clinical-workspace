@@ -50,8 +50,16 @@ data.*
 | **Surgery** | OR booking queue, completed-procedure logbook, and optional follow-up dates. |
 | **More** | Native Obsidian Bases, identity correction and merge, archive/restore, and integrity checking. |
 
-The **Open workspace** and **Add patient episode** commands are available from
-the command palette and can be added to the Obsidian mobile toolbar.
+The command palette now includes a **Quick entry** hub plus separate actions
+for a new patient/Episode, task or follow-up, procedure, and today's pending
+work. Procedure Quick Entry remains limited to eligible active OR-booking
+Episodes. Assign your own desktop hotkeys or add any Quick Entry command through
+**Settings → Mobile → Manage toolbar options → Add global command**; no default
+shortcuts are imposed. The ribbon action appears in the desktop ribbon and
+mobile **Open menu**, while toolbar placement is configured separately. Task
+and procedure actions always require a visible Episode choice before their blank form opens.
+See [Quick Entry, hotkeys, mobile toolbar, and safe local
+links](docs/quick-entry.md). Obsidian may vary the exact setting labels by version.
 
 ## Five-minute synthetic quick start
 
@@ -59,7 +67,7 @@ the command palette and can be added to the Obsidian mobile toolbar.
    unsynced while learning the workflow.
 2. Run **Clinical Workspace: Open workspace**. Review the initialization prompt
    and initialize the genuinely new, empty workspace.
-3. Run **Clinical Workspace: Add patient episode** and enter unmistakably
+3. Run **Clinical Workspace: Quick entry: new patient / episode** and enter unmistakably
    synthetic details—for example, `Synthetic Patient Alpha` with MRN
    `9000000001`.
 4. Open the episode, add a task, update its pathway or priority, then complete
@@ -91,6 +99,9 @@ matches the released plugin.
   on different devices, run the integrity check.
 - Audit notes are best-effort and multi-file operations are not transactional.
   A reported failure may leave earlier writes in place.
+- Optional Quick Entry Obsidian links contain a fixed action only. Any query
+  parameter is rejected, and a link can open only the hub, an explicit Episode
+  chooser, a blank form, or the Today view; it cannot submit clinical data.
 
 For the complete threat model and non-goals, read [Security and
 privacy](SECURITY.md).
@@ -210,6 +221,7 @@ in `dist/`. See [Contributing](CONTRIBUTING.md) for the development workflow.
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security and private vulnerability reporting](SECURITY.md)
+- [Quick Entry, hotkeys, mobile toolbar, and safe local links](docs/quick-entry.md)
 - [Support](SUPPORT.md)
 - [Code of conduct](CODE_OF_CONDUCT.md)
 - [Issue tracker](https://github.com/drbinsaad/obsidian-clinical-workspace/issues)

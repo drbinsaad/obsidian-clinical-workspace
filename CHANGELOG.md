@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-10
+
+### Added
+
+- Added a Quick Entry hub, dedicated command-palette actions for new
+  patient/Episode, task or follow-up, procedure, and today's pending work, a
+  touch-friendly workspace-header control, and a separate ribbon action shown
+  in the desktop ribbon and mobile Open menu. Commands intentionally ship
+  without default hotkeys and can be added to the mobile toolbar as global
+  commands.
+- Added parameter-free Obsidian protocol actions for trusted local automation.
+  Every action opens only the hub, an Episode chooser, a blank form, or Today;
+  any query parameter rejects the complete invocation.
+- Added a searchable Episode context picker for task and procedure shortcuts.
+  Task choices cover active usable Episodes, while procedure choices preserve
+  the Surgery workflow boundary by listing only active OR-booking Episodes. An
+  exact active managed-Episode path is labelled and promoted, but remains
+  unselected until the user explicitly confirms it.
+- Added a focused guide for desktop hotkeys, iPhone/mobile toolbar setup, and
+  privacy-safe Apple Shortcut configuration.
+
+### Security
+
+- Quick Entry never accepts patient names, MRNs, record IDs, note paths,
+  clinical text, or vault selection from a URI. Rejected values are not read,
+  echoed, persisted, or logged, and every action still passes through the
+  workspace initialization, migration, and Sync-recovery barriers.
+- A single patient-merge → Episode-lifecycle → task/procedure lock order plus
+  fresh context validation prevents a stale form from crossing a patient merge
+  or reviving a retired Episode. Episode creation/reuse, update, archive,
+  restore, and identity correction use the same ordering. Patient merges lock
+  both participants in stable ID order, reject inactive surviving targets, and
+  cannot form opposite-direction merge cycles. Task completion/cancellation
+  also holds the Episode lifecycle lock through reconciliation, so it cannot
+  erase a concurrently created next action. Procedure creation also rechecks
+  the active patient relationship and OR-booking pathway before writing.
+- MRN creation and identity correction share one normalized uniqueness lock;
+  concurrent corrections cannot claim the same MRN. Episode creation also
+  revalidates its resolved MRN after acquiring the patient lock, so a stale
+  identity resolution fails closed instead of attaching to a changed patient.
+
 ## [0.3.7] - 2026-08-10
 
 ### Added

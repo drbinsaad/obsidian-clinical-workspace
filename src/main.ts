@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, TFolder, WorkspaceLeaf } from "obsidian";
+import { MarkdownView, Notice, Plugin, TFile, TFolder, WorkspaceLeaf } from "obsidian";
 import { clinicalRootFolder, setClinicalRoot } from "./data/paths";
 import {
   CLINICAL_WRITES_BLOCKED_MESSAGE,
@@ -30,6 +30,11 @@ import {
   CLINICAL_WORKSPACE_VIEW,
   ClinicalWorkspaceView
 } from "./ui/workspace-view";
+import {
+  QUICK_ENTRY_COMMAND_IDS,
+  QUICK_ENTRY_PROTOCOL_ACTIONS,
+  isSafeQuickEntryProtocolInvocation
+} from "./quick-entry";
 
 const CLINICAL_ROOT_UNAVAILABLE_MESSAGE =
   "Clinical Workspace is temporarily read-only because the configured folder is unavailable. After Sync finishes or the folder is restored, run “Retry pending folder move recovery” from the Command Palette.";
@@ -116,6 +121,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.addRibbonIcon("stethoscope", "Open Clinical Workspace", () => {
       void this.openWorkspace();
     });
+    this.addRibbonIcon("square-pen", "Clinical Workspace quick entry", () => {
+      void this.openQuickEntry();
+    });
 
     this.addCommand({
       id: "open-workspace",
@@ -123,15 +131,58 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       callback: () => void this.openWorkspace()
     });
     this.addCommand({
-      id: "add-patient-episode",
-      name: "Add patient episode",
+      id: QUICK_ENTRY_COMMAND_IDS["new-patient-episode"],
+      name: "Quick entry: new patient / episode",
+      icon: "user-plus",
       callback: () => void this.openAddPatient()
+    });
+    this.addCommand({
+      id: QUICK_ENTRY_COMMAND_IDS.hub,
+      name: "Quick entry",
+      icon: "square-pen",
+      callback: () => void this.openQuickEntry()
+    });
+    this.addCommand({
+      id: QUICK_ENTRY_COMMAND_IDS["add-task-follow-up"],
+      name: "Quick entry: add task / follow-up",
+      icon: "list-plus",
+      callback: () => void this.openAddTask()
+    });
+    this.addCommand({
+      id: QUICK_ENTRY_COMMAND_IDS["record-procedure"],
+      name: "Quick entry: record procedure",
+      icon: "clipboard-plus",
+      callback: () => void this.openRecordProcedure()
+    });
+    this.addCommand({
+      id: QUICK_ENTRY_COMMAND_IDS.today,
+      name: "Open today's pending work",
+      icon: "calendar-clock",
+      callback: () => void this.openTodayPendingWork()
     });
     this.addCommand({
       id: "run-integrity-check",
       name: "Run clinical data integrity check",
       callback: () => void this.runIntegrityCheck()
     });
+
+    this.registerQuickEntryProtocol(QUICK_ENTRY_PROTOCOL_ACTIONS.hub, () => this.openQuickEntry());
+    this.registerQuickEntryProtocol(
+      QUICK_ENTRY_PROTOCOL_ACTIONS["new-patient-episode"],
+      () => this.openAddPatient()
+    );
+    this.registerQuickEntryProtocol(
+      QUICK_ENTRY_PROTOCOL_ACTIONS["add-task-follow-up"],
+      () => this.openAddTask()
+    );
+    this.registerQuickEntryProtocol(
+      QUICK_ENTRY_PROTOCOL_ACTIONS["record-procedure"],
+      () => this.openRecordProcedure()
+    );
+    this.registerQuickEntryProtocol(
+      QUICK_ENTRY_PROTOCOL_ACTIONS.today,
+      () => this.openTodayPendingWork()
+    );
     this.addCommand({
       id: "initialize-new-workspace",
       name: "Initialize new workspace",
@@ -1183,6 +1234,48 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   }
 
   private async openAddPatient(): Promise<void> {
+    await this.runWorkspaceEntry(
+      (view) => view.openAddPatient(),
+      "Could not open the new patient / episode form."
+    );
+  }
+
+  private async openQuickEntry(): Promise<void> {
+    const activeEpisodePath = this.activeMarkdownPath();
+    await this.runWorkspaceEntry(
+      (view) => view.openQuickEntry(activeEpisodePath),
+      "Could not open Clinical Workspace quick entry."
+    );
+  }
+
+  private async openAddTask(): Promise<void> {
+    const activeEpisodePath = this.activeMarkdownPath();
+    await this.runWorkspaceEntry(
+      (view) => view.openAddTaskQuickEntry(activeEpisodePath),
+      "Could not open task / follow-up quick entry."
+    );
+  }
+
+  private async openRecordProcedure(): Promise<void> {
+    const activeEpisodePath = this.activeMarkdownPath();
+    await this.runWorkspaceEntry(
+      (view) => view.openProcedureQuickEntry(activeEpisodePath),
+      "Could not open procedure quick entry."
+    );
+  }
+
+  private async openTodayPendingWork(): Promise<void> {
+    await this.runWorkspaceEntry(
+      (view) => view.openTodayPendingWork(),
+      "Could not open today's pending work."
+    );
+  }
+
+  /** Shared fail-closed initialization and recovery gate for every quick action. */
+  private async runWorkspaceEntry(
+    action: (view: ClinicalWorkspaceView) => void | Promise<void>,
+    fallbackMessage: string
+  ): Promise<void> {
     try {
       if (this.firstUseInitializationPending) {
         const confirmed = await this.requestFirstUseInitialization();
@@ -1190,10 +1283,32 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         await this.initializeNewWorkspace();
       }
       const view = await this.activateWorkspace();
-      view.openAddPatient();
+      await action(view);
     } catch (error) {
-      new Notice(error instanceof Error ? error.message : "Could not open Add Patient.", 7000);
+      new Notice(error instanceof Error ? error.message : fallbackMessage, 7000);
     }
+  }
+
+  /** Capture visual context before activating the custom workspace view. */
+  private activeMarkdownPath(): string {
+    return this.app.workspace.getActiveViewOfType(MarkdownView)?.file?.path ?? "";
+  }
+
+  /**
+   * Registers a fixed, parameter-free Obsidian URI. Values are never read,
+   * echoed, persisted, or logged; any query parameter rejects the invocation.
+   */
+  private registerQuickEntryProtocol(action: string, run: () => Promise<void>): void {
+    this.registerObsidianProtocolHandler(action, (params) => {
+      if (!isSafeQuickEntryProtocolInvocation(action, params)) {
+        new Notice(
+          "Clinical Workspace rejected this quick entry link because it contained parameters. Use the documented link without parameters.",
+          7000
+        );
+        return;
+      }
+      void run();
+    });
   }
 
   private async runIntegrityCheck(options: { onlyWhenIssuesFound?: boolean } = {}): Promise<void> {

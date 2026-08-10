@@ -78,6 +78,11 @@ external location.
 - **No identifiers in logs.** Integrity results are rendered in the interface.
   Messages are written so that they never contain an MRN, name, or phone
   number, and this is enforced by a test.
+- **Quick Entry links are action-only.** Five fixed Obsidian protocol actions
+  can open the hub, an Episode chooser, a blank form, or the Today view. The
+  handler accepts only its own action name and rejects every query parameter;
+  no supplied value is read, echoed, persisted, or logged. These links perform
+  no clinical write without subsequent in-plugin selection and submission.
 
 ## What this plugin does *not* provide
 
@@ -186,6 +191,8 @@ vault/root/output path boundaries.
 | 14 | Partial or incorrectly joined export | Malformed/unreadable records, duplicate IDs, missing links, and patient/episode mismatches abort before publication. Atomic private-file creation prevents a partial CSV from being mistaken for a complete one. |
 | 15 | Export details leaking through terminal history or logs | The operator-supplied command can expose local filesystem paths through shell history. Runtime output itself omits paths, filenames, IDs, and free-text tallies. Use an institutionally managed terminal environment. |
 | 16 | A pre-0.3.6 workspace being baselined from an empty or partial Sync delivery | Every safetyless legacy workspace remains read-only on its first 0.3.6 open, regardless of the visible record count. After Sync is complete, the user must explicitly adopt the current records through **Initialize new workspace**, or initialize a genuinely new/record-free vault. The exact settings/root/count shown at confirmation are revalidated before saving, and a two-phase path-free approval marker makes interruption before scaffolding resumable. |
+| 17 | An automation URL exposes or silently attaches clinical context | Quick Entry uses separate fixed action names and rejects every query parameter, including identifiers, record IDs, file paths, note paths, text, content, and vault selection. Task/procedure actions show an unselected Episode picker; procedure choices remain limited to active OR bookings. An exact current managed-Episode path may be visibly promoted but still requires confirmation. Local patient-owned writes use one patient-merge → Episode-lifecycle → task/procedure lock order, re-read the relationship inside it, and reject inactive or interrupted-merge contexts. Episode creation, update, archive, restore, and identity correction participate in the same patient lock. A merge locks both source and target in stable ID order and requires an active surviving target. This prevents stale forms, opposite-direction merge cycles, cross-merge links, and revival of a retired Episode. Sync remains an external asynchronous writer, so the procedure flow re-reads context again before its final Episode transition. Apple Shortcuts, Siri, notifications, and automation history remain external trust boundaries. |
+| 18 | Concurrent identity edits or Episode creation assign one MRN to two active patients, or use a stale MRN resolution | Creation and correction share one lock keyed by the normalized MRN around the real collision lookup and identity write. Identity correction takes patient-merge → patient-identity → MRN locks; Episode resolution releases its short MRN lock before taking a patient lock, avoiding an inverted cycle. It then re-reads and revalidates the resolved MRN after the patient lock and again immediately before Episode creation. External Sync remains asynchronous, so integrity checks are still required after cross-device editing. |
 
 ## Before using this with identifiable patient data
 
