@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Support and usage guide
+    url: https://github.com/drbinsaad/obsidian-clinical-workspace/blob/main/SUPPORT.md
+    about: Check supported request types and the patient-information prohibition.
   - name: Private security report
     url: https://github.com/drbinsaad/obsidian-clinical-workspace/security/advisories/new
-    about: Report vulnerabilities privately and never include patient information.
+    about: Report vulnerabilities privately using synthetic data only; GitHub is not an approved route for patient information.

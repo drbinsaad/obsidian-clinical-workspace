@@ -224,6 +224,45 @@ test("output inside the supplied vault is rejected even with --force and through
   }
 });
 
+test("relative and custom-named output inside the source checkout is rejected", async () => {
+  const fixture = await syntheticVault();
+  const outputs = ["private-cases.csv", path.join("scripts", "custom-clinical-export.csv")];
+  try {
+    for (const output of outputs) {
+      await expectFailure(
+        [fixture.vault, "--out", output],
+        /output CSV must be outside this source checkout/
+      );
+      await assert.rejects(lstat(path.resolve(output)), { code: "ENOENT" });
+    }
+  } finally {
+    await rm(fixture.home, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked parent cannot make the source checkout look like an external output", async (context) => {
+  const fixture = await syntheticVault();
+  const linkedCheckout = path.join(fixture.home, "approved-output");
+  try {
+    try {
+      await symlink(path.resolve("."), linkedCheckout, "dir");
+    } catch (error) {
+      context.skip(`Symbolic links unavailable: ${String(error)}`);
+      return;
+    }
+
+    const disguised = path.join(linkedCheckout, "custom-clinical-export.csv");
+    const errorOutput = await expectFailure(
+      [fixture.vault, "--out", disguised],
+      /output CSV must be outside this source checkout/
+    );
+    await assert.rejects(lstat(path.resolve("custom-clinical-export.csv")), { code: "ENOENT" });
+    assert.doesNotMatch(errorOutput, /approved-output|custom-clinical-export|clinical-logbook-test/);
+  } finally {
+    await rm(fixture.home, { recursive: true, force: true });
+  }
+});
+
 test("existing output is preserved unless --force is explicit", async () => {
   const fixture = await syntheticVault();
   try {

@@ -4,17 +4,36 @@ Clinical Workspace organises a clinician's own follow-up workflow inside an
 Obsidian vault. It is **not** an EHR/EMR, a prescribing system, a diagnostic
 system, or an autonomous clinical decision-support tool.
 
+## Supported versions
+
+Security fixes are applied to the latest published release. Older releases do
+not receive backported fixes.
+
+| Version | Security updates |
+|---|---|
+| Latest published release | Yes |
+| Earlier releases | No |
+
 ## Reporting a vulnerability
 
 Open a **private** security advisory through the repository's Security tab
-(*Report a vulnerability*). Please do not open a public issue.
+(*Report a vulnerability*). Please do not open a public issue. The project aims
+to acknowledge reports within 7 days, but this is not an emergency-response
+channel.
 
 **Never include real patient information in a report** — no MRNs, names, phone
-numbers, dates of birth, or screenshots of a live vault. Reproduce the problem
-with synthetic data and send that instead. A report containing real patient
-data will be deleted without being acted on.
+numbers, dates of birth, clinical text, vault files, or screenshots of a live
+vault. GitHub, including private security advisories, is not an approved route
+for protected or identifiable patient information. Reproduce the problem with
+synthetic data and send that instead.
 
-Expect an acknowledgement within 7 days.
+If patient information is submitted accidentally, do not repeat it or move it
+into another GitHub thread. Follow the applicable institutional incident and
+breach-reporting process immediately. Maintainers should restrict public access
+with GitHub's moderation controls, involve GitHub Support when appropriate, and
+retain only the non-identifying facts needed to investigate. The underlying
+vulnerability will still be triaged using a synthetic reproduction. Removal
+efforts cannot guarantee erasure from notifications, caches, clones, or backups.
 
 ## Distribution and trust boundaries
 
@@ -100,10 +119,13 @@ remain regulated personal data under applicable law and institutional policy.
 an identified clinical record. The flag is an explicit technical gate, not an
 authorization decision. Without that flag, the Patients folder is not read.
 
-The command requires an explicit `--out` path that resolves outside the source
-vault and ends in `.csv`; the parent directory must already exist. It rejects a
-clinical root that escapes the vault, refuses symbolic links in record trees or
-at the output, and refuses to replace an existing regular output unless
+The command requires an explicit `--out` path that resolves outside both the
+source vault and this public source checkout and ends in `.csv`; the parent
+directory must already exist. Parent directories are resolved before either
+boundary is checked, so a symbolic-link alias cannot disguise an in-repository
+destination. It rejects a clinical root that escapes the vault, refuses
+symbolic links in record trees or at the output, and refuses to replace an
+existing regular output unless
 `--force` is supplied. `--force` means only that the operator intentionally
 approved replacement of that exact external file; it does not relax any
 confidentiality requirement. Spreadsheet cells are escaped and formula-like
@@ -151,15 +173,15 @@ vault/root/output path boundaries.
 | 1 | Vault read by another Obsidian plugin | **Not mitigable from within this plugin.** Any community plugin has full vault access. Install as few as possible in a clinical vault, and review what you do install. |
 | 2 | Device loss or theft | Out of scope. Requires full-disk encryption and a screen lock. |
 | 3 | Sync provider or an account with vault access | Out of scope. Use a sync route your institution sanctions. A folder move must be performed on one device after Sync converges. |
-| 4 | Accidental publication to git | `.gitignore` excludes vault markers, generated record prefixes, conventional `surgery-logbook*.csv` names, and exporter temporary-file names. This is defence in depth, not a confidentiality control: use an approved export location outside any repository and inspect `git status` before every commit. |
-| 5 | Identifiers leaking through logs or bug reports | Integrity output is rendered in the interface, never logged, and contains no identifiers. Enforced by a test. |
+| 4 | Accidental publication to git | The repository exporter rejects output inside this source checkout after resolving the parent directory. `.gitignore` also excludes vault markers, generated record prefixes, conventional `surgery-logbook*.csv` names, and exporter temporary-file names. These controls do not protect a different repository or replace operator review: use an approved location outside every repository and inspect `git status` before every commit. |
+| 5 | Identifiers leaking through logs or bug reports | Integrity output is rendered in the interface and never logged. It omits direct patient identifiers and clinical free text; the UI may show an internal record ID so the user can open the affected note. Enforced by a test. |
 | 6 | A hostile note causing code execution | **Not reachable.** All DOM is built with `createEl`/`createDiv`/`createSpan`, which assign `textContent`. There is no `innerHTML`, `eval`, or `new Function` anywhere in the source. |
 | 7 | Fabricated records mixed into real data | The synthetic data generator is compiled out of release builds and cannot be reached from a released version. |
 | 8 | A folder migration moving records outside the vault | Folder paths reject `.` and `..` segments anywhere in the path, and unsafe or ambiguous targets are rejected. |
 | 9 | Settings or a parent folder syncs before all moved clinical records, causing an empty or partial second tree | A synced root change is not activated without workspace evidence. The last known source remains active and clinical/scaffold writes are blocked while migration evidence is incomplete or both roots contain records. Path-free recovery state survives restart; a previously populated missing root requires its prior aggregate managed-file count before explicit recovery. |
 | 10 | Re-identification of a default export | The output is explicitly labelled pseudonymized/confidential. Direct identifier columns are excluded, remaining fields and linkage risk are documented, and institutional handling plus human review are required. |
 | 11 | Direct identifiers exported accidentally | `mrn` and `patient_name` require `--identifiers`; the command prints an identified-record warning. Authorization and destination controls remain the operator's responsibility. |
-| 12 | Export overwrites a source or existing file | `--out` is mandatory, must use `.csv`, and must resolve outside the vault. Output symlinks and non-files are rejected; an existing regular file is preserved unless the operator supplies `--force`. |
+| 12 | Export overwrites a source or existing file | `--out` is mandatory, must use `.csv`, and must resolve outside both the vault and this source checkout. Output symlinks and non-files are rejected; an existing regular file is preserved unless the operator supplies `--force`. |
 | 13 | Spreadsheet formula injection through clinical free text | Every cell is quoted and formula-like content is neutralized before CSV creation. Review untrusted clinical text and use a supported spreadsheet viewer. |
 | 14 | Partial or incorrectly joined export | Malformed/unreadable records, duplicate IDs, missing links, and patient/episode mismatches abort before publication. Atomic private-file creation prevents a partial CSV from being mistaken for a complete one. |
 | 15 | Export details leaking through terminal history or logs | The operator-supplied command can expose local filesystem paths through shell history. Runtime output itself omits paths, filenames, IDs, and free-text tallies. Use an institutionally managed terminal environment. |

@@ -1,6 +1,6 @@
 {
   "name": "clinical-workspace",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,8 @@
     "version": "node scripts/version-bump.mjs && git add package.json manifest.json versions.json",
     "verify-release": "node scripts/verify-release.mjs",
     "verify-community": "node scripts/verify-community.mjs",
-    "review": "npm run check && npm run verify-release && npm run verify-community",
+    "verify-assets": "node scripts/verify-public-assets.mjs",
+    "review": "npm run check && npm run verify-release && npm run verify-community && npm run verify-assets",
     "install:vault": "node scripts/install-to-vault.mjs",
     "export:logbook": "node scripts/export-logbook.mjs"
   },
@@ -30,7 +31,23 @@
     "yaml": "^2.9.0"
   },
   "description": "Mobile-first local clinical workflow for patients, care episodes, tasks and surgery logbook entries.",
+  "author": {
+    "name": "Ali Alshahrani",
+    "url": "https://github.com/drbinsaad"
+  },
   "license": "MIT",
+  "homepage": "https://community.obsidian.md/plugins/clinical-workspace",
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "local-first",
+    "clinical-workflow",
+    "surgical-logbook",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/drbinsaad/obsidian-clinical-workspace.git"

@@ -1,0 +1,62 @@
+name: Feature request
+description: Propose a Clinical Workspace improvement using synthetic examples only.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the workflow problem, not a real case. **Do not include patient information, live-vault screenshots, clinical exports, or identifiable clinical text.**
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: This request contains only fictional or synthetic information and no live-vault material.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Workflow problem
+      description: What is difficult today, and who encounters it?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the result you need without prescribing a specific implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Possible approach
+      description: Optional interface or workflow suggestion using synthetic examples only.
+    validations:
+      required: false
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Primary platform
+      options:
+        - Mobile
+        - Desktop
+        - Both
+        - Repository-only exporter
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Privacy, data-integrity, and accessibility considerations
+      description: Note any effect on stored records, Sync, exports, identifiers, keyboard use, or mobile layout.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
