@@ -5,7 +5,16 @@ import type { ClinicalSnapshot, NewEpisodeInput } from "../src/domain/types";
 import type { ClinicalRepository } from "../src/data/repository";
 import type { ClinicalService } from "../src/services/clinical-service";
 import type { IntegrityService } from "../src/services/integrity";
-import { NewEpisodeModal, patientIdentityLabel } from "../src/ui/modals";
+import {
+  calculateClinicalModalViewportLayout,
+  CLINICAL_MODAL_VIEWPORT_SYNC_DELAYS,
+  ClinicalModalViewportController,
+  type ClinicalModalViewportHost,
+  type ClinicalModalViewportLayout,
+  episodeChoiceAccessibleLabel,
+  NewEpisodeModal,
+  patientIdentityLabel
+} from "../src/ui/modals";
 import {
   CLINICAL_PAGE_SIZE,
   CLINICAL_WORKSPACE_VIEW,
@@ -48,6 +57,131 @@ test("mobile lists render one bounded page and clamp after synced deletions", ()
   assert.equal(clamped.pages, 1);
 
   assert.equal(pageWindow(values, Number.NaN).page, 0);
+});
+
+test("clinical modal sheets follow the iPhone visual viewport when the keyboard opens", () => {
+  assert.deepEqual(CLINICAL_MODAL_VIEWPORT_SYNC_DELAYS, [0, 60, 180, 420]);
+  assert.deepEqual(calculateClinicalModalViewportLayout(844, 844), {
+    height: 844,
+    keyboardOpen: false,
+    shift: 0
+  });
+  assert.deepEqual(calculateClinicalModalViewportLayout(844, 430, 20), {
+    height: 430,
+    keyboardOpen: true,
+    shift: -187
+  });
+  assert.deepEqual(calculateClinicalModalViewportLayout(844, 844, 0, 414), {
+    height: 430,
+    keyboardOpen: true,
+    shift: -207
+  });
+  assert.deepEqual(calculateClinicalModalViewportLayout(844, 430, 20, 414), {
+    height: 410,
+    keyboardOpen: true,
+    shift: -197
+  });
+  assert.deepEqual(calculateClinicalModalViewportLayout(844, 844, 0, Number.NaN), {
+    height: 844,
+    keyboardOpen: false,
+    shift: 0
+  });
+});
+
+test("clinical viewport lifecycle follows the complete iOS keyboard animation and cleans up", () => {
+  type ListenerName = "viewportResize" | "viewportScroll" | "windowResize" | "focusIn";
+  const listeners: Record<ListenerName, Set<() => void>> = {
+    viewportResize: new Set(),
+    viewportScroll: new Set(),
+    windowResize: new Set(),
+    focusIn: new Set()
+  };
+  let metrics = {
+    innerHeight: 844,
+    viewportHeight: 844,
+    viewportOffsetTop: 0,
+    keyboardHeight: 0
+  };
+  let nextTimer = 0;
+  const timers = new Map<number, { delay: number; listener: () => void }>();
+  const clearedTimers: number[] = [];
+  const layouts: ClinicalModalViewportLayout[] = [];
+  let reveals = 0;
+  let resets = 0;
+  const register = (name: ListenerName) => (listener: () => void) => {
+    listeners[name].add(listener);
+    return () => listeners[name].delete(listener);
+  };
+  const host: ClinicalModalViewportHost = {
+    readMetrics: () => metrics,
+    applyLayout: (layout) => layouts.push(layout),
+    resetLayout: () => { resets += 1; },
+    revealFocusedControl: () => { reveals += 1; },
+    onViewportResize: register("viewportResize"),
+    onViewportScroll: register("viewportScroll"),
+    onWindowResize: register("windowResize"),
+    onFocusIn: register("focusIn"),
+    setTimer: (listener, delay) => {
+      nextTimer += 1;
+      timers.set(nextTimer, { delay, listener });
+      return nextTimer;
+    },
+    clearTimer: (timer) => {
+      clearedTimers.push(timer);
+      timers.delete(timer);
+    }
+  };
+  const controller = new ClinicalModalViewportController(host);
+  controller.start();
+  assert.deepEqual([...timers.values()].map(({ delay }) => delay), [0, 60, 180, 420]);
+  assert.equal(Object.values(listeners).every((set) => set.size === 1), true);
+
+  metrics = {
+    innerHeight: 844,
+    viewportHeight: 430,
+    viewportOffsetTop: 20,
+    keyboardHeight: 414
+  };
+  const focus = [...listeners.focusIn][0];
+  assert.ok(focus);
+  focus();
+  assert.equal(clearedTimers.length, 4);
+  const scheduled = [...timers.entries()].sort((left, right) => left[1].delay - right[1].delay);
+  for (const [timer, task] of scheduled) {
+    timers.delete(timer);
+    task.listener();
+  }
+  assert.equal(reveals, 4);
+  assert.equal(layouts.length, 4);
+  assert.deepEqual(layouts.at(-1), { height: 410, keyboardOpen: true, shift: -197 });
+  assert.equal(scheduled.at(-1)?.[1].delay, 420);
+
+  const resize = [...listeners.viewportResize][0];
+  assert.ok(resize);
+  resize();
+  assert.equal(reveals, 5);
+  controller.stop();
+  assert.equal(Object.values(listeners).every((set) => set.size === 0), true);
+  assert.equal(resets, 1);
+  resize();
+  assert.equal(reveals, 5);
+});
+
+test("Episode picker controls have context-specific accessible names", () => {
+  const makeChoice = (id: string) => ({
+    episode: {
+      id,
+      case: "Synthetic airway review"
+    },
+    patientLabel: "MRN 0000000 · Synthetic Patient",
+    isCurrent: false
+  }) as Parameters<typeof episodeChoiceAccessibleLabel>[1];
+  const first = episodeChoiceAccessibleLabel("a task / follow-up", makeChoice("EPI-SYNTHETIC-1"));
+  const second = episodeChoiceAccessibleLabel("a task / follow-up", makeChoice("EPI-SYNTHETIC-2"));
+  assert.notEqual(first, second);
+  assert.match(first, /Synthetic airway review/);
+  assert.match(first, /Synthetic Patient/);
+  assert.match(first, /EPI-SYNTHETIC-1/);
 });
 
 test("a refresh requested during rendering is queued rather than dropped", async () => {

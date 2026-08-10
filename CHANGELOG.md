@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-11
+
+### Fixed
+
+- Kept Quick Entry, Episode selection, and clinical forms inside the visible iPhone viewport while the software keyboard is open. Modal bodies now own scrolling while action footers remain visible and tappable.
+- Made Quick Entry choices, Episode cards, labels, and form controls wrap cleanly at narrow widths instead of clipping beyond the screen.
+- Reconciled Obsidian's native keyboard inset with the browser visual viewport, resynchronized focused fields during the iOS keyboard animation, and removed all responsive listeners and timers when a modal closes.
+
 ## [0.4.0] - 2026-08-10
 
 ### Added
