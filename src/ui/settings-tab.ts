@@ -273,13 +273,13 @@ export class ClinicalSettingTab extends PluginSettingTab {
         items: [
           {
             name: "Managed-folder access",
-            desc: `The plugin reads and writes Markdown only under “${settings.rootFolder}”. It does not enumerate unrelated vault files and makes no network requests.`,
+            desc: `Ordinary record and scaffold access stays under “${settings.rootFolder}”. A confirmed folder move delegates link rewriting to Obsidian, which may update inbound links elsewhere in the vault. The plugin makes no network requests.`,
             aliases: ["privacy", "permissions", "files", "vault"]
           },
           {
             name: "Plugin settings",
             desc:
-              "data.json stores only the settings shown here. It never stores MRNs, patient names, phone numbers or clinical record content.",
+              "data.json stores the settings shown here plus path-free initialization/recovery booleans and an aggregate managed-file count. It never stores MRNs, patient names, phone numbers, record paths or clinical record content.",
             aliases: ["privacy", "patient data", "configuration"]
           }
         ]

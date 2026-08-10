@@ -74,6 +74,70 @@ function namedSetting(container: HTMLElement, name: string): Setting {
   return setting;
 }
 
+/**
+ * First-run/upgrade adoption is deliberately separate from Sync recovery. A
+ * visible legacy record count is not proof that the rest of the workspace will
+ * not arrive a moment later on another device.
+ */
+export class InitializeWorkspaceModal extends Modal {
+  private decided = false;
+
+  constructor(
+    app: App,
+    private readonly hasManagedRecords: boolean,
+    private readonly onDecision: (initialize: boolean) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("clinical-modal");
+    this.contentEl.empty();
+    this.contentEl.createEl("h2", {
+      text: this.hasManagedRecords
+        ? "Adopt the current Clinical Workspace?"
+        : "Initialize a new Clinical Workspace?",
+      cls: "clinical-modal-heading"
+    });
+    this.contentEl.createEl("p", {
+      text:
+        this.hasManagedRecords
+          ? "This older workspace has no trusted safety baseline yet. Continue only after synchronization is fully complete and the current records are known to be complete."
+          : "No managed Clinical Workspace records or trusted safety baseline were found on this device. Continue only if this is a genuinely new or intentionally record-free workspace.",
+      cls: "clinical-section-note"
+    });
+    this.contentEl.createEl("p", {
+      text:
+        "If this vault was already used on another device, cancel and wait for synchronization to finish or restore your backup. The confirmed current record count becomes the recovery baseline.",
+      cls: "clinical-section-note"
+    });
+    const actions = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
+    const cancel = actions.createEl("button", { text: "Cancel — wait for synchronization" });
+    cancel.addEventListener("click", () => this.finish(false));
+    const initialize = actions.createEl("button", {
+      text: this.hasManagedRecords ? "Adopt current workspace" : "Initialize new workspace",
+      cls: "mod-cta"
+    });
+    initialize.addEventListener("click", () => this.finish(true));
+    queueMicrotask(() => cancel.focus());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+    if (!this.decided) {
+      this.decided = true;
+      this.onDecision(false);
+    }
+  }
+
+  private finish(initialize: boolean): void {
+    if (this.decided) return;
+    this.decided = true;
+    this.onDecision(initialize);
+    this.close();
+  }
+}
+
 export abstract class ClinicalModal<T> extends Modal {
   private errorEl: HTMLElement | null = null;
 

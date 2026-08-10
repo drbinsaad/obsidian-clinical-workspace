@@ -72,6 +72,65 @@ test("a failed root rename rolls back the active root and preserves its recovery
   }
 });
 
+test("a failed marker-clear save after rename never points the plugin back at the old root", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
+    const { app, repository, service } = await harness();
+    await service.createEpisode(episodeInput());
+    let saveCalls = 0;
+    let saved: Record<string, unknown> = {};
+    const plugin = new ClinicalWorkspacePlugin(app as unknown as App, {} as never) as unknown as {
+      app: StubApp;
+      settings: ClinicalSettings;
+      repository: ClinicalRepository;
+      migration: MigrationService;
+      pendingMigrationMarker: unknown;
+      pendingMigrationConfiguredRoot: string | null;
+      migrationRecoveryBlocked: boolean;
+      refreshOpenViews: () => Promise<void>;
+      saveData: (data: unknown) => Promise<void>;
+      migrateRootFolder: (target: string) => Promise<MigrationResult>;
+      retryPendingMigrationRecovery: () => Promise<boolean>;
+    };
+    plugin.app = app;
+    plugin.settings = { ...DEFAULT_SETTINGS };
+    plugin.repository = repository;
+    plugin.migration = new MigrationService(app as unknown as App);
+    plugin.pendingMigrationMarker = null;
+    plugin.pendingMigrationConfiguredRoot = null;
+    plugin.refreshOpenViews = async () => undefined;
+    plugin.saveData = async (data) => {
+      saveCalls += 1;
+      if (saveCalls === 2) throw new Error("EIO: marker clear failed");
+      saved = structuredClone(data) as Record<string, unknown>;
+    };
+
+    await assert.rejects(
+      () => plugin.migrateRootFolder("Ward Records"),
+      /marker clear failed/
+    );
+
+    assert.equal(app.vault.getAbstractFileByPath("Clinical Workspace"), null);
+    assert.ok(app.vault.getAbstractFileByPath("Ward Records"));
+    assert.equal(plugin.settings.rootFolder, "Ward Records");
+    assert.equal(clinicalRootFolder(), "Ward Records");
+    assert.equal(plugin.pendingMigrationConfiguredRoot, "Ward Records");
+    assert.equal(plugin.migrationRecoveryBlocked, true);
+    assert.deepEqual(saved.migrationInProgress, {
+      from: "Clinical Workspace",
+      to: "Ward Records"
+    });
+    assert.equal(saved.rootFolder, "Ward Records");
+
+    assert.equal(await plugin.retryPendingMigrationRecovery(), true);
+    assert.equal(plugin.migrationRecoveryBlocked, false);
+    assert.equal(plugin.pendingMigrationMarker, null);
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
 test("an interrupted move in a record-free workspace recovers to the source", async () => {
   const originalRoot = clinicalRootFolder();
   try {
@@ -122,20 +181,34 @@ test("workspace activation errors are shown instead of becoming unhandled reject
   assert.equal(StubNotice.history[0]?.message, "Simulated read-only vault");
 });
 
-test("a post-rename link-audit failure cannot roll the plugin back to the old folder", async () => {
+test("post-rename failures stay identifier-free and cannot roll the plugin back", async () => {
   const originalRoot = clinicalRootFolder();
+  const originalWarn = console.warn;
   try {
     const { app, service, repository } = await harness();
     await service.createEpisode(episodeInput());
     const migration = new MigrationService(app as unknown as App);
-    (migration as unknown as { countDanglingLinks: () => Promise<number> }).countDanglingLinks = async () => {
-      throw new Error("EIO: simulated audit failure");
+    const vault = app.vault as unknown as {
+      read: (file: unknown) => Promise<string>;
     };
+    vault.read = async () => {
+      throw new Error("EIO: Clinical Workspace/Patients/Jane Patient.md");
+    };
+    const warnings: unknown[][] = [];
+    console.warn = (...values: unknown[]) => {
+      warnings.push(values);
+    };
+
     const result = await migration.run("Ward Records");
+
     assert.equal(result.linkVerificationFailed, true);
+    assert.equal(warnings.length, 2, "both cosmetic rebuild and link-audit failures are reported");
+    assert.ok(warnings.every((values) => values.length === 1));
+    assert.doesNotMatch(JSON.stringify(warnings), /Jane Patient|Patients\/|EIO/);
     setClinicalRoot("Ward Records");
     assert.equal((await repository.list<EpisodeRecord>("episode")).length, 1);
   } finally {
+    console.warn = originalWarn;
     setClinicalRoot(originalRoot);
   }
 });
@@ -144,11 +217,15 @@ test("externally synced settings are applied without restarting Obsidian", async
   const originalRoot = clinicalRootFolder();
   try {
     const { app, repository } = await harness();
+    const source = app.vault.getAbstractFileByPath("Clinical Workspace");
+    assert.ok(source);
+    await app.fileManager.renameFile(source, "Synced Clinical Records");
     let refreshed = 0;
     const plugin = new ClinicalWorkspacePlugin(app as unknown as App, {} as never) as unknown as {
       app: StubApp;
       repository: ClinicalRepository;
       loadData: () => Promise<unknown>;
+      saveData: (data: unknown) => Promise<void>;
       refreshOpenViews: () => Promise<void>;
       onExternalSettingsChange: () => Promise<void>;
       settings: ClinicalSettings;
@@ -156,6 +233,7 @@ test("externally synced settings are applied without restarting Obsidian", async
     plugin.app = app;
     plugin.repository = repository;
     plugin.loadData = async () => ({ ...DEFAULT_SETTINGS, rootFolder: "Synced Clinical Records" });
+    plugin.saveData = async () => undefined;
     plugin.refreshOpenViews = async () => {
       refreshed += 1;
     };
