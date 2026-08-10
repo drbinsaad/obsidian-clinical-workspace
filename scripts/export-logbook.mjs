@@ -22,14 +22,21 @@ import {
   stat
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
 import { parse } from "yaml";
 
+// Resolve the package root once from this script rather than from the caller's
+// working directory. Confidential exports must never be created anywhere in the
+// public source checkout, even when --out reaches it through a symbolic-link
+// parent outside the checkout.
+const SOURCE_CHECKOUT = await realpath(fileURLToPath(new URL("..", import.meta.url)));
+
 const USAGE = `
   Usage: npm run export:logbook -- "/path/to/vault" --out "/safe/location/logbook.csv" [options]
 
-    --out <file>     Required CSV destination outside the vault
+    --out <file>     Required CSV destination outside the vault and source checkout
     --root <folder>  Vault-relative clinical folder (default "Clinical Workspace")
     --identifiers    Include MRN and patient name; reads the Patients folder
     --force          Replace an existing regular CSV file
@@ -450,6 +457,9 @@ async function outputTarget(vault, requested, force) {
   const target = path.join(parent, path.basename(resolved));
   if (isInside(vault, target, true)) {
     fail("The output CSV must be outside the supplied vault, even when --force is used.");
+  }
+  if (isInside(SOURCE_CHECKOUT, target, true)) {
+    fail("The output CSV must be outside this source checkout.");
   }
 
   let existing = null;

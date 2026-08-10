@@ -1,159 +1,101 @@
 # Clinical Workspace for Obsidian
 
-A mobile-first, local-first workflow plugin for personal clinical follow-up and surgical logbook organization. It uses plain Markdown notes with YAML properties, stable internal IDs, native Obsidian links, and Obsidian Bases.
+[![CI](https://github.com/drbinsaad/obsidian-clinical-workspace/actions/workflows/ci.yml/badge.svg)](https://github.com/drbinsaad/obsidian-clinical-workspace/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/drbinsaad/obsidian-clinical-workspace?sort=semver&label=release)](https://github.com/drbinsaad/obsidian-clinical-workspace/releases/latest)
+[![Obsidian Community plugin](https://img.shields.io/badge/Obsidian-Community%20plugin-7C3AED?logo=obsidian&logoColor=white)](obsidian://show-plugin?id=clinical-workspace)
+[![MIT license](https://img.shields.io/github/license/drbinsaad/obsidian-clinical-workspace)](LICENSE)
 
-> This is a personal workflow aid, not an EHR/EMR, prescribing system, diagnostic system, or autonomous clinical decision-support tool. Follow institutional privacy, retention, backup, and device-management policy before storing identifiable patient information. See [SECURITY.md](SECURITY.md) for the threat model and what this plugin deliberately does not provide.
+Turn personal patient follow-up, episode tasks, and surgical logbook entries
+into one focused, mobile-first Obsidian workspace. Clinical Workspace keeps
+each record as plain Markdown with YAML properties and stable internal links
+inside your vault.
 
-## Separate plugin and vault boundary
+![Clinical Workspace illustration showing connected patient, calendar, task, time, and surgery cards](docs/assets/hero.png)
 
-Clinical Workspace and [Knowledge Base Command Center](https://github.com/drbinsaad/knowledge-base-command-center) are independent Obsidian plugins:
+*AI-generated abstract project artwork; not a product screenshot.*
 
-| Plugin | Plugin ID | Purpose |
-|---|---|---|
-| Clinical Workspace | `clinical-workspace` | Personal clinical follow-up, tasks, episodes and surgery logbook |
-| Knowledge Base Command Center | `ent-vault-command-center` | Visual organization and note creation for a knowledge vault |
+## Install
 
-They have different repositories, release histories, settings and plugin folders. A vault holding identifiable clinical records should contain only the minimum institutionally approved plugins. Do not install a general vault-indexing plugin in that vault unless your information-governance policy explicitly permits it.
+**[Open Clinical Workspace in Obsidian Community plugins](obsidian://show-plugin?id=clinical-workspace)**
 
-## Mobile workflow
+Or open **Settings → Community plugins → Browse**, search for **Clinical
+Workspace**, then select **Install** and **Enable**.
 
-- **Today** — overdue tasks, tasks due today, undated open work, active inpatients, and episode counts.
-- **Patients** — one-column cards separated into Inpatient and Outpatient; update care setting, pathway, priority, next action, and date from one sheet.
-- **Tasks** — complete, cancel, or open tasks and add another without horizontal Kanban scrolling.
-- **Surgery** — OR booking queue plus completed surgery logbook; optional follow-up is only requested when enabled.
-- **More** — native Bases, patient records with identity editing and merge, archive/restore, and integrity checking.
+Community-directory availability is not a claim of clinical validation,
+security certification, endorsement, or manual review by Obsidian staff.
 
-The commands **Open workspace** and **Add patient episode** can be added to the Obsidian mobile toolbar or triggered from the command palette. Obsidian automatically displays them under the Clinical Workspace plugin name.
+> [!IMPORTANT]
+> Clinical Workspace is a personal workflow aid. It is not an EHR/EMR,
+> prescribing system, diagnostic system, or autonomous clinical
+> decision-support tool. Confirm institutional approval for the device, vault,
+> sync, retention, and backup route before storing identifiable information.
+> The plugin does not provide encryption, access control, backup verification,
+> or a compliance certification. Read the [security and privacy
+> boundaries](SECURITY.md) before use.
 
-## Installation
+## See the workflow
 
-The Clinical Workspace **plugin runtime** requires Obsidian 1.13.0 or later and
-supports desktop and mobile. The repository also contains a separate Node.js
-logbook-export command; that development utility is not installed with the
-plugin and is desktop-only. See [Repository-only surgery logbook
-exporter](#repository-only-surgery-logbook-exporter).
+![Clinical Workspace Patients view showing two synthetic outpatient records](docs/assets/patients-desktop.png)
 
-### BRAT beta installation
+*Real Clinical Workspace 0.3.6 UI in Obsidian using demonstration-only records:
+Synthetic Patient Alpha and Synthetic Patient Beta with 9000-series
+MRNs and the reserved demonstration phone value `0500000001`. No real patient
+data.*
 
-BRAT remains available as an alternative installation route and for beta testing:
-
-1. Install and enable **BRAT** from Obsidian's Community plugins browser.
-2. Open the command palette and run **BRAT: Add a beta plugin for testing**.
-3. Enter `drbinsaad/obsidian-clinical-workspace`.
-4. Enable **Clinical Workspace** under **Settings → Community plugins**.
-
-[Install Clinical Workspace with BRAT](obsidian://brat?plugin=https://github.com/drbinsaad/obsidian-clinical-workspace)
-
-BRAT can check for releases on startup or through **BRAT: Check for updates to all beta plugins and UPDATE**.
-
-### Community directory
-
-Clinical Workspace is officially available in the Obsidian Community directory. Install it from **Settings → Community plugins → Browse**, search for **Clinical Workspace**, then select **Install** and **Enable**. The current public version is **0.3.6**; future stable releases appear under **Community plugins → Check for updates**.
-
-### Manual installation
-
-Download `main.js`, `manifest.json` and `styles.css` from the same GitHub release and place them in:
-
-```text
-<vault>/.obsidian/plugins/clinical-workspace/
-```
-
-Restart Obsidian, then enable Clinical Workspace under Community plugins. Never copy development builds into a vault holding real patient information.
-
-On iPhone or iPad, BRAT is the recommended route. For a manual installation,
-use the Files app to open the Obsidian vault, reveal its `.obsidian` folder, and
-place the same three release files in
-`.obsidian/plugins/clinical-workspace/`. Reopen Obsidian and enable the plugin.
-If the storage provider does not expose hidden folders, use BRAT instead.
-
-### Uninstalling
-
-Disable and remove Clinical Workspace under **Settings → Community plugins**.
-Removing the plugin deletes only its installed code and settings; it does **not**
-delete the configured clinical folder, patient records, episodes, tasks,
-procedures, event notes, Bases, or home note. Back up the vault and verify those
-notes independently before removing or moving any clinical data yourself.
-
-## First-use safety checklist
-
-- Use a dedicated test vault and synthetic `9000...` MRNs first.
-- On the first 0.3.6 open, wait for Sync to finish, then run **Clinical
-  Workspace: Initialize new workspace** (or open the workspace and use the same
-  prompt). Adopt the visible records only after confirming they are complete;
-  initialize an empty baseline only for a genuinely new or intentionally
-  record-free workspace. The approval is saved before scaffolding.
-- Enable **Confirm before discharge** and **Run integrity check on first open**.
-- Test the complete workflow before considering identifiable information.
-- Confirm institutional approval for the device, vault location, synchronization, retention and backup route.
-- Run **Clinical Workspace: Run clinical data integrity check** after any sync conflict.
-
-## Settings
-
-**Settings → Community plugins → Clinical Workspace.**
-
-| Setting | What it does |
+| View | What it keeps in reach |
 |---|---|
-| Your name or initials | Recorded as the actor on every audit note. Left blank, the trail reads `local-user`. |
-| Care setting · Pathway · Priority | Pre-selected on the Add patient form; every field is still editable per patient. |
-| Confirm before discharge | Requires the word `DISCHARGE` to be typed before an episode is archived. |
-| Run integrity check on first open | Surfaces problems without having to remember to look. Silent when there are none. |
-| Refresh delay | How long to coalesce vault changes before redrawing, 0–2000 ms. |
-| Clinical folder | Where records live. Changing it is a migration, not a toggle — see below. |
+| **Today** | Overdue, due-today, and undated work alongside active inpatient and episode counts. |
+| **Patients** | Inpatient and outpatient cards with care setting, pathway, priority, next action, and due date. |
+| **Tasks** | Open, complete, cancel, inspect, and add episode work without a horizontal Kanban. |
+| **Surgery** | OR booking queue, completed-procedure logbook, and optional follow-up dates. |
+| **More** | Native Obsidian Bases, identity correction and merge, archive/restore, and integrity checking. |
 
-Settings are stored in `data.json` inside the plugin's own folder. It also holds
-a versioned, path-free recovery state: whether the workspace was initialized,
-whether first-use initialization was explicitly approved, whether managed
-records existed, their aggregate file count, and whether folder recovery is
-pending. It stores no MRN, patient name, phone number, record ID, record path,
-or clinical text.
+The **Open workspace** and **Add patient episode** commands are available from
+the command palette and can be added to the Obsidian mobile toolbar.
 
-### Moving the clinical folder
+## Five-minute synthetic quick start
 
-Type a new folder name and the panel previews exactly what would move. Nothing
-happens until **Move records** is pressed. The migration uses Obsidian's own
-rename, which rewrites the links between records — including those held in YAML
-frontmatter, verified against a real vault — and then regenerates the database
-views, which Obsidian does not rewrite on its own.
+1. Install the Community plugin in a new disposable test vault. Keep the vault
+   unsynced while learning the workflow.
+2. Run **Clinical Workspace: Open workspace**. Review the initialization prompt
+   and initialize the genuinely new, empty workspace.
+3. Run **Clinical Workspace: Add patient episode** and enter unmistakably
+   synthetic details—for example, `Synthetic Patient Alpha` with MRN
+   `9000000001`.
+4. Open the episode, add a task, update its pathway or priority, then complete
+   or cancel the task.
+5. Create a second synthetic Episode with the **OR Booking** pathway, then use
+   **Surgery → Complete surgery** to see the logbook flow.
+6. Run **Clinical Workspace: Run clinical data integrity check**. It is silent
+   when no problem is found.
 
-Afterwards the plugin counts any link still pointing at the old folder and warns
-if it finds one. It should always be zero; a non-zero count means the rewrite did
-not do what it is supposed to, and the integrity check will show what to repair.
-The new location is recorded *before* the move, so an interruption is recoverable
-rather than leaving the workspace pointing at an empty folder.
+Release builds do not contain the repository's development-only synthetic data
+generator. Add test records through the normal interface so the exercise
+matches the released plugin.
 
-Move the clinical folder on **one device at a time**. Before starting, allow the
-vault to finish syncing everywhere and stop clinical edits on the other devices.
-After the move, wait for both plugin settings and the moved folder to arrive
-before resuming work elsewhere.
+## Privacy at a glance
 
-A folder name arriving through Sync is treated as intent, not proof that the
-records have arrived. If a migration marker arrives before its folders, the
-plugin keeps the last known source active and blocks clinical and scaffolding
-writes. It retries reconciliation after vault changes. Records found only at the
-destination settle the move there. A source-only state remains blocked because
-the destination may still be in transit; after Sync has completely finished,
-run **Retry pending folder move recovery** from the Command Palette to confirm
-the rollback. If both roots contain records, the workspace remains blocked
-instead of choosing one and hiding the other. Inspect both locations, let Sync
-converge, retry recovery, and run the integrity check before continuing.
+- Runtime clinical records are Markdown notes beneath the configured clinical
+  folder (`Clinical Workspace` by default).
+- The installed plugin makes no HTTP requests and contains no telemetry,
+  analytics, crash reporting, or update checks.
+- Runtime record and integrity scans recurse only through the configured
+  clinical folder. Other Obsidian plugins may still have access to the entire
+  vault; install only the minimum institutionally approved set.
+- Plugin settings contain the visible configuration and path-free safety state,
+  but no MRN, patient name, phone number, record ID, record path, or clinical
+  text.
+- Notes are plain text. Confidentiality depends on device encryption, screen
+  lock, vault access, the chosen sync route, and organizational controls.
+- Duplicate prevention is per device. After a Sync conflict or concurrent edits
+  on different devices, run the integrity check.
+- Audit notes are best-effort and multi-file operations are not transactional.
+  A reported failure may leave earlier writes in place.
 
-The same fail-closed recovery applies if the configured root disappears or an
-unsafe external rename is detected. The block survives restart. A previously
-populated root is not made writable again until its prior aggregate managed-file
-count has returned, so delivery of an empty parent folder or only part of its
-records cannot manufacture a second workspace.
+For the complete threat model and non-goals, read [Security and
+privacy](SECURITY.md).
 
-Every pre-0.3.6 workspace lacks a trusted aggregate count, so its first 0.3.6
-open is intentionally read-only whether it currently shows zero, some, or all
-managed records. Wait for Sync to finish, then use **Initialize new workspace**
-to adopt the visible records as the complete baseline, or to initialize a
-genuinely new/record-free workspace. Cancel if anything may still be in transit.
-An empty parent alone never counts as convergence. A two-phase, path-free
-approval marker makes an interruption before scaffolding safely resumable.
-
-## Data model
-
-Each entity has a stable generated ID and its own note:
+## How records fit together
 
 ```text
 Patient ──< Episode ──< Task
@@ -161,165 +103,119 @@ Patient ──< Episode ──< Task
                  └──< Event
 ```
 
-- Patient identity is reused by normalized MRN. MRNs that differ only by leading zeroes resolve to the same patient; the value as typed is what is displayed.
-- Missing MRN and phone remain explicit as `MRN needed` and `NFN` in the interface.
-- Creating a patient without an MRN prompts when an existing record shares the name, so duplicates are a decision rather than an accident.
-- Patient identity can be corrected, and linked labels update with it. Two records can be merged after typing `MERGE`; a recovery marker makes an interrupted merge visible to the integrity check. A completed merge re-points every episode, task and procedure and retires the source as `entered-in-error` — nothing is deleted.
-- Episode is the unit of care: care setting, pathway, priority, next action, due date, and status.
-- Open task and procedure duplicates are prevented with episode-scoped deterministic keys plus full-value comparison, including across concurrent submissions on one device.
-- An episode cannot be archived while an open task remains. Tasks can be cancelled, so an episode is never permanently stuck.
-- Completing the last task changes the episode to `ready-to-close`.
-- Archive is a status, not a physical file move. Restore returns the episode to the pathway it held before archiving and keeps the discharge outcome.
-- Records resolve by their stable ID, so renaming a note in Obsidian does not detach it.
-- Every write is reread and verified, and workflow actions create event notes.
+- A Patient identity is reused by normalized MRN; leading zeroes do not create a
+  second identity, while the entered display value is preserved.
+- The Episode is the unit of care: setting, pathway, priority, next action, due
+  date, and status.
+- An Episode cannot be archived while it has an open Task. Completing the last
+  Task moves it to `ready-to-close`; cancelled Tasks do not keep it stuck.
+- Archive is a status, not a file move. Restore returns the Episode to its prior
+  pathway while retaining the discharge outcome.
+- Patient identities can be corrected or merged after explicit confirmation.
+  A merge repoints linked records and retires the source as `entered-in-error`;
+  it does not delete it.
+- Stable IDs keep records connected when their note filenames change.
+- Each workflow write is reread to confirm persistence, and workflow actions
+  create Event notes.
 
-### Known limitations
+Records created outside the plugin are not validated on entry. Run the
+integrity check after any external import or edit; it detects unreadable notes,
+unrecognised values, duplicate MRNs, missing relationships, and records filed
+under a different Patient from their Episode.
 
-- The mobile layout has been exercised and corrected using a real iPhone, and
-  the plugin uses only mobile-safe APIs. Continue to validate the complete
-  workflow with synthetic records on every device and Obsidian version you use.
-- Duplicate protection is per-device. Two devices editing before sync converges can still produce duplicates — run the integrity check after any conflict.
-- Change the clinical folder on one device only. A root setting that syncs before
-  its records is deliberately deferred, and ambiguous split records block writes
-  until the migration can be reconciled safely. After Sync finishes, use
-  **Retry pending folder move recovery** if the identifier-free notice remains.
-- Multi-file operations are not transactional. A failure part-way leaves the earlier writes in place; the integrity check reports what it can find.
-- Audit notes are best-effort. A failed audit write is reported but does not roll back the clinical action.
-- No encryption, no access control, no backup verification. See [SECURITY.md](SECURITY.md).
+## Requirements and installation options
+
+The installed plugin runtime requires **Obsidian 1.13.0 or later** and supports
+Obsidian desktop and mobile. Test the complete workflow with synthetic records
+on every device and Obsidian version you plan to use.
+
+Node.js is not required for the installed plugin. **Node.js 22 is required only
+for repository development and the separate desktop logbook-export command.**
+
+Community installation is the recommended stable route. Alternatives:
+
+- **BRAT beta:** install BRAT, run **BRAT: Add a beta plugin for testing**, enter
+  `drbinsaad/obsidian-clinical-workspace`, then enable Clinical Workspace.
+  [Open the BRAT installer](obsidian://brat?plugin=https://github.com/drbinsaad/obsidian-clinical-workspace).
+- **Manual:** download `main.js`, `manifest.json`, and `styles.css` from the
+  same [GitHub release](https://github.com/drbinsaad/obsidian-clinical-workspace/releases/latest),
+  place them in `<vault>/.obsidian/plugins/clinical-workspace/`, restart
+  Obsidian, and enable the plugin. Never install a development build in a vault
+  containing real patient information.
+
+Removing the plugin removes its installed code and settings, not the configured
+clinical folder or its records. Back up and verify those notes before moving or
+deleting them yourself.
+
+## Settings and operational safety
+
+Open **Settings → Community plugins → Clinical Workspace**.
+
+| Setting | Purpose |
+|---|---|
+| Your name or initials | Actor recorded in Event notes; blank is stored as `local-user`. |
+| Care setting, pathway, priority | Defaults for Add patient; each remains editable per Episode. |
+| Confirm before discharge | Requires typing `DISCHARGE` before archiving an Episode. |
+| Run integrity check on first open | Surfaces integrity problems automatically and stays silent when none are found. |
+| Refresh delay | Coalesces vault changes before redrawing the workspace. |
+| Clinical folder | Moves the complete managed workspace; this is a migration, not a toggle. |
+
+Folder changes deliberately fail closed when Sync evidence is incomplete or
+ambiguous. Perform a move on one fully synced device at a time and read
+[Moving the clinical folder safely](docs/folder-migration.md) before changing
+the setting.
+
+## Surgery logbook exports
+
+The repository includes a separate Node.js 22 command that joins completed
+Procedure notes to their Episode context. It is desktop-only, is not bundled in
+the plugin, and cannot be run from an installed Community, BRAT, or manual
+plugin.
+
+Its default CSV is **pseudonymized, not anonymous or de-identified, and remains
+confidential**. Direct identifier columns require `--identifiers`; free text,
+dates, rare-case context, and stable references can still identify a person in
+the default export. Output must be outside both the source vault and source
+repository.
+
+Read [Exporting the surgery logbook](docs/logbook-export.md) before running the
+command.
 
 ## Development
 
+Development and repository utilities use Node.js 22:
+
 ```bash
-npm install
+npm ci
 npm run check
 ```
 
-`npm run check` runs strict TypeScript checking, Obsidian Community linting for
-the plugin source, general linting for the repository-side Node scripts, the test
-suite, and a production build into `dist/`.
+`npm run check` runs strict TypeScript checking, linting, a production build,
+and the test suite. The build writes only to local `dist/` unless an explicit
+vault installation path is supplied.
 
-The default build output is the local `dist/` directory. The build does not install into or modify any Obsidian vault.
-
-To install a build into a vault:
+To install a production build into a test vault:
 
 ```bash
-npm run build && npm run install:vault -- "/path/to/vault"
+npm run build
+npm run install:vault -- "/path/to/test-vault"
 ```
 
-That refuses to install a development build — the one carrying the synthetic data generator — unless `--allow-dev` is passed, so a vault holding real patient information cannot gain the ability to fabricate records by accident. It also refuses a folder that is not an Obsidian vault.
+Development-only synthetic fixtures require `CLINICAL_DEV_TOOLS=1`. They are
+compiled out of release builds, and release verification fails if they remain
+in `dist/`. See [Contributing](CONTRIBUTING.md) for the development workflow.
 
-To build straight into a vault instead:
+## Project links
 
-```bash
-CLINICAL_PLUGIN_OUTDIR="/path/to/vault/.obsidian/plugins/clinical-workspace" npm run build
-```
+- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security and private vulnerability reporting](SECURITY.md)
+- [Support](SUPPORT.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Issue tracker](https://github.com/drbinsaad/obsidian-clinical-workspace/issues)
+- [MIT license](LICENSE)
 
-### Development tooling
-
-The synthetic data generator is **compiled out of release builds** and cannot be reached from a released version. To enable it for testing:
-
-```bash
-CLINICAL_DEV_TOOLS=1 npm run build
-```
-
-Never install a build made this way into a vault holding real patient information. `npm run verify-release` fails if development tooling is present in `dist/`.
-
-### Tests
-
-The published `obsidian` package is type definitions only, so the plugin cannot be executed under Node as-is. `tests/support/` provides an in-memory stand-in for the vault APIs, registered through a module hook. Its YAML behaviour mirrors what Obsidian actually writes, verified against records produced in a real vault.
-
-### Repository-only surgery logbook exporter
-
-> **Distribution boundary:** `npm run export:logbook` is a desktop Node.js
-> utility in this source repository. It is not part of `main.js`, is not exposed
-> in the Obsidian interface, and is not delivered by Community plugins, BRAT, or
-> the three-file manual installation. It cannot be run on iPhone or iPad from an
-> installed plugin. Clone the repository on a trusted desktop, install its
-> dependencies, and use Node.js 22 to run it.
-
-The command joins completed procedure notes to their episode context. An
-explicit output path is required and must resolve **outside the vault**:
-
-```bash
-npm run export:logbook -- "/path/to/vault" \
-  --out "/approved/export-location/surgery-logbook.csv"
-```
-
-Use `--root "Different Clinical Folder"` when the configured clinical root is
-not `Clinical Workspace`. The root must be a vault-relative child folder and
-must remain inside the supplied vault after symbolic links are resolved. The
-output must end in `.csv`, and its parent directory must already exist. Output
-symlinks are rejected. The exporter refuses an existing regular file; add
-`--force` only after confirming that replacing that exact external file is
-intended:
-
-```bash
-npm run export:logbook -- "/path/to/vault" \
-  --out "/approved/export-location/surgery-logbook.csv" --force
-```
-
-The default CSV is **pseudonymized and still confidential**. It excludes MRN
-and patient name, but it is not anonymous or de-identified. It contains these
-fields:
-
-| Field | Remaining disclosure risk |
-|---|---|
-| `case_ref` | Stable procedure ID; linkable to the source vault. |
-| `date`, `follow_up_date`, `logged_at` | Exact dates/times may identify a case. |
-| `procedure`, `role`, `care_setting`, `pathway`, `priority`, `episode_status`, `follow_up_required` | Clinical and workflow context. |
-| `indication`, `outcome` | User-authored clinical free text that may itself contain identifiers or rare-case details. |
-
-Context, rare procedures, dates, or access to the source vault may re-identify a
-person. Treat every default export as personal/confidential clinical data.
-Spreadsheet cells are neutralized against formula injection, but the CSV still
-needs the same review and handling controls as any clinical extract. In this
-default mode the Patients folder is not read.
-
-`--identifiers` reads the Patients folder, additionally includes `mrn` and
-`patient_name`, and prints a prominent warning before records are read. Use it
-only for a documented, institutionally approved need:
-
-```bash
-npm run export:logbook -- "/path/to/vault" \
-  --out "/approved/identified-records/logbook.csv" --identifiers
-```
-
-Before exporting, obtain the required approval and choose an encrypted,
-access-controlled destination outside both the vault and any source repository.
-Afterwards, review the CSV for identifiers in free text, verify warnings and row
-counts, transfer it only through an approved route, and apply the institution's
-retention and secure-destruction schedule. Never attach a live export to a
-public issue or commit it to git.
-
-The exporter fails closed before creating a CSV if it finds an unreadable or
-malformed record, duplicate ID, missing relationship, patient/episode mismatch,
-escaped path, or symbolic link in a record tree. It reports only aggregate
-counts and classifications—not filenames, IDs, free text, or the output path.
-Successful output is written through a private same-directory temporary file,
-published atomically, and restricted to the owner (`0600`) where the operating
-system supports Unix permissions. See [Security and privacy](SECURITY.md#repository-only-logbook-exports).
-
-## Releasing
-
-```bash
-npm version patch      # updates package.json, manifest.json, versions.json
-npm run check
-npm run verify-release
-```
-
-Then push the tag. Release tags are **bare semantic versions with no `v` prefix**, which is what the release workflow triggers on. It publishes a draft release with `main.js`, `manifest.json` and `styles.css` attached.
-
-## Migrating existing records
-
-Records are plain Markdown with YAML frontmatter, so they can be produced by any
-tool. Whatever writes them, run **Run clinical data integrity check** afterwards:
-it reports records that reference a missing patient or episode, a task or
-procedure filed under a different patient from its episode, duplicate MRNs,
-unreadable notes, and unrecognised field values.
-
-Records written outside the plugin are not validated on the way in. The
-integrity check is the only thing that will tell you they are sound.
-
-## License
-
-[MIT](LICENSE)
+Clinical Workspace is independent from [Knowledge Base Command
+Center](https://github.com/drbinsaad/knowledge-base-command-center). A vault
+containing identifiable clinical records should contain only the minimum set of
+plugins approved for that vault.

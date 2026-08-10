@@ -13,13 +13,14 @@ body:
     attributes:
       label: Privacy confirmation
       options:
-        - label: This report contains no real patient identifiers, screenshots, clinical text or vault files.
+        - label: This report contains no real patient identifiers, live-vault screenshots, real clinical text, exports, or vault files.
           required: true
   - type: input
     id: plugin-version
     attributes:
       label: Clinical Workspace version
-      placeholder: 0.3.5
+      description: Find this under Settings → Community plugins.
+      placeholder: "e.g. 0.3.6"
     validations:
       required: true
   - type: input

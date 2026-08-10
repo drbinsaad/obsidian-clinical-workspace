@@ -1,9 +1,10 @@
 {
   "id": "clinical-workspace",
   "name": "Clinical Workspace",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "minAppVersion": "1.13.0",
   "description": "Mobile-first local clinical workflow for patients, care episodes, tasks and surgery logbook entries.",
   "author": "Ali Alshahrani",
+  "authorUrl": "https://github.com/drbinsaad",
   "isDesktopOnly": false
 }

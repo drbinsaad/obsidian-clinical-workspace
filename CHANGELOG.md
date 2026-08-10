@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-08-10
+
+### Added
+
+- Added product visuals, focused folder-migration and logbook-export guides,
+  support and conduct policies, a feature-request form, a pull-request privacy
+  checklist, Dependabot configuration, and a CI gate for public text and visual
+  assets.
+
+### Changed
+
+- Reworked the public README around installation, first use, the core workflow,
+  and the plugin's privacy and product boundaries.
+- Clarified vulnerability handling so accidental patient-information disclosure
+  triggers containment and institutional escalation without abandoning
+  synthetic vulnerability triage or promising irreversible deletion.
+
+### Security
+
+- The repository-only logbook exporter now rejects output anywhere inside this
+  public source checkout after resolving the destination parent, preventing
+  relative, custom-named, or symlink-disguised confidential CSVs from entering
+  the repository.
+
 ## [0.3.6] - 2026-08-10
 
 ### Added
