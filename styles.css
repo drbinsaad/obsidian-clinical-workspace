@@ -314,11 +314,28 @@
 
 /* Column layout: heading and description fixed, fields scroll, actions pinned
    to the bottom of the modal itself rather than to a taller scroll container. */
-.clinical-modal .modal-content {
+.clinical-modal {
   display: flex;
   flex-direction: column;
-  max-height: 100%;
+  width: min(680px, calc(100vw - 32px));
+  max-width: 680px;
+  max-height: calc(100dvh - 24px);
+  overflow: hidden;
+}
+
+.clinical-modal > .modal-title {
+  flex: 0 0 auto;
+}
+
+.clinical-modal .modal-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  width: 100%;
+  max-height: none;
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
   padding-bottom: env(safe-area-inset-bottom);
 }
 
@@ -335,6 +352,9 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
+  scroll-padding-block: 12px 88px;
+  -webkit-overflow-scrolling: touch;
 }
 
 .clinical-modal-heading {
@@ -367,8 +387,7 @@
 }
 
 .clinical-integrity-list {
-  max-height: 55vh;
-  overflow-y: auto;
+  min-width: 0;
 }
 
 .clinical-integrity-issue {
@@ -396,11 +415,23 @@
 }
 
 .clinical-quick-entry-grid {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
   margin-top: 14px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 
-.clinical-quick-entry-option {
+.clinical-modal button.clinical-quick-entry-option {
   display: grid;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  grid-template-columns: minmax(0, 1fr);
+  justify-content: stretch;
+  justify-items: start;
   gap: 4px;
   min-height: 64px;
   padding: 12px 14px;
@@ -409,9 +440,21 @@
   background: var(--interactive-normal);
   color: var(--text-normal);
   text-align: start;
+  white-space: normal;
+  overflow: hidden;
 }
 
-.clinical-quick-entry-option:hover {
+.clinical-quick-entry-option > * {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  text-align: start;
+}
+
+.clinical-modal button.clinical-quick-entry-option:hover {
   background: var(--interactive-hover);
 }
 
@@ -432,11 +475,30 @@
   max-height: min(55vh, 520px);
   margin-top: 8px;
   overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.clinical-episode-picker-body .clinical-quick-entry-results {
+  max-height: none;
+  overflow: visible;
+}
+
+.clinical-quick-entry-results .clinical-card,
+.clinical-quick-entry-results .clinical-card-meta {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .clinical-quick-entry-results .clinical-card-button {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   margin-top: 10px;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .clinical-card-button:disabled,
@@ -476,6 +538,90 @@
 
 .is-mobile .clinical-modal-actions {
   padding-bottom: calc(16px + env(safe-area-inset-bottom));
+}
+
+/* Obsidian reports iPhone landscape widths well above the portrait breakpoint.
+   Mobile viewport geometry must therefore be keyed to the app's mobile class,
+   not to CSS width. */
+.is-mobile .clinical-modal {
+  width: calc(100vw - 16px);
+  height: calc(var(--clinical-modal-visual-height, 100dvh) - 16px);
+  max-height: calc(var(--clinical-modal-visual-height, 100dvh) - 16px);
+  translate: 0 var(--clinical-modal-visual-shift, 0);
+}
+
+.is-mobile .clinical-modal > .modal-content {
+  flex: 1 1 0;
+  height: 0;
+  max-height: none;
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 600px) {
+  .clinical-modal-heading {
+    margin-bottom: 8px;
+    font-size: clamp(1.3rem, 6vw, 1.75rem);
+    line-height: 1.15;
+  }
+
+  .clinical-modal > .modal-content > .clinical-section-note,
+  .clinical-modal-body > .clinical-section-note {
+    margin: 0 0 8px;
+    font-size: var(--font-ui-small);
+    line-height: 1.35;
+  }
+
+  .clinical-modal-actions {
+    z-index: 5;
+    flex-wrap: wrap;
+    width: 100%;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--background-modifier-border);
+  }
+
+  .clinical-modal-actions button {
+    flex: 1 1 120px;
+    min-width: 0;
+    white-space: normal;
+  }
+
+  .clinical-form-section .setting-item {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .clinical-form-section .setting-item-control,
+  .clinical-form-section input,
+  .clinical-form-section select,
+  .clinical-form-section textarea {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .clinical-modal input,
+  .clinical-modal select,
+  .clinical-modal textarea {
+    font-size: max(16px, var(--font-ui-medium));
+  }
+
+  .clinical-modal.is-virtual-keyboard-open .clinical-modal-heading {
+    margin-bottom: 4px;
+    font-size: 1.25rem;
+  }
+
+  .clinical-modal.is-virtual-keyboard-open > .modal-content > .clinical-section-note,
+  .clinical-modal.is-virtual-keyboard-open .clinical-modal-body > .clinical-section-note {
+    margin-bottom: 6px;
+    font-size: var(--font-ui-smaller);
+  }
+
+  .clinical-modal.is-virtual-keyboard-open .clinical-quick-entry-grid,
+  .clinical-modal.is-virtual-keyboard-open .clinical-quick-entry-results {
+    margin-top: 4px;
+  }
 }
 
 @media (max-width: 520px) {

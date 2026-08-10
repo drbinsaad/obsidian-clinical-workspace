@@ -1274,12 +1274,31 @@ test("active Markdown context is captured before workspace activation", async ()
 
 test("the Episode picker requires a visible confirmation click even for current context", async () => {
   const modalSource = await readFile(new URL("../src/ui/modals.ts", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../styles.css", import.meta.url), "utf8");
   const mainSource = await readFile(new URL("../src/main.ts", import.meta.url), "utf8");
   const viewSource = await readFile(new URL("../src/ui/workspace-view.ts", import.meta.url), "utf8");
   assert.match(modalSource, /Current episode/);
   assert.match(modalSource, /Confirm current episode/);
   assert.match(modalSource, /shortcut never chooses or attaches a record automatically/);
   assert.match(modalSource, /choose\.addEventListener\("click"/);
+  assert.match(modalSource, /calculateClinicalModalViewportLayout/);
+  assert.match(modalSource, /CLINICAL_MODAL_VIEWPORT_SYNC_DELAYS = \[0, 60, 180, 420\]/);
+  assert.match(modalSource, /ClinicalModalViewportController/);
+  assert.match(modalSource, /this\.host\.applyLayout[\s\S]*this\.host\.revealFocusedControl\(\)/);
+  assert.match(styles, /\.clinical-modal button\.clinical-quick-entry-option\s*\{[^}]*white-space: normal;/s);
+  assert.match(styles, /\.is-mobile \.clinical-modal > \.modal-content\s*\{[^}]*flex: 1 1 0;[^}]*height: 0;/s);
+  assert.match(styles, /\.is-mobile \.clinical-modal\s*\{[^}]*--clinical-modal-visual-height[^}]*translate:/s);
+  assert.match(styles, /--clinical-modal-visual-height/);
+  assert.match(modalSource, /--keyboard-height/);
+  assert.match(modalSource, /clinical-episode-picker-body/);
+  assert.match(modalSource, /episodeChoiceAccessibleLabel\(this\.actionLabel, choice\)/);
+  assert.match(modalSource, /DuplicatePatientModal[\s\S]*clinical-modal-body/);
+  assert.match(modalSource, /MergePatientsModal[\s\S]*clinical-modal-body/);
+  const mobileGeometry = styles.indexOf(".is-mobile .clinical-modal {");
+  const portraitMedia = styles.indexOf("@media (max-width: 600px)");
+  assert.ok(mobileGeometry >= 0 && portraitMedia > mobileGeometry, "mobile geometry must not be portrait-width gated");
+  assert.match(styles, /\.clinical-modal-body\s*\{[^}]*overflow-y: auto;[^}]*overflow-x: hidden;/s);
+  assert.match(styles, /\.clinical-quick-entry-option > \*\s*\{[^}]*min-width: 0;[^}]*overflow-wrap: anywhere;[^}]*white-space: normal;/s);
   assert.match(mainSource, /getActiveViewOfType\(MarkdownView\)/);
   assert.doesNotMatch(mainSource, /getActiveFile\(\)\?\.path/);
   assert.match(viewSource, /item\.path === activeEpisodePath/);

@@ -75,12 +75,195 @@ function namedSetting(container: HTMLElement, name: string): Setting {
   return setting;
 }
 
+export interface ClinicalModalViewportLayout {
+  height: number;
+  keyboardOpen: boolean;
+  shift: number;
+}
+
+export const CLINICAL_MODAL_VIEWPORT_SYNC_DELAYS = [0, 60, 180, 420] as const;
+
+export interface ClinicalModalViewportMetrics {
+  innerHeight: number;
+  viewportHeight: number;
+  viewportOffsetTop: number;
+  keyboardHeight: number;
+}
+
+export interface ClinicalModalViewportHost {
+  readMetrics: () => ClinicalModalViewportMetrics;
+  applyLayout: (layout: ClinicalModalViewportLayout) => void;
+  resetLayout: () => void;
+  revealFocusedControl: () => void;
+  onViewportResize: (listener: () => void) => () => void;
+  onViewportScroll: (listener: () => void) => () => void;
+  onWindowResize: (listener: () => void) => () => void;
+  onFocusIn: (listener: () => void) => () => void;
+  setTimer: (listener: () => void, delay: number) => number;
+  clearTimer: (timer: number) => void;
+}
+
+export function calculateClinicalModalViewportLayout(
+  innerHeight: number,
+  viewportHeight: number,
+  viewportOffsetTop = 0,
+  keyboardHeight = 0
+): ClinicalModalViewportLayout {
+  const safeInnerHeight = Number.isFinite(innerHeight) ? Math.max(1, innerHeight) : 1;
+  const safeOffsetTop = Number.isFinite(viewportOffsetTop)
+    ? Math.max(0, Math.min(viewportOffsetTop, safeInnerHeight - 1))
+    : 0;
+  const safeViewportHeight = Number.isFinite(viewportHeight)
+    ? Math.max(1, Math.min(viewportHeight, safeInnerHeight - safeOffsetTop))
+    : safeInnerHeight - safeOffsetTop;
+  const safeKeyboardHeight = Number.isFinite(keyboardHeight)
+    ? Math.max(0, Math.min(keyboardHeight, safeInnerHeight - 1))
+    : 0;
+  const visibleBottom = Math.max(
+    safeOffsetTop + 1,
+    Math.min(safeOffsetTop + safeViewportHeight, safeInnerHeight - safeKeyboardHeight)
+  );
+  const visibleHeight = visibleBottom - safeOffsetTop;
+  return {
+    height: Math.round(visibleHeight),
+    keyboardOpen: safeKeyboardHeight > 100 || safeInnerHeight - safeViewportHeight > 100,
+    shift: Math.round(safeOffsetTop + visibleHeight / 2 - safeInnerHeight / 2)
+  };
+}
+
+/**
+ * Owns the iOS keyboard/viewport lifecycle without depending on Obsidian DOM
+ * classes. Keeping this boundary executable in tests prevents a future modal
+ * refactor from silently dropping the last keyboard-animation checkpoint or
+ * leaking listeners after close.
+ */
+export class ClinicalModalViewportController {
+  private cleanupListeners: Array<() => void> = [];
+  private timers: number[] = [];
+  private running = false;
+
+  constructor(private readonly host: ClinicalModalViewportHost) {}
+
+  private readonly sync = (): void => {
+    if (!this.running) return;
+    const metrics = this.host.readMetrics();
+    this.host.applyLayout(calculateClinicalModalViewportLayout(
+      metrics.innerHeight,
+      metrics.viewportHeight,
+      metrics.viewportOffsetTop,
+      metrics.keyboardHeight
+    ));
+    this.host.revealFocusedControl();
+  };
+
+  private readonly handleFocus = (): void => {
+    this.schedule();
+  };
+
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    this.cleanupListeners = [
+      this.host.onViewportResize(this.sync),
+      this.host.onViewportScroll(this.sync),
+      this.host.onWindowResize(this.sync),
+      this.host.onFocusIn(this.handleFocus)
+    ];
+    this.schedule();
+  }
+
+  stop(): void {
+    if (!this.running) return;
+    this.running = false;
+    for (const cleanup of this.cleanupListeners) cleanup();
+    this.cleanupListeners = [];
+    this.clearTimers();
+    this.host.resetLayout();
+  }
+
+  private clearTimers(): void {
+    for (const timer of this.timers) this.host.clearTimer(timer);
+    this.timers = [];
+  }
+
+  private schedule(): void {
+    if (!this.running) return;
+    this.clearTimers();
+    this.timers = CLINICAL_MODAL_VIEWPORT_SYNC_DELAYS.map((delay) =>
+      this.host.setTimer(this.sync, delay)
+    );
+  }
+}
+
+abstract class ClinicalResponsiveModal extends Modal {
+  private viewportController: ClinicalModalViewportController | null = null;
+
+  open(): void {
+    super.open();
+    this.modalEl.addClass("clinical-modal");
+    this.bindViewportLayout();
+  }
+
+  close(): void {
+    this.viewportController?.stop();
+    this.viewportController = null;
+    super.close();
+  }
+
+  private bindViewportLayout(): void {
+    const viewWindow = this.contentEl.ownerDocument.defaultView;
+    if (!viewWindow) return;
+    const listen = (target: EventTarget | null, type: string, listener: () => void): (() => void) => {
+      if (!target) return () => undefined;
+      const handler = () => listener();
+      target.addEventListener(type, handler);
+      return () => target.removeEventListener(type, handler);
+    };
+    this.viewportController = new ClinicalModalViewportController({
+      readMetrics: () => {
+        const viewport = viewWindow.visualViewport;
+        const keyboardHeight = Number.parseFloat(
+          viewWindow.getComputedStyle(this.modalEl).getPropertyValue("--keyboard-height")
+        );
+        return {
+          innerHeight: viewWindow.innerHeight,
+          viewportHeight: viewport?.height ?? viewWindow.innerHeight,
+          viewportOffsetTop: viewport?.offsetTop ?? 0,
+          keyboardHeight
+        };
+      },
+      applyLayout: (layout) => {
+        this.modalEl.style.setProperty("--clinical-modal-visual-height", `${layout.height}px`);
+        this.modalEl.style.setProperty("--clinical-modal-visual-shift", `${layout.shift}px`);
+        this.modalEl.toggleClass("is-virtual-keyboard-open", layout.keyboardOpen);
+      },
+      resetLayout: () => {
+        this.modalEl.style.removeProperty("--clinical-modal-visual-height");
+        this.modalEl.style.removeProperty("--clinical-modal-visual-shift");
+        this.modalEl.removeClass("is-virtual-keyboard-open");
+      },
+      revealFocusedControl: () => {
+        const target = this.contentEl.ownerDocument.activeElement as HTMLElement | null;
+        if (!target || !this.contentEl.contains(target) || typeof target.scrollIntoView !== "function") return;
+        target.scrollIntoView({ block: "nearest", inline: "nearest" });
+      },
+      onViewportResize: (listener) => listen(viewWindow.visualViewport, "resize", listener),
+      onViewportScroll: (listener) => listen(viewWindow.visualViewport, "scroll", listener),
+      onWindowResize: (listener) => listen(viewWindow, "resize", listener),
+      onFocusIn: (listener) => listen(this.contentEl, "focusin", listener),
+      setTimer: (listener, delay) => viewWindow.setTimeout(listener, delay),
+      clearTimer: (timer) => viewWindow.clearTimeout(timer)
+    });
+    this.viewportController.start();
+  }
+}
+
 /**
  * First-run/upgrade adoption is deliberately separate from Sync recovery. A
  * visible legacy record count is not proof that the rest of the workspace will
  * not arrive a moment later on another device.
  */
-export class InitializeWorkspaceModal extends Modal {
+export class InitializeWorkspaceModal extends ClinicalResponsiveModal {
   private decided = false;
 
   constructor(
@@ -94,20 +277,21 @@ export class InitializeWorkspaceModal extends Modal {
   onOpen(): void {
     this.modalEl.addClass("clinical-modal");
     this.contentEl.empty();
-    this.contentEl.createEl("h2", {
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
+    body.createEl("h2", {
       text: this.hasManagedRecords
         ? "Adopt the current Clinical Workspace?"
         : "Initialize a new Clinical Workspace?",
       cls: "clinical-modal-heading"
     });
-    this.contentEl.createEl("p", {
+    body.createEl("p", {
       text:
         this.hasManagedRecords
           ? "This older workspace has no trusted safety baseline yet. Continue only after synchronization is fully complete and the current records are known to be complete."
           : "No managed Clinical Workspace records or trusted safety baseline were found on this device. Continue only if this is a genuinely new or intentionally record-free workspace.",
       cls: "clinical-section-note"
     });
-    this.contentEl.createEl("p", {
+    body.createEl("p", {
       text:
         "If this vault was already used on another device, cancel and wait for synchronization to finish or restore your backup. The confirmed current record count becomes the recovery baseline.",
       cls: "clinical-section-note"
@@ -154,12 +338,12 @@ const QUICK_ENTRY_OPTIONS: ReadonlyArray<{
   {
     action: "add-task-follow-up",
     label: "Add task / follow-up",
-    description: "Choose an episode, confirm its context, then enter the task."
+    description: "Choose an episode, then add a task."
   },
   {
     action: "record-procedure",
     label: "Record procedure",
-    description: "Choose an episode, confirm its context, then enter the procedure."
+    description: "Choose an episode, then log a procedure."
   },
   {
     action: "today",
@@ -169,7 +353,7 @@ const QUICK_ENTRY_OPTIONS: ReadonlyArray<{
 ];
 
 /** A context-free entry hub used by commands, touch controls, and safe URIs. */
-export class QuickEntryModal extends Modal {
+export class QuickEntryModal extends ClinicalResponsiveModal {
   constructor(
     app: App,
     private readonly onChoose: (action: QuickEntryFormAction) => void
@@ -218,12 +402,21 @@ export interface QuickEntryEpisodeChoice {
   isCurrent: boolean;
 }
 
+export function episodeChoiceAccessibleLabel(
+  actionLabel: string,
+  choice: QuickEntryEpisodeChoice
+): string {
+  const action = choice.isCurrent ? "Confirm current episode" : "Use this episode";
+  const episode = choice.episode.case || "Case not recorded";
+  return `${action} for ${actionLabel}: ${episode}; ${choice.patientLabel}; episode ${choice.episode.id}`;
+}
+
 /**
  * Explicit context gate for task and procedure shortcuts. Nothing is selected
  * by default and no clinical write occurs here; the user must choose a visibly
  * labelled episode before the blank action form opens.
  */
-export class QuickEntryEpisodeModal extends Modal {
+export class QuickEntryEpisodeModal extends ClinicalResponsiveModal {
   private query = "";
   private resultsEl: HTMLElement | null = null;
   private countEl: HTMLElement | null = null;
@@ -240,15 +433,16 @@ export class QuickEntryEpisodeModal extends Modal {
   onOpen(): void {
     this.modalEl.addClass("clinical-modal");
     this.contentEl.empty();
-    this.contentEl.createEl("h2", {
-      text: `Choose episode — ${this.actionLabel}`,
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body clinical-episode-picker-body" });
+    body.createEl("h2", {
+      text: "Choose episode",
       cls: "clinical-modal-heading"
     });
-    this.contentEl.createEl("p", {
-      text: "Confirm the patient and episode below. The shortcut never chooses or attaches a record automatically.",
+    body.createEl("p", {
+      text: `For ${this.actionLabel}, confirm the patient and episode below. The shortcut never chooses or attaches a record automatically.`,
       cls: "clinical-section-note"
     });
-    const search = this.contentEl.createEl("input", {
+    const search = body.createEl("input", {
       cls: "clinical-quick-entry-search",
       attr: {
         type: "search",
@@ -261,11 +455,11 @@ export class QuickEntryEpisodeModal extends Modal {
       this.query = search.value;
       this.renderChoices();
     });
-    this.countEl = this.contentEl.createDiv({
+    this.countEl = body.createDiv({
       cls: "clinical-section-note",
       attr: { "aria-live": "polite" }
     });
-    this.resultsEl = this.contentEl.createDiv({ cls: "clinical-quick-entry-results" });
+    this.resultsEl = body.createDiv({ cls: "clinical-quick-entry-results" });
     this.renderChoices();
     const footer = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
     const cancel = footer.createEl("button", { text: "Cancel" });
@@ -314,8 +508,12 @@ export class QuickEntryEpisodeModal extends Modal {
         cls: "clinical-card-meta"
       });
       const choose = card.createEl("button", {
-        text: `${choice.isCurrent ? "Confirm current episode" : "Use this episode"} for ${this.actionLabel}`,
-        cls: "clinical-card-button mod-cta"
+        text: choice.isCurrent ? "Confirm current episode" : "Use this episode",
+        cls: "clinical-card-button mod-cta",
+        attr: {
+          type: "button",
+          "aria-label": episodeChoiceAccessibleLabel(this.actionLabel, choice)
+        }
       });
       choose.addEventListener("click", () => {
         this.close();
@@ -325,7 +523,7 @@ export class QuickEntryEpisodeModal extends Modal {
   }
 }
 
-export abstract class ClinicalModal<T> extends Modal {
+export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
   private errorEl: HTMLElement | null = null;
 
   protected constructor(
@@ -392,13 +590,13 @@ export abstract class ClinicalModal<T> extends Modal {
   protected prepare(title: string, description: string): HTMLElement {
     this.modalEl.addClass("clinical-modal");
     this.contentEl.empty();
-    this.contentEl.createEl("h2", { text: title, cls: "clinical-modal-heading" });
-    this.contentEl.createEl("p", { text: description, cls: "clinical-section-note" });
     // Fields live in their own scrolling region so the action row can be a
     // fixed footer. Previously the row was sticky inside the whole modal, which
     // pinned it to the bottom of a container taller than the screen — landing
     // it mid-form, over the fields, on a phone.
     const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
+    body.createEl("h2", { text: title, cls: "clinical-modal-heading" });
+    body.createEl("p", { text: description, cls: "clinical-section-note" });
     return body.createDiv({ cls: "clinical-form-section" });
   }
 }
@@ -484,7 +682,7 @@ export class NewEpisodeModal extends ClinicalModal<NewEpisodeInput> {
  * Shown when a patient is being created without an MRN and an existing record
  * carries the same name. Without this step the two are silently kept apart.
  */
-export class DuplicatePatientModal extends Modal {
+export class DuplicatePatientModal extends ClinicalResponsiveModal {
   constructor(
     app: App,
     private readonly candidates: PatientRecord[],
@@ -496,12 +694,13 @@ export class DuplicatePatientModal extends Modal {
   onOpen(): void {
     this.modalEl.addClass("clinical-modal");
     this.contentEl.empty();
-    this.contentEl.createEl("h2", { text: "Possible duplicate patient", cls: "clinical-modal-heading" });
-    this.contentEl.createEl("p", {
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
+    body.createEl("h2", { text: "Possible duplicate patient", cls: "clinical-modal-heading" });
+    body.createEl("p", {
       text: "No MRN was entered, and a patient with this name already exists. Choose an existing record or create a separate one.",
       cls: "clinical-section-note"
     });
-    const list = this.contentEl.createDiv({ cls: "clinical-list" });
+    const list = body.createDiv({ cls: "clinical-list" });
     for (const candidate of this.candidates) {
       const card = list.createDiv({ cls: "clinical-card" });
       card.createEl("h4", { text: candidate.patient_name || "Name not recorded" });
@@ -665,7 +864,7 @@ export class PatientIdentityModal extends ClinicalModal<PatientIdentityInput> {
 }
 
 /** Two-step merge: pick a surviving record, then confirm what will move. */
-export class MergePatientsModal extends Modal {
+export class MergePatientsModal extends ClinicalResponsiveModal {
   private targetId = "";
   private typedConfirmation = "";
 
@@ -682,13 +881,14 @@ export class MergePatientsModal extends Modal {
   onOpen(): void {
     this.modalEl.addClass("clinical-modal");
     this.contentEl.empty();
-    this.contentEl.createEl("h2", { text: "Merge patient records", cls: "clinical-modal-heading" });
-    this.contentEl.createEl("p", {
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
+    body.createEl("h2", { text: "Merge patient records", cls: "clinical-modal-heading" });
+    body.createEl("p", {
       text: "Every episode, task and procedure moves to the record you keep. Nothing is deleted: this record is marked entered-in-error and kept for audit.",
       cls: "clinical-section-note"
     });
 
-    const form = this.contentEl.createDiv({ cls: "clinical-form-section" });
+    const form = body.createDiv({ cls: "clinical-form-section" });
     form.createEl("h3", { text: "Merging away" });
     form.createEl("p", {
       text: `MRN ${displayMrn(this.source.mrn)} · ${this.source.patient_name || "Name not recorded"}`,
@@ -701,7 +901,7 @@ export class MergePatientsModal extends Modal {
     }
     this.targetId = this.candidates[0]?.id ?? "";
 
-    const summary = this.contentEl.createDiv({ cls: "clinical-card" });
+    const summary = body.createDiv({ cls: "clinical-card" });
     const refresh = async () => {
       summary.empty();
       if (!this.targetId) {
@@ -735,7 +935,7 @@ export class MergePatientsModal extends Modal {
       });
     void refresh();
 
-    const errorEl = this.contentEl.createDiv({ cls: "clinical-modal-error", attr: { role: "alert", "aria-live": "assertive" } });
+    const errorEl = body.createDiv({ cls: "clinical-modal-error", attr: { role: "alert", "aria-live": "assertive" } });
     errorEl.hide();
     const actions = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
     const cancel = actions.createEl("button", { text: "Cancel" });
@@ -928,7 +1128,7 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
  * Renders integrity results in the interface. Previously these were written to
  * the developer console, which put MRNs somewhere users are asked to copy from.
  */
-export class IntegrityReportModal extends Modal {
+export class IntegrityReportModal extends ClinicalResponsiveModal {
   constructor(
     app: App,
     private readonly issues: IntegrityIssue[],
@@ -940,20 +1140,21 @@ export class IntegrityReportModal extends Modal {
   onOpen(): void {
     this.modalEl.addClass("clinical-modal");
     this.contentEl.empty();
-    this.contentEl.createEl("h2", { text: "Data integrity", cls: "clinical-modal-heading" });
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
+    body.createEl("h2", { text: "Data integrity", cls: "clinical-modal-heading" });
     if (!this.issues.length) {
-      this.contentEl.createEl("p", {
+      body.createEl("p", {
         text: "No duplicate MRNs, duplicate open tasks, broken links or invalid dates were found.",
         cls: "clinical-section-note"
       });
       return;
     }
     const errors = this.issues.filter((issue) => issue.severity === "error").length;
-    this.contentEl.createEl("p", {
+    body.createEl("p", {
       text: `${this.issues.length} issue${this.issues.length === 1 ? "" : "s"} found (${errors} error${errors === 1 ? "" : "s"}). Open a record to correct it.`,
       cls: "clinical-section-note"
     });
-    const list = this.contentEl.createDiv({ cls: "clinical-integrity-list" });
+    const list = body.createDiv({ cls: "clinical-integrity-list" });
     for (const issue of this.issues) {
       const row = list.createDiv({ cls: "clinical-integrity-issue" });
       const head = row.createDiv({ cls: "clinical-card-top" });
