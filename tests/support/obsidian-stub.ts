@@ -234,6 +234,9 @@ export class Notice {
 }
 export class Plugin {}
 export class ItemView {}
+export class MarkdownView extends ItemView {
+  file: TFile | null = null;
+}
 export class Modal {}
 export class Setting {}
 export class PluginSettingTab {

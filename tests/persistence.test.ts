@@ -15,7 +15,13 @@ import { episodeInput, harness } from "./support/harness";
 test("every record type survives a markdown round trip unchanged", async () => {
   const { service, repository } = await harness();
   const created = await service.createEpisode(
-    episodeInput({ mrn: "0012345", phone: "0500000001", nextAction: "Chase result", dueDate: "2026-08-10" })
+    episodeInput({
+      mrn: "0012345",
+      phone: "0500000001",
+      pathway: "or-booking",
+      nextAction: "Book OR",
+      dueDate: "2026-08-10"
+    })
   );
   await service.completeProcedure({
     patientId: created.patient.record.id,

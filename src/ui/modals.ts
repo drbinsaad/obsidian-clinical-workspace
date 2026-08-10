@@ -29,6 +29,7 @@ import {
   priorityLabel,
   todayIso
 } from "../domain/schema";
+import type { QuickEntryAction } from "../quick-entry";
 
 type AsyncSubmit<T> = (value: T) => Promise<void>;
 
@@ -135,6 +136,192 @@ export class InitializeWorkspaceModal extends Modal {
     this.decided = true;
     this.onDecision(initialize);
     this.close();
+  }
+}
+
+type QuickEntryFormAction = Exclude<QuickEntryAction, "hub">;
+
+const QUICK_ENTRY_OPTIONS: ReadonlyArray<{
+  action: QuickEntryFormAction;
+  label: string;
+  description: string;
+}> = [
+  {
+    action: "new-patient-episode",
+    label: "New patient / episode",
+    description: "Open a blank patient and episode form."
+  },
+  {
+    action: "add-task-follow-up",
+    label: "Add task / follow-up",
+    description: "Choose an episode, confirm its context, then enter the task."
+  },
+  {
+    action: "record-procedure",
+    label: "Record procedure",
+    description: "Choose an episode, confirm its context, then enter the procedure."
+  },
+  {
+    action: "today",
+    label: "Today's pending work",
+    description: "Open overdue, due-today, and undated work."
+  }
+];
+
+/** A context-free entry hub used by commands, touch controls, and safe URIs. */
+export class QuickEntryModal extends Modal {
+  constructor(
+    app: App,
+    private readonly onChoose: (action: QuickEntryFormAction) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("clinical-modal");
+    this.contentEl.empty();
+    this.contentEl.createEl("h2", { text: "Quick entry", cls: "clinical-modal-heading" });
+    this.contentEl.createEl("p", {
+      text: "Choose an action. Patient details and clinical text are entered only inside Clinical Workspace.",
+      cls: "clinical-section-note"
+    });
+    const actions = this.contentEl.createDiv({ cls: "clinical-quick-entry-grid" });
+    for (const option of QUICK_ENTRY_OPTIONS) {
+      const button = actions.createEl("button", {
+        cls: "clinical-quick-entry-option",
+        attr: { type: "button" }
+      });
+      button.createEl("strong", { text: option.label });
+      button.createSpan({ text: option.description, cls: "clinical-section-note" });
+      button.addEventListener("click", () => {
+        this.close();
+        this.onChoose(option.action);
+      });
+    }
+    const footer = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
+    const cancel = footer.createEl("button", { text: "Cancel" });
+    cancel.addEventListener("click", () => this.close());
+    queueMicrotask(() => {
+      const first = actions.querySelector("button");
+      if (first?.instanceOf(HTMLElement)) first.focus();
+    });
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+export interface QuickEntryEpisodeChoice {
+  episode: EpisodeRecord;
+  patientLabel: string;
+  isCurrent: boolean;
+}
+
+/**
+ * Explicit context gate for task and procedure shortcuts. Nothing is selected
+ * by default and no clinical write occurs here; the user must choose a visibly
+ * labelled episode before the blank action form opens.
+ */
+export class QuickEntryEpisodeModal extends Modal {
+  private query = "";
+  private resultsEl: HTMLElement | null = null;
+  private countEl: HTMLElement | null = null;
+
+  constructor(
+    app: App,
+    private readonly actionLabel: string,
+    private readonly choices: readonly QuickEntryEpisodeChoice[],
+    private readonly onChoose: (choice: QuickEntryEpisodeChoice) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("clinical-modal");
+    this.contentEl.empty();
+    this.contentEl.createEl("h2", {
+      text: `Choose episode — ${this.actionLabel}`,
+      cls: "clinical-modal-heading"
+    });
+    this.contentEl.createEl("p", {
+      text: "Confirm the patient and episode below. The shortcut never chooses or attaches a record automatically.",
+      cls: "clinical-section-note"
+    });
+    const search = this.contentEl.createEl("input", {
+      cls: "clinical-quick-entry-search",
+      attr: {
+        type: "search",
+        placeholder: "Search visible patient or case",
+        "aria-label": "Search active patient episodes",
+        autocomplete: "off"
+      }
+    });
+    search.addEventListener("input", () => {
+      this.query = search.value;
+      this.renderChoices();
+    });
+    this.countEl = this.contentEl.createDiv({
+      cls: "clinical-section-note",
+      attr: { "aria-live": "polite" }
+    });
+    this.resultsEl = this.contentEl.createDiv({ cls: "clinical-quick-entry-results" });
+    this.renderChoices();
+    const footer = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
+    const cancel = footer.createEl("button", { text: "Cancel" });
+    cancel.addEventListener("click", () => this.close());
+    queueMicrotask(() => search.focus());
+  }
+
+  onClose(): void {
+    this.query = "";
+    this.resultsEl = null;
+    this.countEl = null;
+    this.contentEl.empty();
+  }
+
+  private renderChoices(): void {
+    if (!this.resultsEl || !this.countEl) return;
+    const query = this.query.trim().toLocaleLowerCase();
+    const matching = this.choices.filter((choice) => {
+      if (!query) return true;
+      return `${choice.patientLabel} ${choice.episode.case}`.toLocaleLowerCase().includes(query);
+    });
+    const visible = matching.slice(0, 40);
+    this.countEl.setText(
+      matching.length > visible.length
+        ? `${matching.length} matches · showing the first ${visible.length}`
+        : `${matching.length} matching active episode${matching.length === 1 ? "" : "s"}`
+    );
+    this.resultsEl.empty();
+    if (!visible.length) {
+      this.resultsEl.createEl("p", {
+        text: "No active episode matches this search.",
+        cls: "clinical-empty"
+      });
+      return;
+    }
+    for (const choice of visible) {
+      const card = this.resultsEl.createDiv({ cls: "clinical-card" });
+      const top = card.createDiv({ cls: "clinical-card-top" });
+      top.createEl("h4", { text: choice.episode.case || "Case not recorded" });
+      if (choice.isCurrent) {
+        top.createSpan({ text: "Current episode", cls: "clinical-badge is-current" });
+      }
+      card.createEl("p", { text: choice.patientLabel, cls: "clinical-card-meta" });
+      card.createEl("p", {
+        text: `${careSettingLabel(choice.episode.care_setting)} · ${pathwayLabel(choice.episode.pathway)}`,
+        cls: "clinical-card-meta"
+      });
+      const choose = card.createEl("button", {
+        text: `${choice.isCurrent ? "Confirm current episode" : "Use this episode"} for ${this.actionLabel}`,
+        cls: "clinical-card-button mod-cta"
+      });
+      choose.addEventListener("click", () => {
+        this.close();
+        this.onChoose(choice);
+      });
+    }
   }
 }
 

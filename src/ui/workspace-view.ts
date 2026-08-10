@@ -24,6 +24,7 @@ import { clinicalFolder } from "../data/paths";
 import type { ClinicalSettings } from "../domain/settings";
 import { DEFAULT_SETTINGS } from "../domain/settings";
 import { ClinicalRepository } from "../data/repository";
+import type { QuickEntryAction } from "../quick-entry";
 import { ClinicalService, PossibleDuplicatePatientError } from "../services/clinical-service";
 import { IntegrityService } from "../services/integrity";
 import { seedSyntheticFixtures } from "../services/synthetic-fixtures";
@@ -37,7 +38,10 @@ import {
   NewTaskModal,
   PatientIdentityModal,
   ProcedureModal,
+  QuickEntryEpisodeModal,
+  QuickEntryModal,
   UpdateEpisodeModal,
+  type QuickEntryEpisodeChoice,
   patientIdentityLabel
 } from "./modals";
 
@@ -92,6 +96,49 @@ export function pageWindow<T>(items: readonly T[], requestedPage: number): PageW
     pages,
     total: items.length
   };
+}
+
+/**
+ * Task/procedure shortcuts can target only a visible, active patient Episode.
+ * The returned choices are labels for an explicit picker, never an automatic
+ * attachment decision.
+ */
+export function quickEntryEpisodeChoices(
+  snapshot: ClinicalSnapshot,
+  currentEpisodeId = "",
+  purpose: "task" | "procedure" = "task"
+): QuickEntryEpisodeChoice[] {
+  const patients = new Map(
+    snapshot.patients
+      .filter(
+        (patient) =>
+          patient.status === "active" &&
+          !patient.merged_into &&
+          !patient.merge_in_progress
+      )
+      .map((patient) => [patient.id, patient] as const)
+  );
+  return snapshot.episodes
+    .filter(
+      (episode) =>
+        !["archived", "cancelled", "entered-in-error"].includes(episode.status) &&
+        (purpose !== "procedure" || episode.pathway === "or-booking")
+    )
+    .flatMap((episode) => {
+      const patient = patients.get(episode.patient_id);
+      if (!patient) return [];
+      return [{
+        episode,
+        patientLabel: patientIdentityLabel(patient.mrn, patient.patient_name),
+        isCurrent: episode.id === currentEpisodeId
+      }];
+    })
+    .sort((a, b) => {
+      if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
+      return `${a.patientLabel}|${a.episode.case}`.localeCompare(
+        `${b.patientLabel}|${b.episode.case}`
+      );
+    });
 }
 
 export class ClinicalWorkspaceView extends ItemView {
@@ -199,6 +246,118 @@ export class ClinicalWorkspaceView extends ItemView {
     ).open();
   }
 
+  openQuickEntry(activeEpisodePath = ""): void {
+    new QuickEntryModal(
+      this.app,
+      (action) => this.runQuickEntryAction(action, activeEpisodePath)
+    ).open();
+  }
+
+  /** Opens Today and refreshes from disk so a shortcut never shows a stale list. */
+  async openTodayPendingWork(): Promise<void> {
+    this.activeTab = "today";
+    await this.refresh();
+  }
+
+  /** Always shows an unselected Episode picker before opening the task form. */
+  async openAddTaskQuickEntry(activeEpisodePath = ""): Promise<void> {
+    try {
+      const choices = await this.quickEntryChoices(activeEpisodePath, "task");
+      if (!choices.length) {
+        new Notice("No active patient episode is available. Create an episode first.");
+        return;
+      }
+      new QuickEntryEpisodeModal(this.app, "a task / follow-up", choices, (choice) => {
+        new NewTaskModal(this.app, choice.episode, choice.patientLabel, async (input) => {
+          const created = await this.service.createTask(input);
+          new Notice(
+            created.duplicate
+              ? `Task already exists: ${created.task.record.task}`
+              : `Task added: ${created.task.record.task}`
+          );
+          this.activeTab = "tasks";
+          await this.refresh();
+        }).open();
+      }).open();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Could not open task quick entry.", 7000);
+    }
+  }
+
+  /** Always shows an unselected Episode picker before opening the procedure form. */
+  async openProcedureQuickEntry(activeEpisodePath = ""): Promise<void> {
+    try {
+      const choices = await this.quickEntryChoices(activeEpisodePath, "procedure");
+      if (!choices.length) {
+        new Notice(
+          "No active operating-room booking episode is available. Move an episode to the operating-room booking pathway first."
+        );
+        return;
+      }
+      new QuickEntryEpisodeModal(this.app, "a procedure", choices, (choice) => {
+        new ProcedureModal(this.app, choice.episode, choice.patientLabel, async (input) => {
+          await this.service.completeProcedure(input);
+          new Notice("Procedure logged and workflow updated.");
+          this.activeTab = "surgery";
+          await this.refresh();
+        }).open();
+      }).open();
+    } catch (error) {
+      new Notice(
+        error instanceof Error ? error.message : "Could not open procedure quick entry.",
+        7000
+      );
+    }
+  }
+
+  private runQuickEntryAction(
+    action: Exclude<QuickEntryAction, "hub">,
+    activeEpisodePath: string
+  ): void {
+    switch (action) {
+      case "new-patient-episode":
+        this.openAddPatient();
+        break;
+      case "add-task-follow-up":
+        void this.openAddTaskQuickEntry(activeEpisodePath);
+        break;
+      case "record-procedure":
+        void this.openProcedureQuickEntry(activeEpisodePath);
+        break;
+      case "today":
+        void this.openTodayPendingWork();
+        break;
+    }
+  }
+
+  /**
+   * An exact active-file match can be promoted as a suggestion, but it remains
+   * an unselected picker row. The scoped Episode listing — not arbitrary note
+   * frontmatter — is the authority for that match.
+   */
+  private async quickEntryChoices(
+    activeEpisodePath: string,
+    purpose: "task" | "procedure"
+  ): Promise<QuickEntryEpisodeChoice[]> {
+    const [patients, episodes] = await Promise.all([
+      this.repository.list<PatientRecord>("patient"),
+      this.repository.list<EpisodeRecord>("episode")
+    ]);
+    const currentEpisodeId = episodes.find(
+      (item) => item.path === activeEpisodePath
+    )?.record.id ?? "";
+    return quickEntryEpisodeChoices(
+      {
+        patients: patients.map((item) => item.record),
+        episodes: episodes.map((item) => item.record),
+        tasks: [],
+        procedures: []
+      },
+      currentEpisodeId,
+      purpose
+    );
+  }
+
   private render(snapshot: ClinicalSnapshot): void {
     const root = this.contentEl;
     root.empty();
@@ -244,7 +403,16 @@ export class ClinicalWorkspaceView extends ItemView {
     const titles = header.createDiv();
     titles.createEl("h2", { text: "Clinical Workspace", cls: "clinical-workspace-title" });
     titles.createDiv({ text: "Local-first patient workflow", cls: "clinical-workspace-subtitle" });
-    const refresh = header.createEl("button", {
+    const actions = header.createDiv({ cls: "clinical-workspace-header-actions" });
+    const quickEntry = actions.createEl("button", {
+      cls: "clinical-quick-entry-button",
+      attr: { "aria-label": "Open Clinical Workspace quick entry" }
+    });
+    const quickEntryIcon = quickEntry.createSpan();
+    setIcon(quickEntryIcon, "square-pen");
+    quickEntry.createSpan({ text: "Quick entry" });
+    quickEntry.addEventListener("click", () => this.openQuickEntry());
+    const refresh = actions.createEl("button", {
       attr: { "aria-label": "Refresh Clinical Workspace" },
       cls: "clickable-icon clinical-refresh-button"
     });
@@ -457,7 +625,12 @@ export class ClinicalWorkspaceView extends ItemView {
 
   private identifiablePatients(snapshot: ClinicalSnapshot): PatientRecord[] {
     return snapshot.patients
-      .filter((patient) => patient.status !== "entered-in-error" && !patient.merged_into)
+      .filter(
+        (patient) =>
+          patient.status === "active" &&
+          !patient.merged_into &&
+          !patient.merge_in_progress
+      )
       .sort((a, b) => this.text(a.patient_name).localeCompare(this.text(b.patient_name)));
   }
 

@@ -286,7 +286,12 @@ test("concurrent identical episode submissions create one episode and one initia
 test("identity correction re-points every linked patient label", async () => {
   const { service, repository } = await harness();
   const created = await service.createEpisode(
-    episodeInput({ patientName: "Old Name", nextAction: "Review result", dueDate: "2026-08-12" })
+    episodeInput({
+      patientName: "Old Name",
+      pathway: "or-booking",
+      nextAction: "Book OR",
+      dueDate: "2026-08-12"
+    })
   );
   await service.completeProcedure({
     patientId: created.patient.record.id,
@@ -431,8 +436,12 @@ test("a colliding task hash in another episode cannot suppress new work", async 
 
 test("a colliding procedure hash in another episode cannot suppress a logbook entry", async () => {
   const { service, repository } = await harness();
-  const first = await service.createEpisode(episodeInput({ caseName: "First operation" }));
-  const second = await service.createEpisode(episodeInput({ caseName: "Second operation" }));
+  const first = await service.createEpisode(
+    episodeInput({ caseName: "First operation", pathway: "or-booking" })
+  );
+  const second = await service.createEpisode(
+    episodeInput({ caseName: "Second operation", pathway: "or-booking" })
+  );
   const procedure = {
     procedure: "Tonsillectomy",
     procedureDate: "2026-08-11",
