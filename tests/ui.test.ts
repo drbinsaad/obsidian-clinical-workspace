@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { App } from "obsidian";
 import type { ClinicalSnapshot, NewEpisodeInput } from "../src/domain/types";
@@ -17,8 +18,13 @@ import {
 } from "../src/ui/modals";
 import {
   CLINICAL_PAGE_SIZE,
+  CLINICAL_WORKSPACE_COMPACT_MIN_WIDTH,
+  CLINICAL_WORKSPACE_PANE_CLASSES,
   CLINICAL_WORKSPACE_VIEW,
+  CLINICAL_WORKSPACE_WIDE_MIN_WIDTH,
+  ClinicalWorkspacePaneController,
   ClinicalWorkspaceView,
+  clinicalWorkspacePaneMode,
   pageWindow
 } from "../src/ui/workspace-view";
 
@@ -40,6 +46,141 @@ test("workspace view exposes stable Obsidian identity", () => {
   assert.equal(view.getViewType(), CLINICAL_WORKSPACE_VIEW);
   assert.equal(view.getDisplayText(), "Clinical Workspace");
   assert.equal(view.getIcon(), "stethoscope");
+});
+
+test("stacked-tab pane layout uses stable wide, compact, and narrow boundaries", () => {
+  assert.equal(CLINICAL_WORKSPACE_WIDE_MIN_WIDTH, 1050);
+  assert.equal(CLINICAL_WORKSPACE_COMPACT_MIN_WIDTH, 680);
+  assert.equal(clinicalWorkspacePaneMode(1050), "wide");
+  assert.equal(clinicalWorkspacePaneMode(1049), "compact");
+  assert.equal(clinicalWorkspacePaneMode(680), "compact");
+  assert.equal(clinicalWorkspacePaneMode(679), "narrow");
+});
+
+test("pane resize transitions are exclusive, ignore hidden widths, and clean up", () => {
+  let resize: ((width: number) => void) | null = null;
+  let disconnects = 0;
+  let resets = 0;
+  const modes: string[] = [];
+  const controller = new ClinicalWorkspacePaneController({
+    readWidth: () => 1100,
+    observeWidth: (listener) => {
+      resize = listener;
+      return () => { disconnects += 1; };
+    },
+    applyMode: (mode) => modes.push(mode),
+    resetMode: () => { resets += 1; }
+  });
+
+  controller.start();
+  assert.deepEqual(modes, ["wide"]);
+  const emitResize = (width: number): void => {
+    const listener = resize as ((nextWidth: number) => void) | null;
+    assert.ok(listener);
+    listener(width);
+  };
+  emitResize(900);
+  emitResize(800);
+  emitResize(0);
+  emitResize(Number.NaN);
+  emitResize(500);
+  assert.deepEqual(modes, ["wide", "compact", "narrow"]);
+
+  controller.stop();
+  assert.equal(disconnects, 1);
+  assert.equal(resets, 1);
+  emitResize(1200);
+  assert.deepEqual(modes, ["wide", "compact", "narrow"]);
+});
+
+test("view resize rebinds through the pane owner window without reading records", async () => {
+  interface ObserverState {
+    observed: number;
+    disconnected: number;
+  }
+  const owner = (): { state: ObserverState; view: Window } => {
+    const state = { observed: 0, disconnected: 0 };
+    class SyntheticResizeObserver {
+      constructor(_callback: ResizeObserverCallback) {}
+      observe(): void { state.observed += 1; }
+      disconnect(): void { state.disconnected += 1; }
+    }
+    return {
+      state,
+      view: { ResizeObserver: SyntheticResizeObserver } as unknown as Window
+    };
+  };
+  const first = owner();
+  const second = owner();
+  let width = 1100;
+  const classes = new Set<string>();
+  const classList = {
+    toggle: (name: string, force?: boolean) => {
+      if (force) classes.add(name);
+      else classes.delete(name);
+      return Boolean(force);
+    },
+    remove: (...names: string[]) => {
+      for (const name of names) classes.delete(name);
+    }
+  };
+  const ownerDocument = { defaultView: first.view };
+  const element = {
+    ownerDocument,
+    classList,
+    clientWidth: width,
+    getBoundingClientRect: () => ({ width })
+  } as unknown as HTMLElement;
+  let snapshots = 0;
+  const repository = {
+    snapshot: async () => {
+      snapshots += 1;
+      return EMPTY_SNAPSHOT;
+    }
+  } as unknown as ClinicalRepository;
+  const view = new ClinicalWorkspaceView(
+    {} as never,
+    repository,
+    {} as ClinicalService,
+    {} as IntegrityService
+  );
+  (view as unknown as { contentEl: HTMLElement }).contentEl = element;
+
+  view.onResize();
+  assert.equal(classes.has("is-wide"), true);
+  assert.equal(first.state.observed, 1);
+  assert.equal(snapshots, 0);
+
+  width = 800;
+  ownerDocument.defaultView = second.view;
+  view.onResize();
+  assert.equal(first.state.disconnected, 1);
+  assert.equal(second.state.observed, 1);
+  assert.equal(classes.has("is-compact"), true);
+  assert.equal(classes.has("is-wide"), false);
+  assert.equal(snapshots, 0);
+
+  await view.onClose();
+  assert.equal(second.state.disconnected, 1);
+  assert.equal(CLINICAL_WORKSPACE_PANE_CLASSES.some((name) => classes.has(name)), false);
+});
+
+test("stacked-tab CSS contracts reflow pane content without view overflow", async () => {
+  const [styles, source] = await Promise.all([
+    readFile(new URL("../styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/ui/workspace-view.ts", import.meta.url), "utf8")
+  ]);
+  assert.match(source, /ownerDocument\.defaultView\?\.ResizeObserver/);
+  assert.match(source, /onResize\(\): void \{[\s\S]*bindPaneController\(\)/);
+  assert.doesNotMatch(source, /matchMedia\(/);
+  assert.match(styles, /\.clinical-workspace-scroll\s*\{[^}]*overflow-x: hidden;/s);
+  assert.match(styles, /\.clinical-workspace-view\.is-wide \.clinical-summary-grid\s*\{[^}]*repeat\(4,/s);
+  assert.match(styles, /\.clinical-workspace-view\.is-narrow \.clinical-workspace-header\s*\{[^}]*flex-direction: column;/s);
+  assert.match(styles, /\.clinical-workspace-view\.is-narrow \.clinical-workspace-tabs\s*\{[^}]*overflow-x: auto;/s);
+  assert.match(styles, /\.clinical-workspace-view\.is-narrow \.clinical-summary-grid\s*\{[^}]*grid-template-columns: 1fr;/s);
+  assert.match(styles, /\.clinical-workspace-view\.is-narrow \.clinical-card-actions\s*\{[^}]*minmax\(0, 1fr\);/s);
+  assert.match(styles, /\.clinical-workspace-view\.is-narrow \.clinical-pagination\s*\{[^}]*minmax\(0, 1fr\) minmax\(0, 1fr\);/s);
+  assert.match(styles, /\.clinical-form-section \.setting-item-control,[\s\S]*min-width: 0;[\s\S]*max-width: 100%;/s);
 });
 
 test("mobile lists render one bounded page and clamp after synced deletions", () => {

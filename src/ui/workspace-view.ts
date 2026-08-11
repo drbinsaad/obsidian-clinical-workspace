@@ -60,6 +60,108 @@ const TAB_LABELS: Record<WorkspaceTab, string> = {
 const PANEL_ID = "clinical-workspace-panel";
 export const CLINICAL_PAGE_SIZE = 40;
 
+export type ClinicalWorkspacePaneMode = "wide" | "compact" | "narrow";
+
+export const CLINICAL_WORKSPACE_WIDE_MIN_WIDTH = 1050;
+export const CLINICAL_WORKSPACE_COMPACT_MIN_WIDTH = 680;
+export const CLINICAL_WORKSPACE_PANE_CLASSES = [
+  "is-wide",
+  "is-compact",
+  "is-narrow"
+] as const;
+
+export interface ClinicalWorkspacePaneHost {
+  readWidth: () => number;
+  observeWidth: (listener: (width: number) => void) => () => void;
+  applyMode: (mode: ClinicalWorkspacePaneMode) => void;
+  resetMode: () => void;
+}
+
+/**
+ * Chooses layout from the leaf's content width, not the Obsidian window. A
+ * stacked tab can be narrow inside a wide desktop window, so viewport media
+ * queries cannot make this decision reliably.
+ */
+export function clinicalWorkspacePaneMode(width: number): ClinicalWorkspacePaneMode {
+  const safeWidth = Number.isFinite(width) ? Math.max(0, width) : 0;
+  if (safeWidth >= CLINICAL_WORKSPACE_WIDE_MIN_WIDTH) return "wide";
+  if (safeWidth >= CLINICAL_WORKSPACE_COMPACT_MIN_WIDTH) return "compact";
+  return "narrow";
+}
+
+/** Owns resize transitions and guarantees that observation ends with the view. */
+export class ClinicalWorkspacePaneController {
+  private disconnect: (() => void) | null = null;
+  private mode: ClinicalWorkspacePaneMode | null = null;
+  private running = false;
+
+  constructor(private readonly host: ClinicalWorkspacePaneHost) {}
+
+  private readonly sync = (width: number): void => {
+    if (!this.running) return;
+    // Hidden/inactive leaves can briefly measure zero while a stacked tab is
+    // sliding. Retain the last valid mode instead of flashing to narrow.
+    if (!Number.isFinite(width) || width <= 0) return;
+    const next = clinicalWorkspacePaneMode(width);
+    if (next === this.mode) return;
+    this.mode = next;
+    this.host.applyMode(next);
+  };
+
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    this.sync(this.host.readWidth());
+    this.disconnect = this.host.observeWidth(this.sync);
+  }
+
+  measure(): void {
+    this.sync(this.host.readWidth());
+  }
+
+  stop(): void {
+    if (!this.running) return;
+    this.running = false;
+    this.disconnect?.();
+    this.disconnect = null;
+    this.mode = null;
+    this.host.resetMode();
+  }
+}
+
+function elementWidth(element: HTMLElement): number {
+  const rectWidth = element.getBoundingClientRect().width;
+  return Number.isFinite(rectWidth) && rectWidth > 0 ? rectWidth : element.clientWidth;
+}
+
+/**
+ * Uses the element's owning window so a Clinical Workspace moved into an
+ * Obsidian pop-out observes through that window's DOM realm as well.
+ */
+export function createClinicalWorkspacePaneHost(element: HTMLElement): ClinicalWorkspacePaneHost {
+  return {
+    readWidth: () => elementWidth(element),
+    observeWidth: (listener) => {
+      const ResizeObserverConstructor = element.ownerDocument.defaultView?.ResizeObserver;
+      if (!ResizeObserverConstructor) return () => undefined;
+      const observer = new ResizeObserverConstructor((entries) => {
+        const entry = entries.find((candidate) => candidate.target === element) ?? entries[0];
+        listener(entry?.contentRect.width ?? elementWidth(element));
+      });
+      observer.observe(element);
+      return () => observer.disconnect();
+    },
+    applyMode: (mode) => {
+      for (const className of CLINICAL_WORKSPACE_PANE_CLASSES) {
+        element.classList.toggle(className, className === `is-${mode}`);
+      }
+    },
+    resetMode: () => {
+      element.classList.remove(...CLINICAL_WORKSPACE_PANE_CLASSES);
+    }
+  };
+}
+
 const LIST_PAGE_LABELS: Record<string, string> = {
   "today-overdue": "Overdue tasks",
   "today-due": "Today tasks",
@@ -145,6 +247,8 @@ export class ClinicalWorkspaceView extends ItemView {
   private activeTab: WorkspaceTab = "today";
   private refreshing = false;
   private refreshQueued = false;
+  private paneController: ClinicalWorkspacePaneController | null = null;
+  private paneOwnerWindow: Window | null = null;
   private readonly listPages = new Map<string, number>();
   private pendingPageContext: {
     key: string;
@@ -176,7 +280,31 @@ export class ClinicalWorkspaceView extends ItemView {
 
   async onOpen(): Promise<void> {
     this.contentEl.addClass("clinical-workspace-view");
+    this.bindPaneController();
     await this.refresh();
+  }
+
+  onResize(): void {
+    this.bindPaneController();
+    this.paneController?.measure();
+  }
+
+  async onClose(): Promise<void> {
+    this.paneController?.stop();
+    this.paneController = null;
+    this.paneOwnerWindow = null;
+  }
+
+  /** Rebinds after Obsidian moves this leaf into or out of a pop-out window. */
+  private bindPaneController(): void {
+    const ownerWindow = this.contentEl.ownerDocument.defaultView;
+    if (this.paneController && ownerWindow === this.paneOwnerWindow) return;
+    this.paneController?.stop();
+    this.paneOwnerWindow = ownerWindow;
+    this.paneController = new ClinicalWorkspacePaneController(
+      createClinicalWorkspacePaneHost(this.contentEl)
+    );
+    this.paneController.start();
   }
 
   /**
@@ -400,7 +528,7 @@ export class ClinicalWorkspaceView extends ItemView {
 
   private renderHeader(container: HTMLElement): void {
     const header = container.createDiv({ cls: "clinical-workspace-header" });
-    const titles = header.createDiv();
+    const titles = header.createDiv({ cls: "clinical-workspace-heading" });
     titles.createEl("h2", { text: "Clinical Workspace", cls: "clinical-workspace-title" });
     titles.createDiv({ text: "Local-first patient workflow", cls: "clinical-workspace-subtitle" });
     const actions = header.createDiv({ cls: "clinical-workspace-header-actions" });
@@ -457,10 +585,13 @@ export class ClinicalWorkspaceView extends ItemView {
     if (!next) return;
     event.preventDefault();
     this.selectTab(next);
-    window.setTimeout(() => {
+    const focusSelectedTab = (): void => {
       const target = this.contentEl.querySelector(`#clinical-tab-${next}`);
       if (target?.instanceOf(HTMLElement)) target.focus();
-    }, 0);
+    };
+    const viewWindow = this.contentEl.ownerDocument.defaultView;
+    if (viewWindow) viewWindow.setTimeout(focusSelectedTab, 0);
+    else queueMicrotask(focusSelectedTab);
   }
 
   private renderToday(container: HTMLElement, snapshot: ClinicalSnapshot): void {
