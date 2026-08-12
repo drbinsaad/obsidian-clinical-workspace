@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-12
+
+Reliability release implementing the findings of an independent review of
+0.4.1. Every item below carries regression coverage in `tests/reliability.test.ts`.
+
+### Fixed
+
+- A procedure retry that carries different follow-up details than the record an earlier attempt already saved is now rejected with a clear explanation instead of silently mixing the two: previously the persisted procedure could say "follow-up required" while the retry drove the episode to discharge-ready with no follow-up task. A retry with matching details resumes from the saved record.
+- Procedure and follow-up dates are fully validated before anything is written. An impossible calendar date, or a follow-up date before the procedure date, is rejected while the vault is still untouched; previously an invalid follow-up date was caught only after the procedure note and episode transition had been written.
+- The procedure-completed audit event now belongs to the workflow rather than to note creation: a retry that finds the note but an unwritten audit event settles it (`audit_pending` on the procedure record), instead of losing the event forever.
+- A failed audit-note write now shows an identifier-free notice, and the integrity check reports the gap through a new audit-trail coverage check. Previously the failure went only to the developer console and nothing ever surfaced it.
+- Retrying a task submission whose first attempt failed part-way now repairs the episode's next-action pointer instead of returning early.
+- The stale merge preview race is closed: switching merge targets while a slower preview is still loading can no longer append the old target's counts or error under the new target's summary.
+- Recovery gates now verify a parsed-record inventory (per-entity counts plus a digest of the sorted opaque record ids) before lifting the fail-closed barrier. An equal raw file count can hide records replaced with unreadable content, filed in the wrong folder, or swapped under duplicate ids; the inventory cannot. The commitment contains no patient information.
+- Generated Base files and the home note are repaired through `Vault.process`, with the untouched-scaffold decision re-run inside the atomic transform. A Sync delivery landing mid-repair previously lost to a read-then-write race.
+- Settings saves roll back and re-render on failure instead of leaving the interface showing a value `data.json` does not hold.
+- Repository error messages no longer embed vault paths, which could contain patient text when a note had been renamed by hand.
+- The integrity scan is linear instead of quadratic in caseload size, and the workspace render no longer repeats per-card searches; a growth-rate benchmark guards the fix.
+- The floating action button no longer covers full-width card actions in narrow desktop panes; the gutter that protected mobile now applies to `is-narrow` too, on the logical inline end.
+- Right-to-left fixes: the floating action button, header actions, and date fields use logical CSS properties and mirror correctly; workspace tab arrow keys follow the reading direction; user-entered names and case labels are wrapped in first-strong bidi isolates so Arabic text cannot reorder surrounding labels.
+- Logbook CSV export strips directionality control characters (keeping ZWNJ/ZWJ, which Arabic-script text needs), closing a spreadsheet cell-spoofing vector.
+
+### Changed
+
+- The integrity report now says "Configured checks passed" with the number of check families and records examined, and states explicitly that it is not a full validation — instead of an empty state that read as a comprehensive clean bill of health.
+- Integrity coverage now includes: schema versions, task types, procedure statuses, patient status enums, timestamps, missing idempotency keys, duplicate internal ids, procedure follow-up contradictions, episodes whose next action no open task tracks, ready-to-close episodes with open work, and audit-trail coverage.
+- Audit event summaries are now fixed phrases ("Task created", "Procedure completed") instead of embedding user-entered case, task, or outcome text into the Events folder.
+- Newly generated note bodies no longer duplicate the patient name, MRN, or phone (or other mutable fields): the frontmatter is the single source of truth, so a later identity correction cannot leave a stale copy behind.
+- Card action buttons carry per-record accessible names ("Discharge — ‹case›, MRN … · ‹name›"), so screen-reader users can tell one card's buttons from another's. Form controls meet the 44 px touch minimum and show focus outlines.
+
+### Added
+
+- Command "Confirm current records as the recovery baseline": a typed-confirmation exit from the fail-closed read-only state after a deliberate record deletion or accepted Sync outcome. Previously the only way out was restoring the missing files.
+- Command "Remove identifiers from generated note bodies": rewrites patient-note bodies still byte-identical to the pre-0.5 generated scaffold (which embedded name, MRN, and phone) to the new identifier-free scaffold, with a count preview and typed confirmation. Edited notes are never touched.
+
 ## [0.4.1] - 2026-08-11
 
 ### Fixed
