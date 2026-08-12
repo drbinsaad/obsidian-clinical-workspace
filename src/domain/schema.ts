@@ -1,4 +1,5 @@
 import type {
+  CompleteProcedureInput,
   EpisodeRecord,
   MrnStatus,
   NewEpisodeInput,
@@ -7,7 +8,7 @@ import type {
   PhoneStatus,
   TaskRecord
 } from "./types";
-import { CURRENT_SCHEMA_VERSION } from "./types";
+import { CURRENT_SCHEMA_VERSION, TASK_TYPES } from "./types";
 
 export const SCHEMA_VERSION = CURRENT_SCHEMA_VERSION;
 
@@ -219,7 +220,35 @@ export function validateTaskInput(input: NewTaskInput): string[] {
   if (!normalizeText(input.patientId)) errors.push("Patient is required.");
   if (!normalizeText(input.episodeId)) errors.push("Episode is required.");
   if (!normalizeText(input.task)) errors.push("Task is required.");
+  if (!TASK_TYPES.includes(input.taskType)) errors.push("Task type is not recognised.");
   if (input.dueDate && !isIsoDate(input.dueDate)) errors.push("Due date is invalid.");
+  return errors;
+}
+
+/**
+ * Complete pre-write validation for a procedure submission. Nothing may be
+ * written until every check here passes: a rejection after the first write
+ * leaves a partial state that a clinician has no reason to suspect.
+ */
+export function validateProcedureInput(input: CompleteProcedureInput): string[] {
+  const errors: string[] = [];
+  if (!normalizeText(input.patientId)) errors.push("Patient is required.");
+  if (!normalizeText(input.episodeId)) errors.push("Episode is required.");
+  if (!normalizeText(input.procedure)) errors.push("Procedure is required.");
+  if (!input.procedureDate) errors.push("Procedure date is required.");
+  else if (!isIsoDate(input.procedureDate)) errors.push("Procedure date is not a valid calendar date.");
+  if (input.followUpRequired) {
+    if (!input.followUpDate || !normalizeText(input.followUpPlan)) {
+      errors.push("Follow-up date and plan are required when follow-up is needed.");
+    } else if (!isIsoDate(input.followUpDate)) {
+      errors.push("Follow-up date is not a valid calendar date.");
+    } else if (
+      isIsoDate(input.procedureDate) &&
+      normalizeIsoDate(input.followUpDate) < normalizeIsoDate(input.procedureDate)
+    ) {
+      errors.push("Follow-up date cannot be before the procedure date.");
+    }
+  }
   return errors;
 }
 

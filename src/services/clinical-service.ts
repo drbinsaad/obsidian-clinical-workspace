@@ -27,6 +27,7 @@ import {
   taskIsOpen,
   validateNewEpisodeInput,
   validatePatientIdentityInput,
+  validateProcedureInput,
   validateTaskInput
 } from "../domain/schema";
 import {
@@ -247,7 +248,7 @@ export class ClinicalService {
             episodeId,
             targetId: episodeId,
             targetEntity: "episode",
-            summary: `Episode created: ${episodeRecord.case}`,
+            summary: "Episode created",
             newState: `${episodeRecord.pathway}/${episodeRecord.status}`
           });
 
@@ -425,13 +426,15 @@ export class ClinicalService {
       return { task: await this.repository.create(record), duplicate: false };
     });
 
-    if (result.duplicate) return result;
-
     // The episode points at its most imminent outstanding task, not at whichever
     // was added last. Tracking the last one made "the task this episode raised"
     // ambiguous, so rescheduling could cancel a repeat the clinician had
     // deliberately scheduled for later. Priority is left alone entirely: it is a
     // judgement about the patient, not a property of the newest task.
+    //
+    // This block also runs for a duplicate: an earlier attempt can have
+    // created the task and then failed before this pointer was written, and
+    // the retry is the only chance to repair it. The update is idempotent.
     const outstanding = (await this.repository.list<TaskRecord>("task"))
       .filter(({ record }) => record.episode_id === episode.record.id && taskIsOpen(record))
       .sort((a, b) => String(a.record.due_date || "9999").localeCompare(String(b.record.due_date || "9999")));
@@ -441,13 +444,14 @@ export class ClinicalService {
       due_date: imminent.record.due_date,
       status: episode.record.status === "ready-to-close" ? "active" : episode.record.status
     });
+    if (result.duplicate) return result;
     await this.repository.createEvent({
       action: "task-created",
       patientId: patient.record.id,
       episodeId: episode.record.id,
       targetId: result.task.record.id,
       targetEntity: "task",
-      summary: `Task created: ${result.task.record.task}`,
+      summary: "Task created",
       newState: result.task.record.status
     });
     return result;
@@ -477,7 +481,7 @@ export class ClinicalService {
       episodeId: task.record.episode_id,
       targetId: task.record.id,
       targetEntity: "task",
-      summary: `Task completed: ${task.record.task}`,
+      summary: "Task completed",
       previousState: task.record.status,
       newState: "completed"
     });
@@ -518,7 +522,7 @@ export class ClinicalService {
       episodeId: task.record.episode_id,
       targetId: task.record.id,
       targetEntity: "task",
-      summary: `Task cancelled: ${task.record.task}`,
+      summary: "Task cancelled",
       previousState: task.record.status,
       newState: "cancelled"
     });
@@ -1044,7 +1048,7 @@ export class ClinicalService {
       episodeId,
       targetId: episodeId,
       targetEntity: "episode",
-      summary: `Episode archived: ${normalizeText(outcome) || "Episode closed"}`,
+      summary: "Episode archived",
       previousState: episode.record.status,
       newState: "archived"
     });
@@ -1126,11 +1130,12 @@ export class ClinicalService {
   }
 
   async completeProcedure(input: CompleteProcedureInput): Promise<RecordWithPath<ProcedureRecord>> {
-    if (!normalizeText(input.procedure)) throw new Error("Procedure is required.");
-    if (!input.procedureDate) throw new Error("Procedure date is required.");
-    if (input.followUpRequired && (!input.followUpDate || !normalizeText(input.followUpPlan))) {
-      throw new Error("Follow-up date and plan are required when follow-up is needed.");
-    }
+    // Every check runs before the first write. A rejection after the
+    // procedure note exists leaves a partial state the clinician has no
+    // reason to suspect (an impossible follow-up date used to be caught only
+    // by the follow-up task validator, two writes in).
+    const errors = validateProcedureInput(input);
+    if (errors.length) throw new Error(errors.join(" "));
 
     const key = procedureIdempotencyKey(input.episodeId, input.procedure, input.procedureDate);
     const normalizedProcedure = normalizeComparable(input.procedure);
@@ -1174,6 +1179,35 @@ export class ClinicalService {
       if (!existing && episode.record.pathway !== "or-booking") {
         throw new Error("Procedures can only be recorded from an OR booking episode.");
       }
+      // A retry must never silently mix persisted and retry inputs. The
+      // idempotency key does not cover follow-up, so an earlier attempt may
+      // have durably recorded different follow-up details than this
+      // submission carries. Refuse the conflict; a matching retry resumes
+      // from the persisted record below.
+      if (existing) {
+        const conflictingFollowUp =
+          (existing.record.follow_up_required === true) !== input.followUpRequired ||
+          (input.followUpRequired &&
+            (normalizeText(existing.record.follow_up_date) !== normalizeText(input.followUpDate) ||
+              normalizeComparable(existing.record.follow_up_plan) !== normalizeComparable(input.followUpPlan)));
+        if (conflictingFollowUp) {
+          throw new Error(
+            "This procedure is already recorded with different follow-up details. Nothing was changed. Open the saved procedure record to review it, then either retry with the saved details or correct the saved record first."
+          );
+        }
+      }
+      // The persisted record is the write authority for every later step.
+      const followUp = existing
+        ? {
+            required: existing.record.follow_up_required === true,
+            date: existing.record.follow_up_date,
+            plan: normalizeText(existing.record.follow_up_plan)
+          }
+        : {
+            required: input.followUpRequired,
+            date: input.followUpRequired ? input.followUpDate : "",
+            plan: input.followUpRequired ? normalizeText(input.followUpPlan) : ""
+          };
       const timestamp = nowIso();
       const outcome = existing
         ? { procedure: existing, alreadyLogged: true }
@@ -1194,9 +1228,12 @@ export class ClinicalService {
               role: normalizeText(input.role) || "Not specified",
               status: "completed",
               outcome: normalizeText(input.outcome),
-              follow_up_required: input.followUpRequired,
-              follow_up_date: input.followUpRequired ? input.followUpDate : "",
-              follow_up_plan: input.followUpRequired ? normalizeText(input.followUpPlan) : "",
+              follow_up_required: followUp.required,
+              follow_up_date: followUp.date,
+              follow_up_plan: followUp.plan,
+              // Cleared only after the completion audit event is durably
+              // written, so a retry knows the trail still owes an entry.
+              audit_pending: true,
               idempotency_key: key
             }),
             alreadyLogged: false
@@ -1232,7 +1269,7 @@ export class ClinicalService {
       const remaining = (await this.repository.list<TaskRecord>("task")).filter(
         ({ record }) => record.episode_id === episode.record.id && taskIsOpen(record)
       );
-      const stillOpen = remaining.length > 0 || input.followUpRequired;
+      const stillOpen = remaining.length > 0 || followUp.required;
       const nextOutstanding = remaining
         .slice()
         .sort((a, b) =>
@@ -1271,36 +1308,45 @@ export class ClinicalService {
       // Care setting is the clinician's to decide. A post-operative inpatient
       // is still an inpatient, so it is left exactly as recorded.
       await this.repository.update<EpisodeRecord>(latestEpisode.path, {
-        pathway: pathwayAfterProcedure(input.followUpRequired),
+        pathway: pathwayAfterProcedure(followUp.required),
         status: stillOpen ? "active" : "ready-to-close",
-        next_action: input.followUpRequired
-          ? normalizeText(input.followUpPlan)
+        next_action: followUp.required
+          ? followUp.plan
           : (nextOutstanding?.record.task ?? ""),
-        due_date: input.followUpRequired
-          ? input.followUpDate
+        due_date: followUp.required
+          ? followUp.date
           : (nextOutstanding?.record.due_date ?? "")
       });
-      if (input.followUpRequired) {
+      if (followUp.required) {
         await this.createTaskUnlocked({
           patientId: patient.record.id,
           episodeId: episode.record.id,
-          task: input.followUpPlan,
+          task: followUp.plan,
           taskType: "postop-follow-up",
           priority: latestEpisode.record.priority,
-          dueDate: input.followUpDate,
+          dueDate: followUp.date,
           owner: ""
         });
       }
-      if (!outcome.alreadyLogged) {
-        await this.repository.createEvent({
+      // The completion event belongs to the workflow, not to note creation.
+      // A retry that finds the note but an unpaid audit debt settles it here;
+      // a failed clear can at worst repeat an event, never lose one.
+      const auditOwed = !outcome.alreadyLogged || outcome.procedure.record.audit_pending === true;
+      if (auditOwed) {
+        const event = await this.repository.createEvent({
           action: "procedure-completed",
           patientId: patient.record.id,
           episodeId: episode.record.id,
           targetId: outcome.procedure.record.id,
           targetEntity: "procedure",
-          summary: `Procedure completed: ${outcome.procedure.record.procedure}`,
-          newState: input.followUpRequired ? "postoperative follow-up" : "ready to close"
+          summary: "Procedure completed",
+          newState: followUp.required ? "postoperative follow-up" : "ready to close"
         });
+        if (event) {
+          return this.repository.update<ProcedureRecord>(outcome.procedure.path, {
+            audit_pending: false
+          });
+        }
       }
         return outcome.procedure;
       })
