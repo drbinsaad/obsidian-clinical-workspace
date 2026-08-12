@@ -1198,6 +1198,54 @@ export class IntegrityReportModal extends ClinicalResponsiveModal {
 }
 
 /**
+ * Shown once after the plugin has been updated: a short, identifier-free
+ * summary of what changed, with a link to the full release notes on GitHub.
+ * Purely informational — it makes no network request; the link opens in the
+ * system browser only when the user chooses to follow it.
+ */
+export class WhatsNewModal extends ClinicalResponsiveModal {
+  constructor(
+    app: App,
+    private readonly version: string,
+    private readonly highlights: readonly string[],
+    private readonly releaseUrl: string
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("clinical-modal");
+    this.contentEl.empty();
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
+    body.createEl("h2", {
+      text: `What's new in Clinical Workspace ${this.version}`,
+      cls: "clinical-modal-heading"
+    });
+    body.createEl("p", {
+      text: "This window appears once after an update. Nothing was sent anywhere to show it.",
+      cls: "clinical-section-note"
+    });
+    const list = body.createEl("ul", { cls: "clinical-whats-new-list" });
+    for (const highlight of this.highlights) {
+      list.createEl("li", { text: highlight });
+    }
+    body.createEl("p", { cls: "clinical-section-note" }, (paragraph) => {
+      paragraph.createEl("a", {
+        text: "Read the full release notes on GitHub",
+        attr: { href: this.releaseUrl, rel: "noopener" }
+      });
+    });
+    const footer = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
+    const close = footer.createEl("button", { text: "Close", cls: "mod-cta" });
+    close.addEventListener("click", () => this.close());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+/**
  * Generic typed-confirmation gate for identifier-free maintenance actions
  * (baseline adoption, body migration). Shows counts, never record content.
  */

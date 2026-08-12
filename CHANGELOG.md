@@ -39,6 +39,7 @@ Reliability release implementing the findings of an independent review of
 
 ### Added
 
+- A what's-new window appears once after an update, the first time the workspace is opened: a short identifier-free summary of the changes with a link to the full release notes on GitHub. It makes no network request; the shown-for version is stored in `data.json` so other synced devices are spared the repeat.
 - Command "Confirm current records as the recovery baseline": a typed-confirmation exit from the fail-closed read-only state after a deliberate record deletion or accepted Sync outcome. Previously the only way out was restoring the missing files.
 - Command "Remove identifiers from generated note bodies": rewrites patient-note bodies still byte-identical to the pre-0.5 generated scaffold (which embedded name, MRN, and phone) to the new identifier-free scaffold, with a count preview and typed confirmation. Edited notes are never touched.
 

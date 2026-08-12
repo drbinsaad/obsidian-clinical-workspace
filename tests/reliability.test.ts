@@ -456,6 +456,20 @@ test("the integrity scan stays linear on a large balanced synthetic caseload", a
   );
 });
 
+/* ----------------------------------------------- what's-new window ------- */
+
+test("the what's-new window shows once per update and never on a fresh install", async () => {
+  const { shouldShowWhatsNew } = await import("../src/main");
+  // Fresh install: no stored version, workspace never initialized.
+  assert.equal(shouldShowWhatsNew(null, "0.5.0", false), false);
+  // Update from a version that predates the record, on a used workspace.
+  assert.equal(shouldShowWhatsNew(null, "0.5.0", true), true);
+  // Ordinary update.
+  assert.equal(shouldShowWhatsNew("0.5.0", "0.6.0", true), true);
+  // Already seen for this version.
+  assert.equal(shouldShowWhatsNew("0.5.0", "0.5.0", true), false);
+});
+
 /* --------------------------------------------- Sync-safe repairs (J) ----- */
 
 test("a Sync delivery landing during a scaffold repair is never overwritten", async () => {

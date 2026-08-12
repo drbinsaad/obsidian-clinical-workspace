@@ -32,7 +32,8 @@ import {
 import {
   ConfirmMaintenanceModal,
   InitializeWorkspaceModal,
-  IntegrityReportModal
+  IntegrityReportModal,
+  WhatsNewModal
 } from "./ui/modals";
 import { ClinicalSettingTab } from "./ui/settings-tab";
 import {
@@ -98,6 +99,32 @@ async function sha256Hex(value: string): Promise<string> {
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+/** Static, identifier-free highlights shown once after an update. */
+const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
+  "Procedure retries are safe: different follow-up details are refused with a clear message instead of silently mixing with what an earlier attempt saved.",
+  "Impossible procedure and follow-up dates are rejected before anything is written.",
+  "The integrity check covers far more (schema versions, task types, duplicate ids, follow-up contradictions, audit-trail gaps) and reports its scope honestly.",
+  "Sync recovery verifies the actual records, not just a file count, and a new command lets you confirm a changed record set as the trusted baseline.",
+  "Generated note bodies no longer duplicate names, MRNs, or phone numbers; a preview command cleans up bodies written by older versions.",
+  "Right-to-left layouts, screen-reader labels, and touch targets are improved throughout, and the workspace adapts to narrow stacked panes and the iPhone keyboard."
+];
+
+/**
+ * Decides whether the what's-new window should appear. It shows only when a
+ * previously recorded version differs from the running one — or, for updates
+ * from versions that predate the record, when the workspace was already in
+ * use. A genuinely fresh install records the version silently.
+ */
+export function shouldShowWhatsNew(
+  storedVersion: string | null,
+  currentVersion: string,
+  workspaceInitialized: boolean
+): boolean {
+  if (storedVersion === currentVersion) return false;
+  if (storedVersion === null) return workspaceInitialized;
+  return true;
+}
+
 export default class ClinicalWorkspacePlugin extends Plugin {
   settings: ClinicalSettings = { ...DEFAULT_SETTINGS };
 
@@ -131,6 +158,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   /** Parsed-record commitment; null until first computed or for pre-0.5 state. */
   private expectedEntityCounts: ExpectedEntityCounts | null = null;
   private expectedRecordDigest: string | null = null;
+  /** Version the what's-new window was last shown for; null before 0.5.0. */
+  private whatsNewVersion: string | null = null;
+  private whatsNewShownThisSession = false;
   /** True until path-free v1 safety metadata is durably saved. */
   private workspaceSafetyNeedsPersistence = false;
   /** Distinguishes overlapping safety saves so an older completion cannot clear a newer retry. */
@@ -335,6 +365,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     );
     this.expectedEntityCounts = safety?.expectedEntityCounts ?? null;
     this.expectedRecordDigest = safety?.expectedRecordDigest ?? null;
+    const storedWhatsNew = (stored as { whatsNewVersion?: unknown } | null)?.whatsNewVersion;
+    this.whatsNewVersion = typeof storedWhatsNew === "string" ? storedWhatsNew : null;
     this.missingRootRequiresRecords =
       safety?.recoveryRequiresRecords === true || this.managedRecordsExpected;
     this.missingRootRecoveryBlocked = (
@@ -957,7 +989,35 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       workspaceSafety: this.workspaceSafety()
     };
     if (marker) data.migrationInProgress = marker;
+    if (this.whatsNewVersion) data.whatsNewVersion = this.whatsNewVersion;
     return data;
+  }
+
+  /**
+   * Shows the what's-new window once after an update, from the workspace-open
+   * path rather than plugin load, so it never interrupts app startup. The
+   * shown-for version travels in data.json, so a device that has seen it
+   * spares the user's other devices after Sync.
+   */
+  private async maybeShowWhatsNew(): Promise<void> {
+    if (this.whatsNewShownThisSession) return;
+    const currentVersion = this.manifest.version;
+    if (!shouldShowWhatsNew(this.whatsNewVersion, currentVersion, this.workspaceInitialized)) {
+      if (this.whatsNewVersion !== currentVersion) {
+        this.whatsNewVersion = currentVersion;
+        await this.persistPluginData().catch(() => undefined);
+      }
+      return;
+    }
+    this.whatsNewShownThisSession = true;
+    this.whatsNewVersion = currentVersion;
+    await this.persistPluginData().catch(() => undefined);
+    new WhatsNewModal(
+      this.app,
+      currentVersion,
+      WHATS_NEW_HIGHLIGHTS,
+      `https://github.com/drbinsaad/obsidian-clinical-workspace/releases/tag/${currentVersion}`
+    ).open();
   }
 
   /** Builds the snapshot only when its turn reaches the head of the queue. */
@@ -1426,6 +1486,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.integrityChecked = true;
       await this.runIntegrityCheck({ onlyWhenIssuesFound: true });
     }
+    await this.maybeShowWhatsNew();
     return view;
   }
 

@@ -293,7 +293,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
           {
             name: "Plugin settings",
             desc:
-              "data.json stores the settings shown here plus path-free initialization/recovery booleans and an aggregate managed-file count. It never stores MRNs, patient names, phone numbers, record paths or clinical record content.",
+              "data.json stores the settings shown here plus path-free initialization/recovery state: booleans, per-entity record counts, a checksum of the opaque record ids, and the plugin version the what's-new window was last shown for. It never stores MRNs, patient names, phone numbers, record paths or clinical record content.",
             aliases: ["privacy", "patient data", "configuration"]
           }
         ]
