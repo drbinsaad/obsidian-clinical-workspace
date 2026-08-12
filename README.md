@@ -50,6 +50,11 @@ data.*
 | **Surgery** | OR booking queue, completed-procedure logbook, and optional follow-up dates. |
 | **More** | Native Obsidian Bases, identity correction and merge, archive/restore, and integrity checking. |
 
+The workspace follows the width of its own Obsidian pane. In split layouts and
+stacked tabs it shifts between wide, compact, and narrow presentations without
+requiring the desktop window to be resized. Narrow panes keep cards and actions
+in one readable column and make the workspace tab row independently scrollable.
+
 The command palette now includes a **Quick entry** hub plus separate actions
 for a new patient/Episode, task or follow-up, procedure, and today's pending
 work. Procedure Quick Entry remains limited to eligible active OR-booking
