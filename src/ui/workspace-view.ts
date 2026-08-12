@@ -42,6 +42,7 @@ import {
   QuickEntryModal,
   UpdateEpisodeModal,
   type QuickEntryEpisodeChoice,
+  bidiIsolate,
   patientIdentityLabel
 } from "./modals";
 
@@ -487,6 +488,7 @@ export class ClinicalWorkspaceView extends ItemView {
   }
 
   private render(snapshot: ClinicalSnapshot): void {
+    this.indexSnapshot(snapshot);
     const root = this.contentEl;
     root.empty();
     // The scroller is nested inside the view so the floating action button can
@@ -577,9 +579,16 @@ export class ClinicalWorkspaceView extends ItemView {
   private handleTabKey(event: KeyboardEvent, tab: WorkspaceTab): void {
     const order = Object.keys(TAB_LABELS) as WorkspaceTab[];
     const index = order.indexOf(tab);
+    // In a right-to-left layout the tabs run right-to-left, so ArrowRight
+    // must move to the visually-right tab — the PREVIOUS one in the array.
+    const viewDirectionWindow = this.contentEl.ownerDocument.defaultView;
+    const rtl =
+      viewDirectionWindow?.getComputedStyle(this.contentEl).direction === "rtl";
+    const forwardKey = rtl ? "ArrowLeft" : "ArrowRight";
+    const backwardKey = rtl ? "ArrowRight" : "ArrowLeft";
     let next: WorkspaceTab | null = null;
-    if (event.key === "ArrowRight") next = order[(index + 1) % order.length] ?? null;
-    if (event.key === "ArrowLeft") next = order[(index - 1 + order.length) % order.length] ?? null;
+    if (event.key === forwardKey) next = order[(index + 1) % order.length] ?? null;
+    if (event.key === backwardKey) next = order[(index - 1 + order.length) % order.length] ?? null;
     if (event.key === "Home") next = order[0] ?? null;
     if (event.key === "End") next = order[order.length - 1] ?? null;
     if (!next) return;
@@ -649,8 +658,9 @@ export class ClinicalWorkspaceView extends ItemView {
     for (const episode of bookingPage.items) {
       const patient = this.patientFor(snapshot, episode.patient_id);
       const card = this.episodeCard(list, episode, patient);
+      const context = this.episodeContext(episode, patient);
       const actions = card.createDiv({ cls: "clinical-card-actions" });
-      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id));
+      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
       this.actionButton(
         actions,
         "Complete surgery",
@@ -661,7 +671,9 @@ export class ClinicalWorkspaceView extends ItemView {
             await this.refresh();
           }).open();
         },
-        true
+        true,
+        false,
+        context
       );
     }
     this.renderPagination(container, "surgery-bookings", bookingPage);
@@ -711,8 +723,9 @@ export class ClinicalWorkspaceView extends ItemView {
       const patient = this.patientFor(snapshot, episode.patient_id);
       const card = this.episodeCard(archiveList, episode, patient);
       if (episode.outcome) card.createEl("p", { text: `Outcome: ${episode.outcome}`, cls: "clinical-card-meta" });
+      const context = this.episodeContext(episode, patient);
       const actions = card.createDiv({ cls: "clinical-card-actions" });
-      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id));
+      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
       this.actionButton(
         actions,
         "Restore",
@@ -721,7 +734,9 @@ export class ClinicalWorkspaceView extends ItemView {
             await this.service.restoreEpisode(episode.id);
             new Notice("Patient episode restored.");
           }),
-        true
+        true,
+        false,
+        context
       );
     }
     this.renderPagination(container, "more-archive", archivePage);
@@ -730,7 +745,7 @@ export class ClinicalWorkspaceView extends ItemView {
     const safety = container.createDiv({ cls: "clinical-card" });
     safety.createEl("h4", { text: "Data integrity" });
     safety.createEl("p", {
-      text: "Check duplicate MRNs, duplicate open tasks, broken links, unexpected values, and invalid dates.",
+      text: "Run the configured checks: duplicates, broken links, unexpected values, invalid dates, follow-up contradictions, and audit-trail coverage. Not a full validation of every field.",
       cls: "clinical-card-meta"
     });
     const safetyActions = safety.createDiv({ cls: "clinical-card-actions" });
@@ -768,7 +783,7 @@ export class ClinicalWorkspaceView extends ItemView {
   private renderPatientCard(container: HTMLElement, patient: PatientRecord, snapshot: ClinicalSnapshot): void {
     const card = container.createDiv({ cls: "clinical-card" });
     const top = card.createDiv({ cls: "clinical-card-top" });
-    top.createEl("h4", { text: patient.patient_name || "Name not recorded" });
+    top.createEl("h4", { text: patient.patient_name || "Name not recorded", attr: { dir: "auto" } });
     top.createSpan({ text: patient.status, cls: "clinical-card-meta" });
     card.createEl("p", { text: this.patientLabel(patient), cls: "clinical-card-meta" });
     card.createEl("p", { text: `Phone ${displayPhone(patient.phone)}`, cls: "clinical-card-meta" });
@@ -778,15 +793,16 @@ export class ClinicalWorkspaceView extends ItemView {
       const badges = card.createDiv({ cls: "clinical-badges" });
       this.badge(badges, "Needs review", "overdue");
     }
+    const patientContext = this.patientLabel(patient);
     const actions = card.createDiv({ cls: "clinical-card-actions" });
-    this.actionButton(actions, "Open", () => this.openRecord("patient", patient.id));
+    this.actionButton(actions, "Open", () => this.openRecord("patient", patient.id), false, false, patientContext);
     this.actionButton(actions, "Edit identity", () => {
       new PatientIdentityModal(this.app, patient, async (input) => {
         await this.service.updatePatientIdentity(patient.id, input);
         new Notice("Patient identity updated.");
         await this.refresh();
       }).open();
-    });
+    }, false, false, patientContext);
     const others = this.identifiablePatients(snapshot).filter((item) => item.id !== patient.id);
     if (others.length) {
       this.actionButton(actions, "Merge", () => {
@@ -820,8 +836,9 @@ export class ClinicalWorkspaceView extends ItemView {
     for (const episode of page.items) {
       const patient = this.patientFor(snapshot, episode.patient_id);
       const card = this.episodeCard(list, episode, patient);
+      const context = this.episodeContext(episode, patient);
       const actions = card.createDiv({ cls: "clinical-card-actions" });
-      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id));
+      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
       this.actionButton(actions, "+ Task", () => {
         new NewTaskModal(this.app, episode, this.patientLabel(patient), async (input) => {
           const created = await this.service.createTask(input);
@@ -832,7 +849,7 @@ export class ClinicalWorkspaceView extends ItemView {
           );
           await this.refresh();
         }).open();
-      });
+      }, false, false, context);
       this.actionButton(actions, "Update", () => {
         new UpdateEpisodeModal(this.app, episode, async (input) => {
           const result = await this.service.updateEpisode(episode.id, input);
@@ -851,7 +868,7 @@ export class ClinicalWorkspaceView extends ItemView {
           new Notice(message, outcome.kind === "already-closed" ? 9000 : 4000);
           await this.refresh();
         }).open();
-      });
+      }, false, false, context);
       this.actionButton(
         actions,
         "Discharge",
@@ -868,7 +885,8 @@ export class ClinicalWorkspaceView extends ItemView {
           ).open();
         },
         false,
-        true
+        true,
+        context
       );
     }
     this.renderPagination(container, pageKey, page);
@@ -888,15 +906,15 @@ export class ClinicalWorkspaceView extends ItemView {
     const page = this.pageFor(pageKey, tasks);
     for (const task of page.items) {
       const patient = this.patientFor(snapshot, task.patient_id);
-      const episode = snapshot.episodes.find((item) => item.id === task.episode_id);
+      const episode = this.renderEpisodeById.get(task.episode_id);
       const card = list.createDiv({ cls: "clinical-card" });
       const top = card.createDiv({ cls: "clinical-card-top" });
-      top.createEl("h4", { text: task.task || "Task not recorded" });
+      top.createEl("h4", { text: task.task || "Task not recorded", attr: { dir: "auto" } });
       top.createSpan({ text: task.due_date || "No date", cls: "clinical-card-meta" });
       card.createEl("p", { text: this.patientLabel(patient), cls: "clinical-card-meta" });
       if (episode) {
         card.createEl("p", {
-          text: `${pathwayLabel(episode.pathway)} · ${episode.case}`,
+          text: `${pathwayLabel(episode.pathway)} · ${bidiIsolate(episode.case)}`,
           cls: "clinical-card-meta"
         });
       }
@@ -904,8 +922,9 @@ export class ClinicalWorkspaceView extends ItemView {
       this.badge(badges, priorityLabel(task.priority), task.priority);
       if (taskIsOverdue(task)) this.badge(badges, "Overdue", "overdue");
       if (task.owner) this.badge(badges, task.owner, "owner");
+      const context = this.taskContext(task, patient);
       const actions = card.createDiv({ cls: "clinical-card-actions" });
-      this.actionButton(actions, "Open", () => this.openRecord("task", task.id));
+      this.actionButton(actions, "Open", () => this.openRecord("task", task.id), false, false, context);
       this.actionButton(
         actions,
         "Complete",
@@ -914,7 +933,9 @@ export class ClinicalWorkspaceView extends ItemView {
             await this.service.completeTask(task.id);
             new Notice("Task completed.");
           }),
-        true
+        true,
+        false,
+        context
       );
       this.actionButton(actions, "Cancel", () => {
         new CancelTaskModal(this.app, task, async (reason) => {
@@ -922,7 +943,7 @@ export class ClinicalWorkspaceView extends ItemView {
           new Notice("Task cancelled.");
           await this.refresh();
         }).open();
-      });
+      }, false, false, context);
       if (episode) {
         this.actionButton(actions, "+ Task", () => {
           new NewTaskModal(this.app, episode, this.patientLabel(patient), async (input) => {
@@ -934,7 +955,7 @@ export class ClinicalWorkspaceView extends ItemView {
             );
             await this.refresh();
           }).open();
-        });
+        }, false, false, this.episodeContext(episode, patient));
       }
     }
     this.renderPagination(container, pageKey, page);
@@ -943,14 +964,14 @@ export class ClinicalWorkspaceView extends ItemView {
   private episodeCard(container: HTMLElement, episode: EpisodeRecord, patient: PatientRecord | undefined): HTMLElement {
     const card = container.createDiv({ cls: "clinical-card" });
     const top = card.createDiv({ cls: "clinical-card-top" });
-    top.createEl("h4", { text: episode.case || "Case not recorded" });
+    top.createEl("h4", { text: episode.case || "Case not recorded", attr: { dir: "auto" } });
     top.createSpan({ text: episode.due_date || "Not set", cls: "clinical-card-meta" });
     card.createEl("p", { text: this.patientLabel(patient), cls: "clinical-card-meta" });
     if (patient) card.createEl("p", { text: `Phone ${displayPhone(patient.phone)}`, cls: "clinical-card-meta" });
     if (episode.next_action) {
       const next = card.createEl("p", { cls: "clinical-card-review" });
       next.createEl("strong", { text: "Next: " });
-      next.appendText(episode.next_action);
+      next.createSpan({ text: episode.next_action, attr: { dir: "auto" } });
     }
     const badges = card.createDiv({ cls: "clinical-badges" });
     this.badge(badges, careSettingLabel(episode.care_setting), episode.care_setting);
@@ -966,7 +987,7 @@ export class ClinicalWorkspaceView extends ItemView {
     const patient = this.patientFor(snapshot, procedure.patient_id);
     const card = container.createDiv({ cls: "clinical-card" });
     const top = card.createDiv({ cls: "clinical-card-top" });
-    top.createEl("h4", { text: procedure.procedure || "Procedure not recorded" });
+    top.createEl("h4", { text: procedure.procedure || "Procedure not recorded", attr: { dir: "auto" } });
     top.createSpan({ text: procedure.procedure_date || "No date", cls: "clinical-card-meta" });
     card.createEl("p", { text: this.patientLabel(patient), cls: "clinical-card-meta" });
     card.createEl("p", { text: procedure.role, cls: "clinical-card-meta" });
@@ -974,13 +995,23 @@ export class ClinicalWorkspaceView extends ItemView {
     this.badge(badges, "Completed", "complete");
     this.badge(badges, procedure.follow_up_required ? "Follow-up required" : "No follow-up", "pathway");
     const actions = card.createDiv({ cls: "clinical-card-actions" });
-    this.actionButton(actions, "Open log", () => this.openRecord("procedure", procedure.id));
+    this.actionButton(
+      actions,
+      "Open log",
+      () => this.openRecord("procedure", procedure.id),
+      false,
+      false,
+      `${procedure.procedure ? bidiIsolate(procedure.procedure) : "procedure not recorded"}, ${this.patientLabel(patient)}`
+    );
   }
 
   private async showIntegrity(): Promise<void> {
     try {
-      const issues = await this.integrity.scan();
-      new IntegrityReportModal(this.app, issues, (path) => void this.openPath(path)).open();
+      const report = await this.integrity.report();
+      new IntegrityReportModal(this.app, report.issues, (path) => void this.openPath(path), {
+        scannedRecords: report.scannedRecords,
+        checkFamilies: report.checkFamilies
+      }).open();
     } catch (error) {
       new Notice(error instanceof Error ? error.message : "Integrity check failed.", 7000);
     }
@@ -1041,14 +1072,38 @@ export class ClinicalWorkspaceView extends ItemView {
     await this.app.workspace.getLeaf(false).openFile(abstract);
   }
 
-  private patientFor(snapshot: ClinicalSnapshot, patientId: string): PatientRecord | undefined {
-    return snapshot.patients.find((patient) => patient.id === patientId);
+  /**
+   * Lookup maps rebuilt once per render pass. Card lists used to call
+   * Array.find per row, which made a full redraw quadratic in caseload size.
+   */
+  private renderPatientById = new Map<string, PatientRecord>();
+  private renderEpisodeById = new Map<string, EpisodeRecord>();
+
+  private indexSnapshot(snapshot: ClinicalSnapshot): void {
+    this.renderPatientById = new Map(snapshot.patients.map((patient) => [patient.id, patient]));
+    this.renderEpisodeById = new Map(snapshot.episodes.map((episode) => [episode.id, episode]));
+  }
+
+  private patientFor(_snapshot: ClinicalSnapshot, patientId: string): PatientRecord | undefined {
+    return this.renderPatientById.get(patientId);
   }
 
   private patientLabel(patient: PatientRecord | undefined): string {
     return patient
       ? patientIdentityLabel(patient.mrn, patient.patient_name)
       : "MRN needed · Patient identity missing";
+  }
+
+  /** Accessible-name context for one episode's action buttons. */
+  private episodeContext(episode: EpisodeRecord, patient: PatientRecord | undefined): string {
+    const caseLabel = episode.case ? bidiIsolate(episode.case) : "case not recorded";
+    return `${caseLabel}, ${this.patientLabel(patient)}`;
+  }
+
+  /** Accessible-name context for one task's action buttons. */
+  private taskContext(task: TaskRecord, patient: PatientRecord | undefined): string {
+    const taskLabel = task.task ? bidiIsolate(task.task) : "task not recorded";
+    return `${taskLabel}, ${this.patientLabel(patient)}`;
   }
 
   private isActiveEpisode(episode: EpisodeRecord): boolean {
@@ -1183,11 +1238,16 @@ export class ClinicalWorkspaceView extends ItemView {
     label: string,
     action: () => void | Promise<void>,
     primary = false,
-    danger = false
+    danger = false,
+    // Rendered lists repeat the same button text on every card, which reads
+    // as an indistinguishable pile of "Discharge" buttons in a screen-reader
+    // rotor. The context names the record without changing the visible label.
+    accessibleContext = ""
   ): void {
     const button = container.createEl("button", {
       text: label,
-      cls: `clinical-card-button${primary ? " mod-cta" : ""}${danger ? " is-danger" : ""}`
+      cls: `clinical-card-button${primary ? " mod-cta" : ""}${danger ? " is-danger" : ""}`,
+      attr: accessibleContext ? { "aria-label": `${label} — ${accessibleContext}` } : {}
     });
     button.addEventListener("click", () => {
       if (button.disabled) return;

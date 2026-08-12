@@ -133,6 +133,11 @@
 
 .clinical-workspace-tab:focus-visible,
 .clinical-card-button:focus-visible,
+.clinical-modal-actions button:focus-visible,
+.clinical-refresh-button:focus-visible,
+.clinical-form-section input:focus-visible,
+.clinical-form-section select:focus-visible,
+.clinical-form-section textarea:focus-visible,
 .clinical-primary-action:focus-visible {
   outline: 2px solid var(--interactive-accent);
   outline-offset: 2px;
@@ -320,13 +325,19 @@
    desktop and stacks when two workspace views are open. */
 .clinical-primary-action {
   position: absolute;
-  right: max(18px, env(safe-area-inset-right));
+  inset-inline-end: max(18px, env(safe-area-inset-right));
   bottom: calc(18px + env(safe-area-inset-bottom));
   z-index: 8;
   min-width: 58px;
   min-height: 58px;
   border-radius: 999px;
   box-shadow: var(--shadow-l);
+}
+
+/* env() insets are physical, so the RTL mirror pairs the logical edge with the
+   left-hand safe area. */
+.mod-rtl .clinical-primary-action {
+  inset-inline-end: max(18px, env(safe-area-inset-left));
 }
 
 /* Pane modes come from a ResizeObserver on the ItemView content element. This
@@ -345,7 +356,7 @@
 }
 
 .clinical-workspace-view.is-compact .clinical-workspace-header-actions {
-  margin-left: auto;
+  margin-inline-start: auto;
 }
 
 .clinical-workspace-view.is-narrow .clinical-workspace-shell {
@@ -462,11 +473,19 @@
 }
 
 /* Obsidian centres the control in a Setting row; a date reads as a stray value
-   floating mid-row unless it is pinned left like every other field. */
+   floating mid-row unless it is pinned to the start edge like every other
+   field — the logical start, so RTL layouts mirror it correctly. */
 .clinical-modal input[type="date"] {
   width: 100%;
   min-height: 44px;
-  text-align: left;
+  text-align: start;
+}
+
+/* Every form control meets the 44px touch floor, not only the date input. */
+.clinical-form-section input,
+.clinical-form-section select,
+.clinical-form-section textarea {
+  min-height: 44px;
 }
 
 .clinical-modal-body {
@@ -655,12 +674,15 @@
   grid-row: 1;
 }
 
-/* The floating action button sits over the bottom-right of the view. When a tab
-   holds little content there is nothing to scroll, so a card's action row can
-   come to rest underneath it — on the Patients tab that hid Discharge, the one
-   destructive control. A right gutter guarantees no action is ever covered. */
-.is-mobile .clinical-card-actions {
-  padding-right: 68px;
+/* The floating action button sits over the bottom inline-end of the view. When
+   a tab holds little content there is nothing to scroll, so a card's action row
+   can come to rest underneath it — on the Patients tab that hid Discharge, the
+   one destructive control. An end gutter guarantees no action is ever covered.
+   Narrow desktop panes get the same gutter: is-narrow makes card buttons
+   full-width there too, which put the FAB on top of them. */
+.is-mobile .clinical-card-actions,
+.clinical-workspace-view.is-narrow .clinical-card-actions {
+  padding-inline-end: 68px;
 }
 
 .is-mobile .clinical-primary-action {

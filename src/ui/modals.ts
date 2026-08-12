@@ -402,12 +402,21 @@ export interface QuickEntryEpisodeChoice {
   isCurrent: boolean;
 }
 
+/**
+ * Wraps user-entered text in first-strong isolates (FSI…PDI) so an Arabic
+ * name or case label cannot visually reorder the LTR template around it.
+ * Display-time only; persisted values never carry these controls.
+ */
+export function bidiIsolate(value: string): string {
+  return value ? `\u2068${value}\u2069` : value;
+}
+
 export function episodeChoiceAccessibleLabel(
   actionLabel: string,
   choice: QuickEntryEpisodeChoice
 ): string {
   const action = choice.isCurrent ? "Confirm current episode" : "Use this episode";
-  const episode = choice.episode.case || "Case not recorded";
+  const episode = choice.episode.case ? bidiIsolate(choice.episode.case) : "Case not recorded";
   return `${action} for ${actionLabel}: ${episode}; ${choice.patientLabel}; episode ${choice.episode.id}`;
 }
 
@@ -902,19 +911,29 @@ export class MergePatientsModal extends ClinicalResponsiveModal {
     this.targetId = this.candidates[0]?.id ?? "";
 
     const summary = body.createDiv({ cls: "clinical-card" });
+    // Each refresh takes a generation token. A slower preview finishing after
+    // a newer selection is discarded instead of appending stale counts or a
+    // stale error under the newer result.
+    let previewGeneration = 0;
     const refresh = async () => {
+      const generation = ++previewGeneration;
       summary.empty();
       if (!this.targetId) {
         summary.createEl("p", { text: "No other patient record is available to merge into.", cls: "clinical-card-meta" });
         return;
       }
+      summary.createEl("p", { text: "Checking what this merge will move…", cls: "clinical-card-meta" });
       try {
         const result = await this.preview(this.targetId);
+        if (generation !== previewGeneration) return;
+        summary.empty();
         summary.createEl("h4", { text: "This merge will move" });
         summary.createEl("p", { text: `${result.episodes} episode${result.episodes === 1 ? "" : "s"}`, cls: "clinical-card-meta" });
         summary.createEl("p", { text: `${result.tasks} task${result.tasks === 1 ? "" : "s"}`, cls: "clinical-card-meta" });
         summary.createEl("p", { text: `${result.procedures} procedure${result.procedures === 1 ? "" : "s"}`, cls: "clinical-card-meta" });
       } catch (error) {
+        if (generation !== previewGeneration) return;
+        summary.empty();
         summary.createEl("p", {
           text: error instanceof Error ? error.message : "Preview failed.",
           cls: "clinical-card-meta"
@@ -1132,7 +1151,8 @@ export class IntegrityReportModal extends ClinicalResponsiveModal {
   constructor(
     app: App,
     private readonly issues: IntegrityIssue[],
-    private readonly onOpenPath: (path: string) => void
+    private readonly onOpenPath: (path: string) => void,
+    private readonly checkScope?: { scannedRecords: number; checkFamilies: number }
   ) {
     super(app);
   }
@@ -1143,8 +1163,15 @@ export class IntegrityReportModal extends ClinicalResponsiveModal {
     const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
     body.createEl("h2", { text: "Data integrity", cls: "clinical-modal-heading" });
     if (!this.issues.length) {
+      // "Configured checks passed", never "no issues": the scan covers what
+      // it is configured to cover, and claiming more would teach users to
+      // trust a guarantee this plugin does not make.
+      const scope = this.checkScope
+        ? `Configured checks passed: ${this.checkScope.checkFamilies} check families over ${this.checkScope.scannedRecords} records found nothing to report.`
+        : "Configured checks passed.";
+      body.createEl("p", { text: scope, cls: "clinical-section-note" });
       body.createEl("p", {
-        text: "No duplicate MRNs, duplicate open tasks, broken links or invalid dates were found.",
+        text: "This is not a full validation of every field in every note; hand edits outside the configured checks are not examined.",
         cls: "clinical-section-note"
       });
       return;
@@ -1170,6 +1197,63 @@ export class IntegrityReportModal extends ClinicalResponsiveModal {
   }
 }
 
+/**
+ * Generic typed-confirmation gate for identifier-free maintenance actions
+ * (baseline adoption, body migration). Shows counts, never record content.
+ */
+export class ConfirmMaintenanceModal extends ClinicalResponsiveModal {
+  private typed = "";
+  private decided = false;
+
+  constructor(
+    app: App,
+    private readonly options: {
+      title: string;
+      lines: string[];
+      confirmWord: string;
+      confirmLabel: string;
+      onDecide: (confirmed: boolean) => void;
+    }
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("clinical-modal");
+    this.contentEl.empty();
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
+    body.createEl("h2", { text: this.options.title, cls: "clinical-modal-heading" });
+    for (const line of this.options.lines) {
+      body.createEl("p", { text: line, cls: "clinical-section-note" });
+    }
+    const form = body.createDiv({ cls: "clinical-form-section" });
+    namedSetting(form, `Type ${this.options.confirmWord} to confirm`).addText((field) => {
+      field.setPlaceholder(this.options.confirmWord).onChange((value) => (this.typed = value));
+    });
+    const errorEl = body.createDiv({ cls: "clinical-modal-error", attr: { role: "alert", "aria-live": "assertive" } });
+    errorEl.hide();
+    const actions = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
+    const cancel = actions.createEl("button", { text: "Cancel" });
+    cancel.addEventListener("click", () => this.close());
+    const confirm = actions.createEl("button", { text: this.options.confirmLabel, cls: "mod-cta" });
+    confirm.addEventListener("click", () => {
+      if (this.typed.trim().toUpperCase() !== this.options.confirmWord.toUpperCase()) {
+        errorEl.setText("Enter the confirmation word shown above.");
+        errorEl.show();
+        return;
+      }
+      this.decided = true;
+      this.close();
+      this.options.onDecide(true);
+    });
+  }
+
+  onClose(): void {
+    if (!this.decided) this.options.onDecide(false);
+    this.contentEl.empty();
+  }
+}
+
 export function patientIdentityLabel(mrn: string, patientName: string): string {
-  return `MRN ${displayMrn(mrn)} · ${patientName || "Name not recorded"}`;
+  return `MRN ${displayMrn(mrn)} · ${patientName ? bidiIsolate(patientName) : "Name not recorded"}`;
 }
