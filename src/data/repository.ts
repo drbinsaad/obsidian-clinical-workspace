@@ -1,4 +1,4 @@
-import { App, normalizePath, TFile } from "obsidian";
+import { App, Notice, normalizePath, TFile } from "obsidian";
 import type {
   ClinicalRecord,
   ClinicalSnapshot,
@@ -143,21 +143,31 @@ export class ClinicalRepository {
       // Repair a base whose content no longer matches its name (0.1.0 shipped a
       // Patients.base that queried Episodes). Only rewritten when it is plainly
       // wrong, so a base the user has customised is left alone.
+      //
+      // The decision runs INSIDE Vault.process, against the content the write
+      // will actually replace. A separate read-then-modify left a window in
+      // which Sync could deliver the user's own version of this file and have
+      // it silently destroyed by the repair.
       const expectedFolder = baseSourceFolders()[path];
       if (expectedFolder && existing instanceof TFile) {
-        const current = await this.app.vault.read(existing);
-        if (current.includes(`file.inFolder("${expectedFolder}")`)) continue;
-        // Only a base still recognisably generated is repaired. Once the user
-        // has customised it, silently replacing their work on every open is
-        // worse than leaving a stale query they can fix themselves.
-        if (!isUntouchedBase(path, current)) {
+        this.assertWritesAllowed();
+        let leftAlone = false;
+        await this.app.vault.process(existing, (current) => {
+          if (current.includes(`file.inFolder("${expectedFolder}")`)) return current;
+          // Only a base still recognisably generated is repaired. Once the user
+          // has customised it, silently replacing their work on every open is
+          // worse than leaving a stale query they can fix themselves.
+          if (!isUntouchedBase(path, current)) {
+            leftAlone = true;
+            return current;
+          }
+          return content;
+        });
+        if (leftAlone) {
           console.warn(
             "Clinical Workspace: a database view points at the wrong folder but has been customised, so it was left alone."
           );
-          continue;
         }
-        this.assertWritesAllowed();
-        await this.app.vault.modify(existing, content);
       }
     }
     const homePath = `${clinicalFolder("home")}/Clinical Workspace.md`;
@@ -169,17 +179,26 @@ export class ClinicalRepository {
     } else if (existingHome instanceof TFile) {
       // Version 0.1.0 embedded a view name that no longer exists, because the
       // base that held it was renamed; a root-folder migration invalidates the
-      // embeds the same way. Rewritten only when an embed is plainly stale.
-      const current = await this.app.vault.read(existingHome);
-      const stale =
-        current.includes("Patients.base#Active patients") ||
-        (current.includes("![[") && !current.includes(`${clinicalFolder("bases")}/Patients.base`));
-      // A note the user has written in is theirs. Repair only the untouched
-      // scaffolding this plugin generated.
-      if (stale && isUntouchedHome(current)) {
-        this.assertWritesAllowed();
-        await this.app.vault.modify(existingHome, expectedHome);
-      } else if (stale) {
+      // embeds the same way. Rewritten only when an embed is plainly stale —
+      // and the staleness decision runs inside Vault.process against the
+      // content actually being replaced, so a Sync delivery landing mid-repair
+      // is never destroyed.
+      this.assertWritesAllowed();
+      let editedButStale = false;
+      await this.app.vault.process(existingHome, (current) => {
+        const stale =
+          current.includes("Patients.base#Active patients") ||
+          (current.includes("![[") && !current.includes(`${clinicalFolder("bases")}/Patients.base`));
+        if (!stale) return current;
+        // A note the user has written in is theirs. Repair only the untouched
+        // scaffolding this plugin generated.
+        if (!isUntouchedHome(current)) {
+          editedButStale = true;
+          return current;
+        }
+        return expectedHome;
+      });
+      if (editedButStale) {
         console.warn(
           "Clinical Workspace: the home note has stale database embeds but has been edited, so it was left alone."
         );
@@ -214,7 +233,7 @@ export class ClinicalRepository {
       if (this.app.vault.getAbstractFileByPath(path)) {
         const existing = await this.read<T>(path);
         if (existing) return existing;
-        throw new Error(`A non-clinical file already exists at ${path}.`);
+        throw new Error("A non-clinical file already occupies a managed record path. Run the clinical data integrity check.");
       }
       // A managed folder can go missing between sessions — moved in the file
       // explorer, or lost to a sync conflict. Recreating it here means a
@@ -250,7 +269,7 @@ export class ClinicalRepository {
     return this.queue.run(normalized, async () => {
       this.assertWritesAllowed();
       const abstract = this.app.vault.getAbstractFileByPath(normalized);
-      if (!(abstract instanceof TFile)) throw new Error(`Clinical record not found: ${normalized}`);
+      if (!(abstract instanceof TFile)) throw new Error("Clinical record not found. It may have been moved or deleted; run the clinical data integrity check.");
       const expected = { ...changes, updated_at: nowIso() };
       this.assertWritesAllowed();
       await this.app.fileManager.processFrontMatter(abstract, (frontmatter) => {
@@ -258,12 +277,12 @@ export class ClinicalRepository {
         for (const [key, value] of Object.entries(expected)) values[key] = value;
       });
       const verified = await this.read<T>(normalized, true);
-      if (!verified) throw new Error(`Clinical record could not be read after update: ${normalized}`);
+      if (!verified) throw new Error("A clinical record could not be read back after an update. Run the clinical data integrity check.");
       const verifiedValues = verified.record as unknown as Record<string, unknown>;
       for (const [key, value] of Object.entries(expected)) {
         const actual = verifiedValues[key];
         if (!valueMatches(actual, value)) {
-          throw new Error(`Clinical update verification failed for ${key} in ${normalized}.`);
+          throw new Error(`Clinical update verification failed for ${key}. Run the clinical data integrity check.`);
         }
       }
       return verified;
@@ -389,6 +408,13 @@ export class ClinicalRepository {
       // I/O exceptions can embed a patient-named vault path, so the caught
       // value is intentionally not forwarded.
       console.warn(`Clinical Workspace: audit event "${input.action}" could not be written.`);
+      // The user must hear about the gap, not just the console: the clinical
+      // action succeeded, so nothing else will look wrong. The integrity
+      // check's audit-trail coverage reports the same gap durably.
+      new Notice(
+        "The clinical action succeeded, but its audit note could not be written. Run the clinical data integrity check to see the gap.",
+        9000
+      );
       return null;
     }
   }

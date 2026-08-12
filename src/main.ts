@@ -5,6 +5,11 @@ import {
   ClinicalRepository
 } from "./data/repository";
 import { markdownFilesInFolder } from "./data/vault-scope";
+import {
+  LEGACY_PATIENT_BODY_PATTERN,
+  parseClinicalRecord,
+  recordBody
+} from "./data/markdown";
 import { ClinicalService } from "./services/clinical-service";
 import { IntegrityService } from "./services/integrity";
 import {
@@ -24,7 +29,12 @@ import {
   validateRootFolder,
   type ClinicalSettings
 } from "./domain/settings";
-import { InitializeWorkspaceModal, IntegrityReportModal } from "./ui/modals";
+import {
+  ConfirmMaintenanceModal,
+  InitializeWorkspaceModal,
+  IntegrityReportModal,
+  WhatsNewModal
+} from "./ui/modals";
 import { ClinicalSettingTab } from "./ui/settings-tab";
 import {
   CLINICAL_WORKSPACE_VIEW,
@@ -43,6 +53,13 @@ const CLINICAL_INITIALIZATION_REQUIRED_MESSAGE =
 const CLINICAL_INITIALIZATION_SAVE_FAILED_MESSAGE =
   "Clinical Workspace could not save its initialization state. No workspace folders were created; the plugin remains read-only.";
 
+interface ExpectedEntityCounts {
+  patient: number;
+  episode: number;
+  task: number;
+  procedure: number;
+}
+
 interface PersistedWorkspaceSafety {
   version: 1;
   initialized: boolean;
@@ -51,6 +68,61 @@ interface PersistedWorkspaceSafety {
   expectedManagedRecordCount: number;
   rootRecoveryRequired: boolean;
   recoveryRequiresRecords: boolean;
+  /**
+   * Parsed-record commitment: per-entity counts of records that actually
+   * parse, plus a SHA-256 over the sorted opaque record ids. A raw file
+   * count cannot tell a healthy root from one whose files were replaced,
+   * misplaced, or id-duplicated by a Sync conflict; this can. Ids are
+   * opaque (PAT-/EPI-/TSK-/PRC- tokens), so the commitment carries no
+   * patient information. Absent on state written before 0.5.0.
+   */
+  expectedEntityCounts?: ExpectedEntityCounts | undefined;
+  expectedRecordDigest?: string | undefined;
+}
+
+interface RecordInventory {
+  counts: ExpectedEntityCounts;
+  digest: string;
+  total: number;
+}
+
+const ENTITY_FOLDER_NAMES: ReadonlyArray<[keyof ExpectedEntityCounts, string]> = [
+  ["patient", "Patients"],
+  ["episode", "Episodes"],
+  ["task", "Tasks"],
+  ["procedure", "Procedures"]
+];
+
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Static, identifier-free highlights shown once after an update. */
+const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
+  "Procedure retries are safe: different follow-up details are refused with a clear message instead of silently mixing with what an earlier attempt saved.",
+  "Impossible procedure and follow-up dates are rejected before anything is written.",
+  "The integrity check covers far more (schema versions, task types, duplicate ids, follow-up contradictions, audit-trail gaps) and reports its scope honestly.",
+  "Sync recovery verifies the actual records, not just a file count, and a new command lets you confirm a changed record set as the trusted baseline.",
+  "Generated note bodies no longer duplicate names, MRNs, or phone numbers; a preview command cleans up bodies written by older versions.",
+  "Right-to-left layouts, screen-reader labels, and touch targets are improved throughout, and the workspace adapts to narrow stacked panes and the iPhone keyboard."
+];
+
+/**
+ * Decides whether the what's-new window should appear. It shows only when a
+ * previously recorded version differs from the running one — or, for updates
+ * from versions that predate the record, when the workspace was already in
+ * use. A genuinely fresh install records the version silently.
+ */
+export function shouldShowWhatsNew(
+  storedVersion: string | null,
+  currentVersion: string,
+  workspaceInitialized: boolean
+): boolean {
+  if (storedVersion === currentVersion) return false;
+  if (storedVersion === null) return workspaceInitialized;
+  return true;
 }
 
 export default class ClinicalWorkspacePlugin extends Plugin {
@@ -83,6 +155,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   /** Once true, deletion recovery must not accept an empty parent folder. */
   private managedRecordsExpected = false;
   private expectedManagedRecordCount = 0;
+  /** Parsed-record commitment; null until first computed or for pre-0.5 state. */
+  private expectedEntityCounts: ExpectedEntityCounts | null = null;
+  private expectedRecordDigest: string | null = null;
+  /** Version the what's-new window was last shown for; null before 0.5.0. */
+  private whatsNewVersion: string | null = null;
+  private whatsNewShownThisSession = false;
   /** True until path-free v1 safety metadata is durably saved. */
   private workspaceSafetyNeedsPersistence = false;
   /** Distinguishes overlapping safety saves so an older completion cannot clear a newer retry. */
@@ -205,6 +283,16 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         return true;
       }
     });
+    this.addCommand({
+      id: "adopt-current-baseline",
+      name: "Confirm current records as the recovery baseline",
+      callback: () => void this.adoptCurrentBaseline()
+    });
+    this.addCommand({
+      id: "remove-identifiers-from-generated-bodies",
+      name: "Remove identifiers from generated note bodies",
+      callback: () => void this.migrateGeneratedBodies()
+    });
 
     // Compiled out of release builds; see esbuild.config.mjs. The seeding logic
     // lives inline rather than in a method, because a class method body is not
@@ -275,6 +363,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       rootRecordCount,
       this.managedRecordsExpected ? 1 : 0
     );
+    this.expectedEntityCounts = safety?.expectedEntityCounts ?? null;
+    this.expectedRecordDigest = safety?.expectedRecordDigest ?? null;
+    const storedWhatsNew = (stored as { whatsNewVersion?: unknown } | null)?.whatsNewVersion;
+    this.whatsNewVersion = typeof storedWhatsNew === "string" ? storedWhatsNew : null;
     this.missingRootRequiresRecords =
       safety?.recoveryRequiresRecords === true || this.managedRecordsExpected;
     this.missingRootRecoveryBlocked = (
@@ -410,7 +502,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       if (!this.migrationRecoveryBlocked) {
         this.setMigrationRecoveryBlocked(false);
       }
-    } else if (this.canActivateSyncedRoot(previousRoot, incoming.rootFolder)) {
+    } else if (
+      this.canActivateSyncedRoot(previousRoot, incoming.rootFolder) &&
+      (await this.verifyRecordInventory(incoming.rootFolder)).ok
+    ) {
       this.settings = incoming;
       setClinicalRoot(incoming.rootFolder);
       this.workspaceInitialized = true;
@@ -457,19 +552,33 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     const state = (value as { workspaceSafety?: Partial<PersistedWorkspaceSafety> } | null)
       ?.workspaceSafety;
     if (!state || state.version !== 1) return null;
+    const count = (candidate: unknown): number =>
+      typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0
+        ? candidate
+        : 0;
+    const rawCounts = state.expectedEntityCounts as unknown;
+    const expectedEntityCounts =
+      rawCounts && typeof rawCounts === "object"
+        ? {
+            patient: count((rawCounts as Record<string, unknown>).patient),
+            episode: count((rawCounts as Record<string, unknown>).episode),
+            task: count((rawCounts as Record<string, unknown>).task),
+            procedure: count((rawCounts as Record<string, unknown>).procedure)
+          }
+        : undefined;
     return {
       version: 1,
       initialized: state.initialized === true,
       initializationApproved: state.initializationApproved === true,
       managedRecordsExpected: state.managedRecordsExpected === true,
-      expectedManagedRecordCount:
-        typeof state.expectedManagedRecordCount === "number" &&
-        Number.isSafeInteger(state.expectedManagedRecordCount) &&
-        state.expectedManagedRecordCount >= 0
-          ? state.expectedManagedRecordCount
-          : 0,
+      expectedManagedRecordCount: count(state.expectedManagedRecordCount),
       rootRecoveryRequired: state.rootRecoveryRequired === true,
-      recoveryRequiresRecords: state.recoveryRequiresRecords === true
+      recoveryRequiresRecords: state.recoveryRequiresRecords === true,
+      expectedEntityCounts,
+      expectedRecordDigest:
+        typeof state.expectedRecordDigest === "string" && /^[0-9a-f]{64}$/.test(state.expectedRecordDigest)
+          ? state.expectedRecordDigest
+          : undefined
     };
   }
 
@@ -492,8 +601,88 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       managedRecordsExpected: this.managedRecordsExpected,
       expectedManagedRecordCount: this.expectedManagedRecordCount,
       rootRecoveryRequired: this.missingRootRecoveryBlocked,
-      recoveryRequiresRecords: this.missingRootRequiresRecords
+      recoveryRequiresRecords: this.missingRootRequiresRecords,
+      expectedEntityCounts: this.expectedEntityCounts ?? undefined,
+      expectedRecordDigest: this.expectedRecordDigest ?? undefined
     };
+  }
+
+  /**
+   * Parses every managed record under `root` and reduces it to an
+   * identifier-free commitment: per-entity parsed counts and a SHA-256 over
+   * the sorted opaque record ids. Parsing is memoized by content, so this
+   * stays cheap on repeated calls.
+   */
+  private async parsedRecordInventory(root: string): Promise<RecordInventory> {
+    const counts: ExpectedEntityCounts = { patient: 0, episode: 0, task: 0, procedure: 0 };
+    const ids: string[] = [];
+    for (const [entity, folderName] of ENTITY_FOLDER_NAMES) {
+      for (const file of markdownFilesInFolder(this.app.vault, `${root}/${folderName}`)) {
+        const content = await this.app.vault.cachedRead(file);
+        const record = parseClinicalRecord(content);
+        if (record?.entity !== entity) continue;
+        counts[entity] += 1;
+        ids.push(`${entity}:${record.id}`);
+      }
+    }
+    const digest = await sha256Hex(ids.sort().join("\n"));
+    return {
+      counts,
+      digest,
+      total: counts.patient + counts.episode + counts.task + counts.procedure
+    };
+  }
+
+  /**
+   * Verifies a root against the stored parsed-record commitment before any
+   * fail-closed barrier is lifted. An equal raw file count can hide records
+   * replaced with unparseable content, filed in the wrong entity folder, or
+   * swapped under duplicate ids; parsed counts and the id digest cannot.
+   * Growth is accepted: another device may legitimately have added records.
+   */
+  private async verifyRecordInventory(root: string): Promise<{ ok: boolean; reason: string | null }> {
+    const expected = this.expectedEntityCounts;
+    if (!expected) return { ok: true, reason: null };
+    const current = await this.parsedRecordInventory(root);
+    for (const [entity] of ENTITY_FOLDER_NAMES) {
+      if (current.counts[entity] < expected[entity]) {
+        return {
+          ok: false,
+          reason:
+            "Some previously confirmed records are missing or no longer readable. Wait for Sync to finish or restore your backup, then retry — or confirm the current records as the new baseline."
+        };
+      }
+    }
+    const sameCounts = ENTITY_FOLDER_NAMES.every(([entity]) => current.counts[entity] === expected[entity]);
+    if (sameCounts && this.expectedRecordDigest && current.digest !== this.expectedRecordDigest) {
+      return {
+        ok: false,
+        reason:
+          "The records on disk differ from the trusted baseline even though their count matches. Wait for Sync to finish or restore your backup, then retry — or confirm the current records as the new baseline."
+      };
+    }
+    return { ok: true, reason: null };
+  }
+
+  /** Ratchets the parsed-record commitment forward from the current root. */
+  private async ratchetRecordInventory(root: string): Promise<boolean> {
+    const current = await this.parsedRecordInventory(root);
+    const previous = this.expectedEntityCounts;
+    const next: ExpectedEntityCounts = previous
+      ? {
+          patient: Math.max(previous.patient, current.counts.patient),
+          episode: Math.max(previous.episode, current.counts.episode),
+          task: Math.max(previous.task, current.counts.task),
+          procedure: Math.max(previous.procedure, current.counts.procedure)
+        }
+      : current.counts;
+    const changed =
+      !previous ||
+      JSON.stringify(next) !== JSON.stringify(previous) ||
+      this.expectedRecordDigest !== current.digest;
+    this.expectedEntityCounts = next;
+    this.expectedRecordDigest = current.digest;
+    return changed;
   }
 
   private currentMigrationMarker(): MigrationMarker | null {
@@ -535,11 +724,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   }
 
   private async noteManagedRecordWrite(): Promise<void> {
-    const currentCount = this.rootManagedRecordCount(clinicalRootFolder());
+    const root = clinicalRootFolder();
+    const currentCount = this.rootManagedRecordCount(root);
+    const inventoryChanged = await this.ratchetRecordInventory(root);
     if (
       this.workspaceInitialized &&
       this.managedRecordsExpected &&
       currentCount <= this.expectedManagedRecordCount &&
+      !inventoryChanged &&
       !this.workspaceSafetyNeedsPersistence
     ) return;
     this.workspaceInitialized = true;
@@ -689,13 +881,24 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     if (this.firstUseInitializationPending || this.initializationScaffoldApproved) {
       throw new Error(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
     }
+    const previous = this.settings;
     this.settings = normalizeSettings(
       { ...this.settings, ...patch },
       { careSettings: CARE_SETTINGS, pathways: PATHWAYS, priorities: PRIORITIES }
     );
-    // The queued persistence helper preserves any in-flight marker and its
-    // configured destination while applying this unrelated settings change.
-    await this.persistPluginData();
+    try {
+      // The queued persistence helper preserves any in-flight marker and its
+      // configured destination while applying this unrelated settings change.
+      await this.persistPluginData();
+    } catch (error) {
+      // A failed save must not leave the interface claiming a value that
+      // data.json does not hold. Roll back and let the caller re-render.
+      this.settings = previous;
+      setClinicalRoot(previous.rootFolder);
+      this.repository.setActor(auditActor(previous));
+      new Notice("The setting could not be saved and was rolled back.", 7000);
+      throw error;
+    }
     this.repository.setActor(auditActor(this.settings));
     setClinicalRoot(this.settings.rootFolder);
     await this.refreshOpenViews();
@@ -786,7 +989,35 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       workspaceSafety: this.workspaceSafety()
     };
     if (marker) data.migrationInProgress = marker;
+    if (this.whatsNewVersion) data.whatsNewVersion = this.whatsNewVersion;
     return data;
+  }
+
+  /**
+   * Shows the what's-new window once after an update, from the workspace-open
+   * path rather than plugin load, so it never interrupts app startup. The
+   * shown-for version travels in data.json, so a device that has seen it
+   * spares the user's other devices after Sync.
+   */
+  private async maybeShowWhatsNew(): Promise<void> {
+    if (this.whatsNewShownThisSession) return;
+    const currentVersion = this.manifest.version;
+    if (!shouldShowWhatsNew(this.whatsNewVersion, currentVersion, this.workspaceInitialized)) {
+      if (this.whatsNewVersion !== currentVersion) {
+        this.whatsNewVersion = currentVersion;
+        await this.persistPluginData().catch(() => undefined);
+      }
+      return;
+    }
+    this.whatsNewShownThisSession = true;
+    this.whatsNewVersion = currentVersion;
+    await this.persistPluginData().catch(() => undefined);
+    new WhatsNewModal(
+      this.app,
+      currentVersion,
+      WHATS_NEW_HIGHLIGHTS,
+      `https://github.com/drbinsaad/obsidian-clinical-workspace/releases/tag/${currentVersion}`
+    ).open();
   }
 
   /** Builds the snapshot only when its turn reaches the head of the queue. */
@@ -859,6 +1090,21 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       return false;
     }
 
+    // Same number of files is not the same records. Verify the winning root
+    // against the parsed-record commitment before the barrier is lifted.
+    if (actual) {
+      const inventory = await this.verifyRecordInventory(actual);
+      if (!inventory.ok) {
+        if (actual === marker.from) {
+          this.settings = { ...this.settings, rootFolder: marker.from };
+          setClinicalRoot(marker.from);
+        }
+        this.pendingMigrationMarker = { migrationInProgress: marker };
+        this.setMigrationRecoveryBlocked(true);
+        return false;
+      }
+    }
+
     // Source-only + destination-configured is the marker-before-folder state.
     // Keep reads on the source, preserve the marker, and wait. An explicit user
     // retry may instead confirm that Sync has settled and roll back to source.
@@ -914,6 +1160,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       ) {
         this.showMigrationRecoveryNotice();
         return false;
+      }
+      if (this.missingRootRequiresRecords) {
+        // The file count alone cannot prove these are the confirmed records.
+        const inventory = await this.verifyRecordInventory(clinicalRootFolder());
+        if (!inventory.ok) {
+          new Notice(inventory.reason ?? this.recoveryBlockMessage, 12000);
+          return false;
+        }
       }
       this.setMigrationRecoveryBlocked(false);
       this.structureReady = false;
@@ -980,10 +1234,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         const rootRecordCount = this.rootManagedRecordCount(clinicalRootFolder());
         const rootHasRecords = rootRecordCount > 0;
         const completingApprovedInitialization = this.initializationScaffoldApproved;
+        const inventoryChanged = await this.ratchetRecordInventory(clinicalRootFolder());
         const safetyChanged =
           this.workspaceSafetyNeedsPersistence ||
           !this.workspaceInitialized ||
           completingApprovedInitialization ||
+          inventoryChanged ||
           (rootHasRecords && !this.managedRecordsExpected) ||
           rootRecordCount > this.expectedManagedRecordCount;
         this.workspaceInitialized = true;
@@ -1230,6 +1486,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.integrityChecked = true;
       await this.runIntegrityCheck({ onlyWhenIssuesFound: true });
     }
+    await this.maybeShowWhatsNew();
     return view;
   }
 
@@ -1314,16 +1571,157 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   private async runIntegrityCheck(options: { onlyWhenIssuesFound?: boolean } = {}): Promise<void> {
     try {
       await this.ensureStructure();
-      const issues = await this.integrity.scan();
-      if (options.onlyWhenIssuesFound && !issues.length) return;
+      const report = await this.integrity.report();
+      if (options.onlyWhenIssuesFound && !report.issues.length) return;
       // Results are rendered in the interface. They are never written to the
       // developer console, because the records they describe are identifiable.
-      new IntegrityReportModal(this.app, issues, (path) => {
-        const file = this.app.vault.getAbstractFileByPath(path);
-        if (file instanceof TFile) void this.app.workspace.getLeaf(false).openFile(file);
-      }).open();
+      new IntegrityReportModal(
+        this.app,
+        report.issues,
+        (path) => {
+          const file = this.app.vault.getAbstractFileByPath(path);
+          if (file instanceof TFile) void this.app.workspace.getLeaf(false).openFile(file);
+        },
+        { scannedRecords: report.scannedRecords, checkFamilies: report.checkFamilies }
+      ).open();
     } catch (error) {
       new Notice(error instanceof Error ? error.message : "Integrity check failed.", 7000);
     }
   }
+
+  /**
+   * Explicit, typed-confirmation adoption of the current record set as the
+   * recovery baseline. This is the sanctioned exit from the fail-closed
+   * barrier after a deliberate record deletion or an accepted Sync outcome —
+   * previously the only way out was restoring the missing files.
+   */
+  private async adoptCurrentBaseline(): Promise<void> {
+    if (this.firstUseInitializationPending) {
+      new Notice(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE, 9000);
+      return;
+    }
+    if (this.currentMigrationMarker()) {
+      new Notice(
+        "A folder move is still pending. Resolve it with the pending folder move recovery command before adopting a new baseline.",
+        9000
+      );
+      return;
+    }
+    const root = clinicalRootFolder();
+    if (!this.rootExists(root)) {
+      new Notice("The configured clinical folder does not exist, so there is nothing to adopt.", 9000);
+      return;
+    }
+    const inventory = await this.parsedRecordInventory(root);
+    const lines = [
+      "The current records become the trusted recovery baseline, replacing the previous one. Do this only when the workspace is complete: synchronization has finished and any intentional deletions are accounted for.",
+      `Parsed records now on disk: ${inventory.counts.patient} patients, ${inventory.counts.episode} episodes, ${inventory.counts.task} tasks, ${inventory.counts.procedure} procedures.`,
+      "No note is created, changed, or deleted by this confirmation."
+    ];
+    new ConfirmMaintenanceModal(this.app, {
+      title: "Confirm current records as the recovery baseline",
+      lines,
+      confirmWord: "ADOPT",
+      confirmLabel: "Adopt this baseline",
+      onDecide: (confirmed) => {
+        if (!confirmed) return;
+        void (async () => {
+          try {
+            const fresh = await this.parsedRecordInventory(root);
+            this.expectedEntityCounts = fresh.counts;
+            this.expectedRecordDigest = fresh.digest;
+            this.expectedManagedRecordCount = this.rootManagedRecordCount(root);
+            this.managedRecordsExpected = fresh.total > 0;
+            this.missingRootRecoveryBlocked = false;
+            this.missingRootRequiresRecords = false;
+            this.setMigrationRecoveryBlocked(false);
+            await this.persistWorkspaceSafety();
+            await this.refreshOpenViews();
+            new Notice("The current records are now the recovery baseline.", 7000);
+          } catch (error) {
+            new Notice(
+              error instanceof Error ? error.message : "The baseline could not be adopted.",
+              9000
+            );
+          }
+        })();
+      }
+    }).open();
+  }
+
+  /**
+   * Rewrites patient note bodies that are still exactly the identifier-
+   * bearing scaffold generated by versions up to 0.4.x. Anything the user has
+   * edited fails the byte-level pattern and is never touched; every rewrite
+   * happens inside Vault.process so a concurrent Sync delivery wins.
+   */
+  private async migrateGeneratedBodies(): Promise<void> {
+    if (this.migrationRecoveryBlocked) {
+      new Notice(this.recoveryBlockMessage, 9000);
+      return;
+    }
+    const folder = `${clinicalRootFolder()}/Patients`;
+    const candidates: TFile[] = [];
+    for (const file of markdownFilesInFolder(this.app.vault, folder)) {
+      const content = await this.app.vault.cachedRead(file);
+      const record = parseClinicalRecord(content);
+      if (record?.entity !== "patient") continue;
+      const body = bodyAfterFrontmatter(content);
+      if (LEGACY_PATIENT_BODY_PATTERN.test(body.trim() + "\n")) candidates.push(file);
+    }
+    if (!candidates.length) {
+      new Notice(
+        "No patient note carries an unmodified generated body from an older version. Nothing to change.",
+        9000
+      );
+      return;
+    }
+    new ConfirmMaintenanceModal(this.app, {
+      title: "Remove identifiers from generated note bodies",
+      lines: [
+        `${candidates.length} patient note${candidates.length === 1 ? " has" : "s have"} a plugin-generated body from an older version that duplicates the name, MRN and phone below the structured properties. Those copies go stale when an identity is corrected.`,
+        "Only bodies still byte-identical to the old generated scaffold are rewritten to the new identifier-free scaffold. Any note you have edited is left untouched. Frontmatter is not changed.",
+        "This cannot be undone from inside the plugin; your notes remain in the vault's file history."
+      ],
+      confirmWord: "REWRITE",
+      confirmLabel: `Rewrite ${candidates.length} generated bod${candidates.length === 1 ? "y" : "ies"}`,
+      onDecide: (confirmed) => {
+        if (!confirmed) return;
+        void (async () => {
+          let rewritten = 0;
+          for (const file of candidates) {
+            try {
+              await this.app.vault.process(file, (current) => {
+                const body = bodyAfterFrontmatter(current);
+                // Re-check inside the transform: Sync may have delivered an
+                // edited version since the preview was computed.
+                if (!LEGACY_PATIENT_BODY_PATTERN.test(body.trim() + "\n")) return current;
+                const record = parseClinicalRecord(current);
+                if (record?.entity !== "patient") return current;
+                const frontmatterEnd = current.length - body.length;
+                rewritten += 1;
+                return current.slice(0, frontmatterEnd) + recordBody(record);
+              });
+              this.repository.invalidatePath(file.path);
+            } catch {
+              // Identifier-free by construction; the per-note failure is
+              // recoverable by rerunning the command.
+              console.warn("Clinical Workspace: a generated body could not be rewritten.");
+            }
+          }
+          new Notice(
+            `${rewritten} generated bod${rewritten === 1 ? "y" : "ies"} rewritten without identifiers. Notes you have edited were not touched.`,
+            9000
+          );
+          await this.refreshOpenViews();
+        })();
+      }
+    }).open();
+  }
+}
+
+/** Returns everything after the closing frontmatter fence (or the whole file). */
+function bodyAfterFrontmatter(content: string): string {
+  const match = /^---[ \t]*\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content);
+  return match ? content.slice(match[0].length) : content;
 }

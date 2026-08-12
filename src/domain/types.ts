@@ -152,6 +152,12 @@ export interface ProcedureRecord extends BaseRecord {
   follow_up_required: boolean;
   follow_up_date: string;
   follow_up_plan: string;
+  /**
+   * True while the procedure-completed audit event has not been durably
+   * written. Lets a retry settle the audit trail instead of losing it.
+   * Absent on records written before 0.5.0.
+   */
+  audit_pending?: boolean;
   idempotency_key: string;
 }
 

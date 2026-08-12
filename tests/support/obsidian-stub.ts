@@ -126,6 +126,23 @@ export class Vault {
     this.readCache.delete(key);
   }
 
+  /**
+   * Models Obsidian's atomic read-transform-write. The queueing delay happens
+   * BEFORE the read, and read+transform+write run without an interleaving
+   * point — content delivered during the delay is seen by the transform, so a
+   * repair that re-checks inside the transform cannot destroy it.
+   */
+  async process(file: TFile, fn: (data: string) => string): Promise<string> {
+    await this.tick();
+    const key = normalizePath(file.path);
+    const current = this.files.get(key);
+    if (current === undefined) throw new Error(`File not found: ${file.path}`);
+    const next = fn(current);
+    this.files.set(key, next);
+    this.readCache.delete(key);
+    return next;
+  }
+
   /** Models Obsidian invalidating cachedRead after a vault or file-manager write. */
   invalidateCachedRead(path: string): void {
     this.readCache.delete(normalizePath(path));

@@ -1,19 +1,47 @@
 import type {
+  ClinicalRecord,
   EpisodeRecord,
+  EventRecord,
   IntegrityIssue,
   PatientRecord,
   ProcedureRecord,
+  RecordWithPath,
   TaskRecord
 } from "../domain/types";
-import {
-  CARE_SETTINGS,
-  EPISODE_STATUSES,
-  PATHWAYS,
-  PRIORITIES,
-  TASK_STATUSES
-} from "../domain/types";
-import { isIsoDate, mrnMatchKey, normalizeText, taskIsOpen } from "../domain/schema";
+import { isIsoDate, mrnMatchKey, normalizeComparable, normalizeText, taskIsOpen } from "../domain/schema";
+import { validateRecord } from "../domain/validate";
 import { ClinicalRepository } from "../data/repository";
+
+/** Families of configured checks, counted for honest result wording. */
+export const INTEGRITY_CHECK_FAMILIES = [
+  "missing managed folders",
+  "unreadable notes",
+  "duplicate MRNs",
+  "unidentified patients",
+  "orphaned records",
+  "broken merge links",
+  "half-finished merges",
+  "duplicate active episodes",
+  "duplicate open tasks",
+  "duplicate internal ids",
+  "cross-record ownership",
+  "open tasks on closed episodes",
+  "invalid dates and timestamps",
+  "unexpected field values",
+  "schema versions",
+  "idempotency keys",
+  "follow-up contradictions",
+  "episode next-action agreement",
+  "audit-trail coverage"
+] as const;
+
+export interface IntegrityReport {
+  issues: IntegrityIssue[];
+  /** Number of parsed records the configured checks examined. */
+  scannedRecords: number;
+  /** Number of configured check families that ran. */
+  checkFamilies: number;
+}
 
 /**
  * Scans the clinical folders for problems.
@@ -21,20 +49,32 @@ import { ClinicalRepository } from "../data/repository";
  * Messages are rendered in the interface and may reach the developer console,
  * so they must never contain a patient identifier — no MRN, name or phone.
  * Callers locate the affected note through `recordId` and `path`.
+ *
+ * The result reports what the CONFIGURED checks found. It is deliberately not
+ * described as a full validation anywhere in the interface.
  */
 export class IntegrityService {
   constructor(private readonly repository: ClinicalRepository) {}
 
   async scan(): Promise<IntegrityIssue[]> {
-    const [patients, episodes, tasks, procedures] = await Promise.all([
+    return (await this.report()).issues;
+  }
+
+  async report(): Promise<IntegrityReport> {
+    const [patients, episodes, tasks, procedures, events] = await Promise.all([
       this.repository.list<PatientRecord>("patient"),
       this.repository.list<EpisodeRecord>("episode"),
       this.repository.list<TaskRecord>("task"),
-      this.repository.list<ProcedureRecord>("procedure")
+      this.repository.list<ProcedureRecord>("procedure"),
+      this.repository.list<EventRecord>("event")
     ]);
     const issues: IntegrityIssue[] = [];
     const patientIds = new Set(patients.map((item) => item.record.id));
     const episodeIds = new Set(episodes.map((item) => item.record.id));
+    // Maps, not repeated Array.find: the scan must stay linear so it remains
+    // usable on phone-class hardware at multi-thousand-record scale.
+    const episodeById = new Map(episodes.map((item) => [item.record.id, item] as const));
+    const eventTargets = new Set(events.map((item) => item.record.target_id));
 
     // --- Structure ----------------------------------------------------------
     // A managed folder moved in the file explorer detaches every record inside
@@ -50,10 +90,6 @@ export class IntegrityService {
       });
     }
 
-    const activePatients = patients.filter(
-      ({ record }) => record.status !== "entered-in-error" && !record.merged_into
-    );
-
     // A note that cannot be parsed disappears from every list, so nothing else
     // in this scan can see it. It has to be reported here or not at all.
     for (const entity of ["patient", "episode", "task", "procedure", "event"] as const) {
@@ -67,6 +103,31 @@ export class IntegrityService {
         });
       }
     }
+
+    // --- Field-level validation (shared central validators) -----------------
+    for (const list of [patients, episodes, tasks, procedures] as const) {
+      for (const item of list) {
+        for (const problem of validateRecord(item.record)) {
+          issues.push({
+            ...problem,
+            recordId: item.record.id,
+            path: item.path
+          });
+        }
+      }
+    }
+
+    // --- Duplicate internal ids --------------------------------------------
+    // Two notes carrying the same id make every id-based lookup ambiguous;
+    // findById silently prefers the conventional path, hiding the other note.
+    this.reportDuplicateIds(patients, "patient", issues);
+    this.reportDuplicateIds(episodes, "episode", issues);
+    this.reportDuplicateIds(tasks, "task", issues);
+    this.reportDuplicateIds(procedures, "procedure", issues);
+
+    const activePatients = patients.filter(
+      ({ record }) => record.status !== "entered-in-error" && !record.merged_into
+    );
 
     // --- Patients -----------------------------------------------------------
     const mrnMap = new Map<string, typeof patients>();
@@ -131,6 +192,14 @@ export class IntegrityService {
     }
 
     // --- Episodes -----------------------------------------------------------
+    const openTasksByEpisode = new Map<string, TaskRecord[]>();
+    for (const task of tasks) {
+      if (!taskIsOpen(task.record)) continue;
+      const current = openTasksByEpisode.get(task.record.episode_id) ?? [];
+      current.push(task.record);
+      openTasksByEpisode.set(task.record.episode_id, current);
+    }
+
     const activeEpisodeKeys = new Map<string, typeof episodes>();
     for (const episode of episodes) {
       if (!patientIds.has(episode.record.patient_id)) {
@@ -160,14 +229,36 @@ export class IntegrityService {
           path: episode.path
         });
       }
-      issues.push(
-        ...this.checkEnum(episode.record.pathway, PATHWAYS, "pathway", episode.record.id, episode.path),
-        ...this.checkEnum(episode.record.status, EPISODE_STATUSES, "status", episode.record.id, episode.path),
-        ...this.checkEnum(episode.record.priority, PRIORITIES, "priority", episode.record.id, episode.path),
-        ...this.checkEnum(episode.record.care_setting, CARE_SETTINGS, "care setting", episode.record.id, episode.path)
-      );
-      if (!["archived", "cancelled", "entered-in-error"].includes(episode.record.status)) {
-        const key = `${episode.record.patient_id}\u0000${normalizeText(episode.record.case).toLocaleLowerCase()}`;
+      const openTasks = openTasksByEpisode.get(episode.record.id) ?? [];
+      const isClosedStatus = ["archived", "cancelled", "entered-in-error"].includes(episode.record.status);
+      // The episode card promises "what happens next". A next action no open
+      // task tracks — or a ready-to-close status with open work — misleads
+      // the clinician reading the caseload.
+      if (!isClosedStatus && normalizeText(episode.record.next_action)) {
+        const tracked = openTasks.some(
+          (task) => normalizeComparable(task.task) === normalizeComparable(episode.record.next_action)
+        );
+        if (!tracked) {
+          issues.push({
+            code: "untracked-next-action",
+            severity: "warning",
+            message: "Episode names a next action that no open task tracks. The planned work may have been lost by an interrupted write.",
+            recordId: episode.record.id,
+            path: episode.path
+          });
+        }
+      }
+      if (episode.record.status === "ready-to-close" && openTasks.length > 0) {
+        issues.push({
+          code: "ready-to-close-with-open-tasks",
+          severity: "error",
+          message: `Episode is marked ready to close while ${openTasks.length} task${openTasks.length === 1 ? " is" : "s are"} still open.`,
+          recordId: episode.record.id,
+          path: episode.path
+        });
+      }
+      if (!isClosedStatus) {
+        const key = `${episode.record.patient_id} ${normalizeText(episode.record.case).toLocaleLowerCase()}`;
         const current = activeEpisodeKeys.get(key) ?? [];
         current.push(episode);
         activeEpisodeKeys.set(key, current);
@@ -200,7 +291,7 @@ export class IntegrityService {
       }
       // The episode owns the patient relationship; a task disagreeing with it
       // is filed under the wrong chart, which no other rule here would notice.
-      const taskEpisode = episodes.find((item) => item.record.id === task.record.episode_id);
+      const taskEpisode = episodeById.get(task.record.episode_id);
       if (taskEpisode && taskEpisode.record.patient_id !== task.record.patient_id) {
         issues.push({
           code: "mismatched-task-patient",
@@ -232,12 +323,8 @@ export class IntegrityService {
           path: task.path
         });
       }
-      issues.push(
-        ...this.checkEnum(task.record.status, TASK_STATUSES, "status", task.record.id, task.path),
-        ...this.checkEnum(task.record.priority, PRIORITIES, "priority", task.record.id, task.path)
-      );
       if (taskIsOpen(task.record)) {
-        const identity = `${task.record.episode_id}\u0000${normalizeText(task.record.task).toLocaleLowerCase()}\u0000${task.record.due_date}`;
+        const identity = `${task.record.episode_id} ${normalizeText(task.record.task).toLocaleLowerCase()} ${task.record.due_date}`;
         const current = activeTaskKeys.get(identity) ?? [];
         current.push(task);
         activeTaskKeys.set(identity, current);
@@ -267,7 +354,7 @@ export class IntegrityService {
           path: procedure.path
         });
       }
-      const procedureEpisode = episodes.find((item) => item.record.id === procedure.record.episode_id);
+      const procedureEpisode = episodeById.get(procedure.record.episode_id);
       if (procedureEpisode && procedureEpisode.record.patient_id !== procedure.record.patient_id) {
         issues.push({
           code: "mismatched-procedure-patient",
@@ -288,25 +375,51 @@ export class IntegrityService {
       }
     }
 
-    return issues;
+    // --- Audit-trail coverage -----------------------------------------------
+    // Event writes never fail the clinical action; the cost of that choice is
+    // that a lost event must be found here, or it is lost silently forever.
+    for (const list of [patients, episodes, tasks, procedures] as const) {
+      for (const item of list) {
+        if (eventTargets.has(item.record.id)) continue;
+        issues.push({
+          code: "missing-audit-event",
+          severity: "warning",
+          message: "This record has no audit trail entry. An audit note write may have failed; the record itself is intact.",
+          recordId: item.record.id,
+          path: item.path
+        });
+      }
+    }
+
+    return {
+      issues,
+      scannedRecords: patients.length + episodes.length + tasks.length + procedures.length + events.length,
+      checkFamilies: INTEGRITY_CHECK_FAMILIES.length
+    };
   }
 
-  private checkEnum(
-    value: string,
-    allowed: readonly string[],
-    label: string,
-    recordId: string,
-    path: string
-  ): IntegrityIssue[] {
-    if (allowed.includes(value)) return [];
-    return [
-      {
-        code: "invalid-value",
-        severity: "error",
-        message: `Unrecognised ${label} value; the note may have been edited by hand.`,
-        recordId,
-        path
+  private reportDuplicateIds<T extends ClinicalRecord>(
+    items: RecordWithPath<T>[],
+    entity: string,
+    issues: IntegrityIssue[]
+  ): void {
+    const byId = new Map<string, RecordWithPath<T>[]>();
+    for (const item of items) {
+      const current = byId.get(item.record.id) ?? [];
+      current.push(item);
+      byId.set(item.record.id, current);
+    }
+    for (const matches of byId.values()) {
+      if (matches.length < 2) continue;
+      for (const match of matches) {
+        issues.push({
+          code: "duplicate-record-id",
+          severity: "error",
+          message: `${matches.length} ${entity} notes share one internal id, so lookups cannot tell them apart. Keep one and correct the others.`,
+          recordId: match.record.id,
+          path: match.path
+        });
       }
-    ];
+    }
   }
 }
