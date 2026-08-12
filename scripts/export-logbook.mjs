@@ -482,7 +482,14 @@ function cleanText(value) {
       const codePoint = character.codePointAt(0) ?? 0;
       return codePoint < 32 || codePoint === 127 ? " " : character;
     })
-    .join("");
+    .join("")
+    // Strip directionality controls (LRM/RLM, embeddings/overrides, isolates):
+    // an RLO smuggled into a cell can visually reorder neighbouring cells in a
+    // spreadsheet — and this CSV is the one artifact meant to leave the vault.
+    // ZWNJ/ZWJ are deliberately preserved: they are orthographically
+    // significant in Persian and other Arabic-script text (see
+    // src/domain/schema.ts normalizeText, which applies the same class).
+    .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "");
   return withoutControls.replace(/\s+/gu, " ").trim();
 }
 
