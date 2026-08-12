@@ -32,6 +32,20 @@ export class ClinicalSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
+  /**
+   * Applies one settings patch with visible failure handling. A rejected save
+   * has already been rolled back by the plugin; re-rendering here stops the
+   * control from displaying a value data.json does not hold.
+   */
+  private async apply(patch: Parameters<ClinicalWorkspacePlugin["updateSettings"]>[0]): Promise<void> {
+    try {
+      await this.plugin.updateSettings(patch);
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "The setting could not be saved.", 7000);
+      (this as unknown as { update?: () => void }).update?.();
+    }
+  }
+
   /** Coalesces text-field writes so ordinary typing does not rewrite data.json repeatedly. */
   private debounced(key: string, run: () => void, delay = 400): void {
     const existing = this.debounceTimers.get(key);
@@ -82,7 +96,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
                   .setValue(settings.clinicianName)
                   .onChange((value) => {
                     this.debounced("clinicianName", () => {
-                      void this.plugin.updateSettings({ clinicianName: value });
+                      void this.apply({ clinicianName: value });
                     });
                   });
               });
@@ -108,7 +122,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
                 .addOptions(Object.fromEntries(CARE_SETTINGS.map((value) => [value, careSettingLabel(value)])))
                 .setValue(settings.defaultCareSetting)
                 .onChange(async (value) => {
-                  await this.plugin.updateSettings({
+                  await this.apply({
                     defaultCareSetting: value as (typeof CARE_SETTINGS)[number]
                   });
                 });
@@ -121,7 +135,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
                 .addOptions(Object.fromEntries(PATHWAYS.map((value) => [value, pathwayLabel(value)])))
                 .setValue(settings.defaultPathway)
                 .onChange(async (value) => {
-                  await this.plugin.updateSettings({ defaultPathway: value as (typeof PATHWAYS)[number] });
+                  await this.apply({ defaultPathway: value as (typeof PATHWAYS)[number] });
                 });
             });
           }),
@@ -132,7 +146,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
                 .addOptions(Object.fromEntries(PRIORITIES.map((value) => [value, priorityLabel(value)])))
                 .setValue(settings.defaultPriority)
                 .onChange(async (value) => {
-                  await this.plugin.updateSettings({ defaultPriority: value as (typeof PRIORITIES)[number] });
+                  await this.apply({ defaultPriority: value as (typeof PRIORITIES)[number] });
                 });
             });
           })
@@ -150,7 +164,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
               row.addToggle((field) => {
                 field.toggleEl.setAttribute("aria-label", "Confirm before discharge");
                 field.setValue(settings.confirmBeforeDischarge).onChange(async (value) => {
-                  await this.plugin.updateSettings({ confirmBeforeDischarge: value });
+                  await this.apply({ confirmBeforeDischarge: value });
                 });
               });
             },
@@ -163,7 +177,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
               row.addToggle((field) => {
                 field.toggleEl.setAttribute("aria-label", "Run integrity check on first open");
                 field.setValue(settings.runIntegrityOnStartup).onChange(async (value) => {
-                  await this.plugin.updateSettings({ runIntegrityOnStartup: value });
+                  await this.apply({ runIntegrityOnStartup: value });
                 });
               });
             },
@@ -188,7 +202,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
                   row.setDesc(invalid ? "Enter a number from 0 to 2000 milliseconds." : description);
                   if (invalid) return;
                   this.debounced("refreshDebounceMs", () => {
-                    void this.plugin.updateSettings({ refreshDebounceMs: parsed });
+                    void this.apply({ refreshDebounceMs: parsed });
                   });
                 });
               });

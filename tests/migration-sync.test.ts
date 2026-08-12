@@ -297,7 +297,11 @@ test("folder rename arriving before settings fails closed synchronously and then
 
     // The event callback arms the barrier before its first await.
     assert.equal(plugin.migrationRecoveryBlocked, true);
-    for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    // Reconciliation now also verifies the parsed-record inventory (reads +
+    // a SHA-256), so wait on its outcome instead of counting microtasks.
+    for (let index = 0; index < 200 && plugin.pendingMigrationMarker !== null; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
 
     assert.ok(saved);
     assert.equal(clinicalRootFolder(), "Ward Records");
