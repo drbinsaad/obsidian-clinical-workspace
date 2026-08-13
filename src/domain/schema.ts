@@ -32,10 +32,12 @@ export function normalizeText(value: unknown): string {
         ? String(value)
         : "";
   return text
-    // Strip only directionality controls used for visual spoofing. ZWNJ
+    // Strip directionality controls used for visual spoofing, plus the
+    // invisible characters that make two visually identical values compare
+    // unequal: zero-width space, word joiner, and the BOM/ZWNBSP. ZWNJ
     // (U+200C) and ZWJ (U+200D) are orthographically significant in Persian
     // and other Arabic-script languages and must be preserved.
-    .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, "")
+    .replace(/[\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -62,7 +64,11 @@ export function mrnMatchKey(value: unknown): string {
 }
 
 export function normalizePhone(value: unknown): string {
-  return normalizeArabicDigits(normalizeText(value)).replace(/[^\d+]/g, "");
+  // A "+" is meaningful only as the international prefix. Keeping interior
+  // pluses would let "05x +05y" collapse into one confirmed-looking number.
+  return normalizeArabicDigits(normalizeText(value))
+    .replace(/[^\d+]/g, "")
+    .replace(/(?!^)\+/g, "");
 }
 
 export function normalizeComparable(value: unknown): string {
@@ -197,6 +203,30 @@ export function taskIsUndated(task: TaskRecord): boolean {
   return taskIsOpen(task) && normalizeIsoDate(task.due_date) === "";
 }
 
+/** Whole days a task is overdue by; 0 when it is not overdue at all. */
+export function daysOverdue(task: TaskRecord, today = todayIso()): number {
+  if (!taskIsOverdue(task, today)) return 0;
+  const due = normalizeIsoDate(task.due_date);
+  const difference = Date.parse(`${today}T00:00:00Z`) - Date.parse(`${due}T00:00:00Z`);
+  return Math.max(1, Math.round(difference / 86400000));
+}
+
+/** Local calendar day `days` from `today`; noon-anchored to sidestep DST edges. */
+export function isoDateWithOffset(days: number, today = todayIso()): string {
+  const date = new Date(`${today}T12:00:00`);
+  date.setDate(date.getDate() + days);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/** Open work due after today but within the coming `days` days. */
+export function taskIsUpcoming(task: TaskRecord, days = 7, today = todayIso()): boolean {
+  const due = normalizeIsoDate(task.due_date);
+  return taskIsOpen(task) && due !== "" && due > today && due <= isoDateWithOffset(days, today);
+}
+
 export function validateNewEpisodeInput(input: NewEpisodeInput): string[] {
   const errors: string[] = [];
   const mrn = normalizeMrn(input.mrn);
@@ -222,6 +252,13 @@ export function validateTaskInput(input: NewTaskInput): string[] {
   if (!normalizeText(input.task)) errors.push("Task is required.");
   if (!TASK_TYPES.includes(input.taskType)) errors.push("Task type is not recognised.");
   if (input.dueDate && !isIsoDate(input.dueDate)) errors.push("Due date is invalid.");
+  const repeat = input.repeatEveryDays ?? 0;
+  if (!Number.isInteger(repeat) || repeat < 0 || repeat > 730) {
+    errors.push("Repeat interval must be a whole number of days up to 730.");
+  }
+  if (repeat > 0 && !input.dueDate) {
+    errors.push("A repeating task needs a due date to schedule the next occurrence from.");
+  }
   return errors;
 }
 

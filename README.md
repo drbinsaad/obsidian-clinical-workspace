@@ -44,11 +44,14 @@ data.*
 
 | View | What it keeps in reach |
 |---|---|
-| **Today** | Overdue, due-today, and undated work alongside active inpatient and episode counts. |
-| **Patients** | Inpatient and outpatient cards with care setting, pathway, priority, next action, and due date. |
-| **Tasks** | Open, complete, cancel, inspect, and add episode work without a horizontal Kanban. |
-| **Surgery** | OR booking queue, completed-procedure logbook, and optional follow-up dates. |
-| **More** | Native Obsidian Bases, identity correction and merge, archive/restore, and integrity checking. |
+| **Today** | A ward-round list of inpatients, overdue work with its age, due-today, the next 7 days, and undated work. |
+| **Patients** | Inpatient and outpatient cards with pathway, priority, next action, task templates, and per-episode history. |
+| **Tasks** | Open, complete, cancel, reschedule, and add episode work, filtered by priority and type. Tasks can repeat on completion. |
+| **Surgery** | OR booking queue, completed-procedure logbook, and portfolio counts by procedure and role. |
+| **More** | Native Obsidian Bases, per-patient drill-down, identity correction and merge, archive/restore, ward handover notes, and integrity checking. |
+
+A header search box (also **Clinical Workspace: Search clinical records**)
+finds patients, MRNs, cases, tasks, and procedures from one field.
 
 The workspace follows the width of its own Obsidian pane. In split layouts and
 stacked tabs it shifts between wide, compact, and narrow presentations without
@@ -225,6 +228,7 @@ in `dist/`. See [Contributing](CONTRIBUTING.md) for the development workflow.
 
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
+- [Data model reference](docs/data-model.md)
 - [Security and private vulnerability reporting](SECURITY.md)
 - [Quick Entry, hotkeys, mobile toolbar, and safe local links](docs/quick-entry.md)
 - [Support](SUPPORT.md)

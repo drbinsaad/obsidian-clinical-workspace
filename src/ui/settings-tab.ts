@@ -11,6 +11,7 @@ import { CARE_SETTINGS, PATHWAYS, PRIORITIES } from "../domain/types";
 import { careSettingLabel, pathwayLabel, priorityLabel } from "../domain/schema";
 import { validateRootFolder } from "../domain/settings";
 import type { MigrationService } from "../services/migration";
+import { ConfirmMaintenanceModal } from "./modals";
 
 function renderSetting(
   name: string,
@@ -253,7 +254,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
                 button
                   .setButtonText("Move records")
                   .setDestructive()
-                  .onClick(async () => {
+                  .onClick(() => {
                     if (!target.trim()) {
                       new Notice("Enter a folder name. Leaving it blank is not allowed.", 7000);
                       return;
@@ -263,15 +264,37 @@ export class ClinicalSettingTab extends PluginSettingTab {
                       new Notice(invalid, 7000);
                       return;
                     }
-                    button.setDisabled(true);
-                    try {
-                      const plan = await this.plugin.migrateRootFolder(target);
-                      new Notice(`Moved ${plan.files} note${plan.files === 1 ? "" : "s"} to “${plan.to}”.`, 7000);
-                      this.update();
-                    } catch (error) {
-                      new Notice(error instanceof Error ? error.message : "The move could not be completed.", 9000);
-                      button.setDisabled(false);
+                    const plan = this.migration.plan(target);
+                    if (plan.blocked) {
+                      new Notice(plan.blocked, 9000);
+                      return;
                     }
+                    // The move is irreversible from inside the plugin, and the
+                    // description above promises explicit confirmation. A
+                    // single tap on a destructive button is not that.
+                    new ConfirmMaintenanceModal(this.app, {
+                      title: "Move all clinical records",
+                      lines: [
+                        `This moves ${plan.files} note${plan.files === 1 ? "" : "s"} from “${plan.from}” to “${plan.to}” and rewrites their links.`,
+                        "Perform a move on one fully synced device at a time, and read the folder-migration guide before continuing. The move cannot be undone from inside the plugin."
+                      ],
+                      confirmWord: "MOVE",
+                      confirmLabel: `Move ${plan.files} note${plan.files === 1 ? "" : "s"}`,
+                      onDecide: (confirmed) => {
+                        if (!confirmed) return;
+                        button.setDisabled(true);
+                        void (async () => {
+                          try {
+                            const result = await this.plugin.migrateRootFolder(target);
+                            new Notice(`Moved ${result.files} note${result.files === 1 ? "" : "s"} to “${result.to}”.`, 7000);
+                            this.update();
+                          } catch (error) {
+                            new Notice(error instanceof Error ? error.message : "The move could not be completed.", 9000);
+                            button.setDisabled(false);
+                          }
+                        })();
+                      }
+                    }).open();
                   });
               });
               describe();

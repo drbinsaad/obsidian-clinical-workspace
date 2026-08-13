@@ -101,12 +101,12 @@ async function sha256Hex(value: string): Promise<string> {
 
 /** Static, identifier-free highlights shown once after an update. */
 const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
-  "Procedure retries are safe: different follow-up details are refused with a clear message instead of silently mixing with what an earlier attempt saved.",
-  "Impossible procedure and follow-up dates are rejected before anything is written.",
-  "The integrity check covers far more (schema versions, task types, duplicate ids, follow-up contradictions, audit-trail gaps) and reports its scope honestly.",
-  "Sync recovery verifies the actual records, not just a file count, and a new command lets you confirm a changed record set as the trusted baseline.",
-  "Generated note bodies no longer duplicate names, MRNs, or phone numbers; a preview command cleans up bodies written by older versions.",
-  "Right-to-left layouts, screen-reader labels, and touch targets are improved throughout, and the workspace adapts to narrow stacked panes and the iPhone keyboard."
+  "Task templates: keep a pathway's standard tasks in the Templates folder and apply them to an episode in one previewed step.",
+  "Recurring follow-ups, one-tap rescheduling with +1w/+1m date chips, and an audited reopen for mis-tapped completions.",
+  "One search box across patients, cases, tasks, and the surgery logbook — plus a per-patient view with episodes, work, and history together.",
+  "Today gains a ward-round list and a Next 7 days section; overdue work shows how old it is; the surgery logbook adds portfolio counts by procedure and role.",
+  "A ward handover note can be generated into the Documents folder at the end of the day; it contains identifiers and stays inside the clinical folder.",
+  "Dozens of reliability fixes from an independent review: safer sync recovery, forms that refuse to overwrite concurrent edits, and stronger integrity checks."
 ];
 
 /**
@@ -147,6 +147,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   /** A durable first-use approval whose scaffolding has not fully finalized. */
   private initializationScaffoldApproved = false;
   private firstUseInitializationPromise: Promise<boolean> | null = null;
+  /** Shared by concurrent entry points so one confirmation runs one initialization. */
+  private initializationCompletionPromise: Promise<void> | null = null;
   /** Managed-record count shown when the adoption confirmation opened. */
   private pendingAdoptionRecordCount: number | null = null;
   private pendingAdoptionRoot: string | null = null;
@@ -243,6 +245,26 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       name: "Run clinical data integrity check",
       callback: () => void this.runIntegrityCheck()
     });
+    this.addCommand({
+      id: "search-clinical-records",
+      name: "Search clinical records",
+      icon: "search",
+      callback: () =>
+        void this.runWorkspaceEntry(
+          (view) => view.openSearch(),
+          "Could not open clinical search."
+        )
+    });
+    this.addCommand({
+      id: "generate-handover-note",
+      name: "Generate ward handover note",
+      icon: "clipboard-list",
+      callback: () =>
+        void this.runWorkspaceEntry(
+          (view) => view.generateHandover(),
+          "Could not generate the handover note."
+        )
+    });
 
     this.registerQuickEntryProtocol(QUICK_ENTRY_PROTOCOL_ACTIONS.hub, () => this.openQuickEntry());
     this.registerQuickEntryProtocol(
@@ -299,6 +321,49 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // reachability-tree-shaken and would keep the fixture data in the bundle
     // even with the command itself removed.
     if (__DEV_TOOLS__) {
+      // Perf regressions should be measurable before users feel them. The
+      // numbers reported are timings and counts only.
+      this.addCommand({
+        id: "run-scale-benchmark",
+        name: "Development: run scale benchmark",
+        callback: () =>
+          void (async () => {
+            try {
+              await this.ensureStructure();
+              const started = performance.now();
+              const target = 100;
+              for (let index = 0; index < target; index += 1) {
+                const suffix = String(1000 + index);
+                await this.service.createEpisode({
+                  mrn: `9000${suffix}`,
+                  patientName: `Benchmark Patient ${suffix}`,
+                  phone: "",
+                  caseName: `Benchmark case ${suffix}`,
+                  careSetting: index % 3 === 0 ? "inpatient" : "outpatient",
+                  pathway: "assessment",
+                  priority: "routine",
+                  nextAction: `Benchmark review ${suffix}`,
+                  dueDate: "2026-12-01"
+                });
+              }
+              const seeded = performance.now() - started;
+              const timeOf = async (label: string, run: () => Promise<unknown>): Promise<string> => {
+                const start = performance.now();
+                await run();
+                return `${label} ${Math.round(performance.now() - start)}ms`;
+              };
+              const snapshotTime = await timeOf("snapshot", () => this.repository.snapshot());
+              const integrityTime = await timeOf("integrity", () => this.integrity.report());
+              new Notice(
+                `Benchmark: seeded ${target} episodes in ${Math.round(seeded)}ms; warm ${snapshotTime}; ${integrityTime}.`,
+                12000
+              );
+              await this.refreshOpenViews();
+            } catch (error) {
+              new Notice(error instanceof Error ? error.message : "The benchmark failed.", 9000);
+            }
+          })()
+      });
       this.addCommand({
         id: "seed-synthetic-demo-data",
         name: "Development: add synthetic demo data",
@@ -372,7 +437,15 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.missingRootRecoveryBlocked = (
       !marker && !this.firstUseInitializationPending && !initializationApproved && (
         safety?.rootRecoveryRequired === true ||
-        (this.workspaceInitialized && !rootExists)
+        (this.workspaceInitialized && !rootExists) ||
+        // Records can disappear while Obsidian is closed — a partial Sync
+        // delivery or a file-manager mishap leaves the folder present but
+        // depleted. Live delete events arm this barrier; the same loss found
+        // at load must fail closed identically, or the depleted set is
+        // silently rebaselined on first open.
+        (this.workspaceInitialized &&
+          rootExists &&
+          (safety?.expectedManagedRecordCount ?? 0) > rootRecordCount)
       )
     );
     this.migrationRecoveryBlocked =
@@ -668,6 +741,16 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   private async ratchetRecordInventory(root: string): Promise<boolean> {
     const current = await this.parsedRecordInventory(root);
     const previous = this.expectedEntityCounts;
+    // A depleted root must never become the new commitment. Rebasing the
+    // digest from fewer records than were confirmed would teach recovery to
+    // trust exactly the loss it exists to detect; the ratchet moves forward
+    // or not at all.
+    if (
+      previous &&
+      ENTITY_FOLDER_NAMES.some(([entity]) => current.counts[entity] < previous[entity])
+    ) {
+      return false;
+    }
     const next: ExpectedEntityCounts = previous
       ? {
           patient: Math.max(previous.patient, current.counts.patient),
@@ -735,7 +818,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       !this.workspaceSafetyNeedsPersistence
     ) return;
     this.workspaceInitialized = true;
-    this.managedRecordsExpected = currentCount > 0;
+    // Never downgraded: a momentary zero count (records still syncing in)
+    // must not disarm the deletion detector for the records already trusted.
+    this.managedRecordsExpected ||= currentCount > 0;
     this.expectedManagedRecordCount = Math.max(this.expectedManagedRecordCount, currentCount);
     this.workspaceSafetyNeedsPersistence = true;
     await this.persistWorkspaceSafety();
@@ -810,8 +895,20 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     return this.firstUseInitializationPromise;
   }
 
-  /** Persists the one-time decision before creating any folder or note. */
-  private async initializeNewWorkspace(): Promise<void> {
+  /**
+   * Persists the one-time decision before creating any folder or note.
+   * Concurrent entry points (ribbon tap plus command) share one run: both
+   * awaited the same confirmation, so the second must join the first rather
+   * than fail on the state the first has already consumed.
+   */
+  private initializeNewWorkspace(): Promise<void> {
+    this.initializationCompletionPromise ??= this.doInitializeNewWorkspace().finally(() => {
+      this.initializationCompletionPromise = null;
+    });
+    return this.initializationCompletionPromise;
+  }
+
+  private async doInitializeNewWorkspace(): Promise<void> {
     if (!this.firstUseInitializationPending) {
       throw new Error(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
     }
@@ -1123,11 +1220,30 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // With no records at either path, a completed folder rename is still
     // observable from folder presence. Otherwise retain the established
     // record-free failed-move recovery and return to the source.
-    const resolvedRoot = actual ?? (
+    const candidateRoot = actual ?? (
       configuredRoot === marker.to && this.rootExists(marker.to) && !this.rootExists(marker.from)
         ? marker.to
         : marker.from
     );
+    // A record-free workspace whose stored settings still name the
+    // destination is the marker-before-folder Sync state, not a failed local
+    // move: the folder rename may simply not have arrived yet. Settling at
+    // the source here would clear the marker, scaffold a fresh source tree,
+    // and greet the late-arriving destination as a permanent duplicate. Only
+    // an explicit user retry may roll a destination-configured state back.
+    if (
+      !actual &&
+      candidateRoot === marker.from &&
+      configuredRoot !== marker.from &&
+      !options.allowSourceRollback
+    ) {
+      this.settings = { ...this.settings, rootFolder: marker.from };
+      setClinicalRoot(marker.from);
+      this.pendingMigrationMarker = { migrationInProgress: marker };
+      this.setMigrationRecoveryBlocked(true);
+      return false;
+    }
+    const resolvedRoot = candidateRoot;
     this.settings = { ...this.settings, rootFolder: resolvedRoot };
     setClinicalRoot(resolvedRoot);
     this.pendingMigrationMarker = null;
@@ -1450,7 +1566,11 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       if (this.firstUseInitializationPending) {
         const confirmed = await this.requestFirstUseInitialization();
         if (!confirmed) return;
-        await this.initializeNewWorkspace();
+        // A concurrent entry point may have already consumed this approval.
+        // Join its in-flight run instead of starting a second one.
+        if (this.firstUseInitializationPending || this.initializationCompletionPromise) {
+          await this.initializeNewWorkspace();
+        }
       }
       await this.activateWorkspace();
     } catch (error) {
@@ -1537,7 +1657,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       if (this.firstUseInitializationPending) {
         const confirmed = await this.requestFirstUseInitialization();
         if (!confirmed) return;
-        await this.initializeNewWorkspace();
+        // Same join-don't-duplicate rule as openWorkspace.
+        if (this.firstUseInitializationPending || this.initializationCompletionPromise) {
+          await this.initializeNewWorkspace();
+        }
       }
       const view = await this.activateWorkspace();
       await action(view);
@@ -1627,6 +1750,16 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         if (!confirmed) return;
         void (async () => {
           try {
+            // The confirmation can stay open while Sync arms a migration
+            // marker or resets initialization behind it. Adopting then would
+            // clear a barrier that now guards something else entirely.
+            if (this.firstUseInitializationPending || this.currentMigrationMarker()) {
+              new Notice(
+                "Clinical Workspace state changed while the confirmation was open. The baseline was not adopted; resolve the pending recovery first.",
+                9000
+              );
+              return;
+            }
             const fresh = await this.parsedRecordInventory(root);
             this.expectedEntityCounts = fresh.counts;
             this.expectedRecordDigest = fresh.digest;
@@ -1666,7 +1799,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       const content = await this.app.vault.cachedRead(file);
       const record = parseClinicalRecord(content);
       if (record?.entity !== "patient") continue;
-      const body = bodyAfterFrontmatter(content);
+      // CRLF-normalized copies of the generated scaffold (a Windows sync or
+      // editor round-trip) are still unmistakably plugin text; matching only
+      // LF would report "Nothing to change" while identifiers remain.
+      const body = bodyAfterFrontmatter(content).replace(/\r\n/g, "\n");
       if (LEGACY_PATIENT_BODY_PATTERN.test(body.trim() + "\n")) candidates.push(file);
     }
     if (!candidates.length) {
@@ -1688,17 +1824,28 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       onDecide: (confirmed) => {
         if (!confirmed) return;
         void (async () => {
+          // The confirmation can stay open while Sync arms the write
+          // barrier. These writes go through Vault.process directly, so the
+          // repository's own barrier cannot intercept them — re-check here.
+          if (this.migrationRecoveryBlocked) {
+            new Notice(this.recoveryBlockMessage, 9000);
+            return;
+          }
           let rewritten = 0;
           for (const file of candidates) {
             try {
               await this.app.vault.process(file, (current) => {
-                const body = bodyAfterFrontmatter(current);
+                const rawBody = bodyAfterFrontmatter(current);
                 // Re-check inside the transform: Sync may have delivered an
-                // edited version since the preview was computed.
-                if (!LEGACY_PATIENT_BODY_PATTERN.test(body.trim() + "\n")) return current;
+                // edited version since the preview was computed. The slice
+                // offset uses the RAW body length; the CRLF normalization is
+                // for pattern matching only.
+                if (!LEGACY_PATIENT_BODY_PATTERN.test(rawBody.replace(/\r\n/g, "\n").trim() + "\n")) {
+                  return current;
+                }
                 const record = parseClinicalRecord(current);
                 if (record?.entity !== "patient") return current;
-                const frontmatterEnd = current.length - body.length;
+                const frontmatterEnd = current.length - rawBody.length;
                 rewritten += 1;
                 return current.slice(0, frontmatterEnd) + recordBody(record);
               });

@@ -11,9 +11,14 @@ import type {
   RecordWithPath,
   TaskRecord
 } from "../domain/types";
+import { CARE_SETTINGS, PATHWAYS, PRIORITIES } from "../domain/types";
 import {
   createId,
+  isIsoDate,
+  isoDateWithOffset,
   mrnMatchKey,
+  normalizeIsoDate,
+  todayIso,
   mrnStatus,
   normalizeComparable,
   normalizeMrn,
@@ -180,9 +185,20 @@ export class ClinicalService {
 
             // The episode already exists, but a previous attempt may have
             // failed before its first task was written. A retry repairs that
-            // partial result while still holding the same lifecycle lock.
+            // partial result while still holding the same lifecycle lock —
+            // and ONLY that. When the episode already carries open work, a
+            // duplicate submission with different wording must not supersede
+            // it: the user asked to create an episode, not to replace tasks,
+            // and the interface reports "the existing episode was kept".
             let existingTask: RecordWithPath<TaskRecord> | null = null;
-            if (normalizeText(input.nextAction)) {
+            const openForEpisode = (await this.repository.list<TaskRecord>("task"))
+              .filter(({ record }) => record.episode_id === latest.record.id && taskIsOpen(record))
+              .sort((a, b) =>
+                String(a.record.due_date || "9999").localeCompare(String(b.record.due_date || "9999"))
+              );
+            if (openForEpisode.length) {
+              existingTask = openForEpisode[0] ?? null;
+            } else if (normalizeText(input.nextAction)) {
               const outcome = await this.reconcileEpisodeTask(
                 latest,
                 normalizeText(input.nextAction),
@@ -234,7 +250,11 @@ export class ClinicalService {
             priority: input.priority,
             status: input.pathway === "discharge-ready" ? "ready-to-close" : "active",
             next_action: normalizeText(input.nextAction),
-            due_date: input.dueDate,
+            // The episode's due date mirrors its tracked work. The form seeds
+            // today's date so the control is visible on iOS; without a next
+            // action there is no task, and persisting the seed would show a
+            // phantom deadline no task tracks.
+            due_date: normalizeText(input.nextAction) ? input.dueDate : "",
             opened_at: timestamp,
             closed_at: "",
             outcome: "",
@@ -421,6 +441,7 @@ export class ClinicalService {
         completed_at: "",
         cancelled_at: "",
         cancel_reason: "",
+        repeat_every_days: input.repeatEveryDays ?? 0,
         idempotency_key: idempotencyKey
       };
       return { task: await this.repository.create(record), duplicate: false };
@@ -468,7 +489,38 @@ export class ClinicalService {
   private async completeTaskUnlocked(
     task: RecordWithPath<TaskRecord>
   ): Promise<RecordWithPath<TaskRecord>> {
-    if (!taskIsOpen(task.record)) return task;
+    if (!taskIsOpen(task.record)) {
+      // An earlier attempt may have closed the task and then failed before
+      // the episode was reconciled. This retry is the only chance to repair
+      // that pointer; the reconcile is idempotent when nothing is owed.
+      await this.reconcileEpisodeAfterTaskChange(task.record.episode_id, task.record.id);
+      return task;
+    }
+
+    // A recurring task raises its next occurrence BEFORE this one closes.
+    // A crash between the two writes leaves both visible; the retry then
+    // converges through the duplicate check instead of losing the repeat.
+    // Cancelling deliberately breaks the chain — only completion recurs.
+    const interval = task.record.repeat_every_days ?? 0;
+    if (Number.isInteger(interval) && interval > 0 && interval <= 730) {
+      const seed = normalizeIsoDate(task.record.due_date) || todayIso();
+      const nextInput = {
+        patientId: task.record.patient_id,
+        episodeId: task.record.episode_id,
+        task: task.record.task,
+        taskType: task.record.task_type,
+        priority: task.record.priority,
+        dueDate: isoDateWithOffset(interval, seed),
+        owner: task.record.owner,
+        repeatEveryDays: interval
+      };
+      // A hand-edited record can carry values the validators reject; the
+      // completion must still succeed, and the integrity check already
+      // reports the underlying field problem.
+      if (!validateTaskInput(nextInput).length) {
+        await this.createTaskUnlocked(nextInput);
+      }
+    }
 
     const completed = await this.repository.update<TaskRecord>(task.path, {
       status: "completed",
@@ -505,7 +557,12 @@ export class ClinicalService {
     task: RecordWithPath<TaskRecord>,
     reason: string
   ): Promise<RecordWithPath<TaskRecord>> {
-    if (!taskIsOpen(task.record)) return task;
+    if (!taskIsOpen(task.record)) {
+      // Same partial-failure repair as completion: a closed task whose
+      // episode still points at it is reconciled on retry.
+      await this.reconcileEpisodeAfterTaskChange(task.record.episode_id, task.record.id);
+      return task;
+    }
     if (!canTransitionTask(task.record.status, "cancelled")) {
       throw new Error(`A ${task.record.status} task cannot be cancelled.`);
     }
@@ -527,6 +584,91 @@ export class ClinicalService {
       newState: "cancelled"
     });
     return cancelled;
+  }
+
+  /**
+   * Moves an open task to a new date. The idempotency key names (episode,
+   * task, due date), so it moves with the date — duplicate suppression must
+   * keep matching the fields it hashes. The episode pointer follows.
+   */
+  async rescheduleTask(taskId: string, dueDate: string): Promise<RecordWithPath<TaskRecord>> {
+    return this.withTaskTransitionLocks(taskId, async (task) => {
+      if (!taskIsOpen(task.record)) {
+        throw new Error(`A ${task.record.status} task cannot be rescheduled.`);
+      }
+      const normalized = normalizeIsoDate(dueDate);
+      if (!normalized) throw new Error("Due date is invalid.");
+      if (normalizeText(task.record.due_date) === normalized) return task;
+      const previousDueDate = task.record.due_date;
+      const updated = await this.repository.update<TaskRecord>(task.path, {
+        due_date: normalized,
+        idempotency_key: taskIdempotencyKey({
+          episodeId: task.record.episode_id,
+          task: task.record.task,
+          dueDate: normalized
+        })
+      });
+      await this.reconcileEpisodeAfterTaskChange(task.record.episode_id, "");
+      await this.repository.createEvent({
+        action: "task-rescheduled",
+        patientId: task.record.patient_id,
+        episodeId: task.record.episode_id,
+        targetId: task.record.id,
+        targetEntity: "task",
+        summary: "Task rescheduled",
+        previousState: previousDueDate || "no date",
+        newState: normalized
+      });
+      return updated;
+    });
+  }
+
+  /**
+   * Returns a closed task to the open list. Completion can be a mis-tap;
+   * without this the only correction was raising a duplicate. The reopen is
+   * audited, so the trail shows both the closure and the correction.
+   */
+  async reopenTask(taskId: string): Promise<RecordWithPath<TaskRecord>> {
+    return this.withTaskTransitionLocks(taskId, async (task) => {
+      if (taskIsOpen(task.record)) return task;
+      if (!canTransitionTask(task.record.status, "open")) {
+        throw new Error(`A ${task.record.status} task cannot be reopened.`);
+      }
+      const episode = await this.repository.findById<EpisodeRecord>(
+        "episode",
+        task.record.episode_id
+      );
+      if (!episode || ["archived", "cancelled", "entered-in-error"].includes(episode.record.status)) {
+        throw new Error("Restore the episode before reopening its tasks.");
+      }
+      const reopened = await this.repository.update<TaskRecord>(task.path, {
+        status: "open",
+        completed_at: "",
+        cancelled_at: "",
+        cancel_reason: ""
+      });
+      await this.reconcileEpisodeAfterTaskChange(task.record.episode_id, "");
+      // Newly outstanding work reactivates a ready-to-close episode; the
+      // reconcile alone leaves the status where it was.
+      const latestEpisode = await this.repository.findById<EpisodeRecord>(
+        "episode",
+        task.record.episode_id
+      );
+      if (latestEpisode && latestEpisode.record.status === "ready-to-close") {
+        await this.repository.update<EpisodeRecord>(latestEpisode.path, { status: "active" });
+      }
+      await this.repository.createEvent({
+        action: "task-reopened",
+        patientId: task.record.patient_id,
+        episodeId: task.record.episode_id,
+        targetId: task.record.id,
+        targetEntity: "task",
+        summary: "Task reopened",
+        previousState: task.record.status,
+        newState: "open"
+      });
+      return reopened;
+    });
   }
 
   /** Serializes public task transitions with every competing Episode write. */
@@ -628,7 +770,21 @@ export class ClinicalService {
     if (["archived", "cancelled", "entered-in-error"].includes(episode.record.status)) {
       throw new Error("Restore this episode before changing its pathway.");
     }
+    // The form was seeded from a snapshot. If the record changed since —
+    // another device, Sync, a hand edit — saving would silently revert
+    // fields the user never touched. Refuse and let them re-open the form.
+    if (input.expectedUpdatedAt && episode.record.updated_at !== input.expectedUpdatedAt) {
+      throw new Error(
+        "This episode changed after the form was opened. Close the form, review the current values, and retry."
+      );
+    }
+    // Every check precedes the first write: rejecting the task after the
+    // episode has been updated would leave a half-applied plan.
     const nextAction = normalizeText(input.nextAction);
+    if (input.dueDate && !isIsoDate(input.dueDate)) throw new Error("Due date is invalid.");
+    if (!CARE_SETTINGS.includes(input.careSetting)) throw new Error("Care setting is not recognised.");
+    if (!PATHWAYS.includes(input.pathway)) throw new Error("Pathway is not recognised.");
+    if (!PRIORITIES.includes(input.priority)) throw new Error("Priority is not recognised.");
     if (
       ["opd-follow-up", "result-review", "consultation"].includes(input.pathway) &&
       (!nextAction || !input.dueDate)
@@ -717,10 +873,22 @@ export class ClinicalService {
     const tasks = await this.repository.list<TaskRecord>("task");
     const forEpisode = tasks.filter(({ record }) => record.episode_id === episode.record.id);
 
-    const openMatch = forEpisode.find(({ record }) => record.idempotency_key === key && taskIsOpen(record));
+    // The key is a 32-bit hash and the note is user-editable, so a stored key
+    // can name fields the note no longer carries. Every key match here also
+    // compares the underlying fields — the same predicate createTaskUnlocked
+    // uses — so a hand-edited or colliding task is never mistaken for the one
+    // the plan raised.
+    const requestedTask = normalizeComparable(nextAction);
+    const requestedDueDate = normalizeText(dueDate);
+    const matchesRequested = (record: TaskRecord): boolean =>
+      record.idempotency_key === key &&
+      normalizeComparable(record.task) === requestedTask &&
+      normalizeText(record.due_date) === requestedDueDate;
+
+    const openMatch = forEpisode.find(({ record }) => matchesRequested(record) && taskIsOpen(record));
     if (openMatch) return { kind: "unchanged", task: openMatch };
 
-    const closedMatch = forEpisode.find(({ record }) => record.idempotency_key === key);
+    const closedMatch = forEpisode.find(({ record }) => matchesRequested(record));
     if (closedMatch) {
       // The identical task was already completed or cancelled. Recreating it is
       // what the earlier duplicate bug did; pretending nothing was asked for is
@@ -735,6 +903,8 @@ export class ClinicalService {
     // date, so it names exactly the task the episode's previous next action
     // raised — and leaves alone a repeat of the same wording on another date,
     // which the clinician scheduled deliberately with "+ Task".
+    const previousAction = normalizeComparable(episode.record.next_action);
+    const previousDueDate = normalizeText(episode.record.due_date);
     const previousKey = normalizeText(episode.record.next_action)
       ? taskIdempotencyKey({
           episodeId: episode.record.id,
@@ -742,8 +912,17 @@ export class ClinicalService {
           dueDate: episode.record.due_date
         })
       : null;
+    // Field equality again: a task whose note was re-worded after creation
+    // still carries the old key, and cancelling it here would destroy work
+    // the clinician deliberately kept.
     const superseded = previousKey
-      ? forEpisode.filter(({ record }) => taskIsOpen(record) && record.idempotency_key === previousKey)
+      ? forEpisode.filter(
+          ({ record }) =>
+            taskIsOpen(record) &&
+            record.idempotency_key === previousKey &&
+            normalizeComparable(record.task) === previousAction &&
+            normalizeText(record.due_date) === previousDueDate
+        )
       : [];
     // Create first, cancel second. Cancelling first meant any failure in
     // createTask destroyed the outstanding work and left nothing in its place.
@@ -806,6 +985,14 @@ export class ClinicalService {
             Boolean(latest.record.merge_in_progress)
           ) {
             throw new Error("Identity can only be corrected on an unmerged patient.");
+          }
+          // The form carries a full identity snapshot; saving over a record
+          // that changed since it opened would revert the other device's
+          // correction without anyone noticing.
+          if (input.expectedUpdatedAt && latest.record.updated_at !== input.expectedUpdatedAt) {
+            throw new Error(
+              "This patient record changed after the form was opened. Close the form, review the current values, and retry."
+            );
           }
 
           if (mrn && identityKey !== mrnMatchKey(latest.record.mrn)) {
@@ -1027,7 +1214,11 @@ export class ClinicalService {
         record.id !== episodeId &&
         !["archived", "cancelled", "entered-in-error"].includes(record.status)
     );
-    if (!otherActive) {
+    // An unreadable episode note is invisible to list() but may still be this
+    // patient's active care. Skip the automatic patient archive until the
+    // note is repaired; the episode archive itself is unaffected.
+    const unreadableEpisodes = await this.repository.unreadablePaths("episode");
+    if (!otherActive && unreadableEpisodes.length === 0) {
       const patient = await this.repository.findById<PatientRecord>("patient", episode.record.patient_id);
       if (patient && patient.record.status === "active") {
         await this.repository.update<PatientRecord>(patient.path, { status: "archived" });

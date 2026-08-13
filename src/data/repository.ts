@@ -232,8 +232,13 @@ export class ClinicalRepository {
       this.assertWritesAllowed();
       if (this.app.vault.getAbstractFileByPath(path)) {
         const existing = await this.read<T>(path);
-        if (existing) return existing;
-        throw new Error("A non-clinical file already occupies a managed record path. Run the clinical data integrity check.");
+        // Only the exact record being created makes this an idempotent retry.
+        // A different record at this path would otherwise be returned as if
+        // it were the one the caller asked to create.
+        if (existing && existing.record.id === record.id && existing.record.entity === record.entity) {
+          return existing;
+        }
+        throw new Error("A different note already occupies a managed record path. Run the clinical data integrity check.");
       }
       // A managed folder can go missing between sessions — moved in the file
       // explorer, or lost to a sync conflict. Recreating it here means a
@@ -365,6 +370,27 @@ export class ClinicalRepository {
       tasks: tasks.map((item) => item.record),
       procedures: procedures.map((item) => item.record)
     };
+  }
+
+  /**
+   * Writes a free-form note (for example a generated handover) into a
+   * managed folder, honouring the same fail-closed write barrier as record
+   * writes. A name collision gets a numeric suffix rather than overwriting.
+   */
+  async createLooseNote(folder: string, baseName: string, content: string): Promise<string> {
+    return this.queue.run(`loose:${folder}/${baseName}`, async () => {
+      this.assertWritesAllowed();
+      await this.ensureFolder(folder);
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const name = attempt === 0 ? baseName : `${baseName} ${attempt + 1}`;
+        const path = normalizePath(`${folder}/${name}.md`);
+        if (this.app.vault.getAbstractFileByPath(path)) continue;
+        this.assertWritesAllowed();
+        await this.app.vault.create(path, content);
+        return path;
+      }
+      throw new Error("A unique note name could not be found. Run the clinical data integrity check.");
+    });
   }
 
   /**

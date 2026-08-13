@@ -8,6 +8,7 @@
  * patient information must never gain the ability to fabricate records.
  */
 import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
 
@@ -33,7 +34,10 @@ if (!(await exists(path.join(vaultPath, ".obsidian")))) {
   die(`Not an Obsidian vault (no .obsidian folder): ${vaultPath}\nOpen it as a vault in Obsidian first.`);
 }
 
-const dist = path.resolve("dist");
+// Resolved from this script's own location, not the caller's working
+// directory: invoking from elsewhere must never install a foreign ./dist
+// bundle into a clinical vault.
+const dist = path.resolve(fileURLToPath(new URL("../dist", import.meta.url)));
 const ASSETS = ["main.js", "manifest.json", "styles.css"];
 for (const asset of ASSETS) {
   if (!(await exists(path.join(dist, asset)))) die(`dist/${asset} is missing. Run: npm run build`);

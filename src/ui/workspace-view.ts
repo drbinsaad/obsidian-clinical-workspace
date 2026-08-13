@@ -2,15 +2,22 @@ import { ItemView, Notice, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import type {
   ClinicalSnapshot,
   EpisodeRecord,
+  EventRecord,
   NewEpisodeInput,
   PatientRecord,
+  Priority,
   ProcedureRecord,
-  TaskRecord
+  TaskRecord,
+  TaskType
 } from "../domain/types";
+import { PRIORITIES } from "../domain/types";
 import {
   careSettingLabel,
+  daysOverdue,
   displayPhone,
   episodeNeedsReview,
+  isoDateWithOffset,
+  normalizeComparable,
   normalizeText,
   pathwayLabel,
   priorityLabel,
@@ -18,9 +25,12 @@ import {
   taskIsOpen,
   taskIsOverdue,
   taskIsUndated,
+  taskIsUpcoming,
   todayIso
 } from "../domain/schema";
 import { clinicalFolder } from "../data/paths";
+import { listTaskBundles, type TaskBundle } from "../data/templates";
+import { buildHandoverNote } from "../services/handover";
 import type { ClinicalSettings } from "../domain/settings";
 import { DEFAULT_SETTINGS } from "../domain/settings";
 import { ClinicalRepository } from "../data/repository";
@@ -29,17 +39,22 @@ import { ClinicalService, PossibleDuplicatePatientError } from "../services/clin
 import { IntegrityService } from "../services/integrity";
 import { seedSyntheticFixtures } from "../services/synthetic-fixtures";
 import {
+  ApplyTemplateModal,
   ArchiveEpisodeModal,
   CancelTaskModal,
+  ClinicalSearchModal,
   DuplicatePatientModal,
+  EpisodeHistoryModal,
   IntegrityReportModal,
   MergePatientsModal,
   NewEpisodeModal,
   NewTaskModal,
+  PatientDetailModal,
   PatientIdentityModal,
   ProcedureModal,
   QuickEntryEpisodeModal,
   QuickEntryModal,
+  RescheduleTaskModal,
   UpdateEpisodeModal,
   type QuickEntryEpisodeChoice,
   bidiIsolate,
@@ -163,9 +178,17 @@ export function createClinicalWorkspacePaneHost(element: HTMLElement): ClinicalW
   };
 }
 
+function titleCaseType(value: string): string {
+  return value
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 const LIST_PAGE_LABELS: Record<string, string> = {
   "today-overdue": "Overdue tasks",
   "today-due": "Today tasks",
+  "today-upcoming": "Upcoming tasks",
   "today-undated": "Undated tasks",
   "patients-inpatient": "Inpatients",
   "patients-outpatient": "Outpatients",
@@ -248,6 +271,9 @@ export class ClinicalWorkspaceView extends ItemView {
   private activeTab: WorkspaceTab = "today";
   private refreshing = false;
   private refreshQueued = false;
+  /** In-session filters for the Tasks tab; "all" shows everything. */
+  private taskPriorityFilter: Priority | "all" = "all";
+  private taskTypeFilter: TaskType | "all" = "all";
   private paneController: ClinicalWorkspacePaneController | null = null;
   private paneOwnerWindow: Window | null = null;
   private readonly listPages = new Map<string, number>();
@@ -487,9 +513,21 @@ export class ClinicalWorkspaceView extends ItemView {
     );
   }
 
+  private lastRenderedTab: WorkspaceTab | null = null;
+
   private render(snapshot: ClinicalSnapshot): void {
     this.indexSnapshot(snapshot);
     const root = this.contentEl;
+    // A background refresh — a sync burst, another device's write — redraws
+    // in place. Losing the reading position on every redraw makes long lists
+    // unusable mid-ward-round, so the scroll offset survives same-tab
+    // renders; a deliberate tab switch still starts at the top.
+    const previousScroller = root.querySelector(".clinical-workspace-scroll");
+    const previousScrollTop = previousScroller?.instanceOf(HTMLElement)
+      ? previousScroller.scrollTop
+      : 0;
+    const sameTab = this.lastRenderedTab === this.activeTab;
+    this.lastRenderedTab = this.activeTab;
     root.empty();
     // The scroller is nested inside the view so the floating action button can
     // be a sibling of it: pinned to the view, and not scrolling away with the
@@ -525,6 +563,9 @@ export class ClinicalWorkspaceView extends ItemView {
       cls: "mod-cta clinical-primary-action"
     });
     add.addEventListener("click", () => this.openAddPatient());
+    if (!this.pendingPageContext && sameTab && previousScrollTop > 0) {
+      scroller.scrollTop = previousScrollTop;
+    }
     this.restorePageContext(scroller);
   }
 
@@ -534,6 +575,12 @@ export class ClinicalWorkspaceView extends ItemView {
     titles.createEl("h2", { text: "Clinical Workspace", cls: "clinical-workspace-title" });
     titles.createDiv({ text: "Local-first patient workflow", cls: "clinical-workspace-subtitle" });
     const actions = header.createDiv({ cls: "clinical-workspace-header-actions" });
+    const search = actions.createEl("button", {
+      attr: { "aria-label": "Search clinical records" },
+      cls: "clickable-icon clinical-refresh-button"
+    });
+    setIcon(search, "search");
+    search.addEventListener("click", () => void this.openSearch());
     const quickEntry = actions.createEl("button", {
       cls: "clinical-quick-entry-button",
       attr: { "aria-label": "Open Clinical Workspace quick entry" }
@@ -566,14 +613,14 @@ export class ClinicalWorkspaceView extends ItemView {
           tabindex: selected ? "0" : "-1"
         }
       });
-      button.addEventListener("click", () => this.selectTab(tab));
+      button.addEventListener("click", () => void this.selectTab(tab));
       button.addEventListener("keydown", (event) => this.handleTabKey(event, tab));
     }
   }
 
-  private selectTab(tab: WorkspaceTab): void {
+  private selectTab(tab: WorkspaceTab): Promise<void> {
     this.activeTab = tab;
-    void this.refresh();
+    return this.refresh();
   }
 
   private handleTabKey(event: KeyboardEvent, tab: WorkspaceTab): void {
@@ -593,14 +640,13 @@ export class ClinicalWorkspaceView extends ItemView {
     if (event.key === "End") next = order[order.length - 1] ?? null;
     if (!next) return;
     event.preventDefault();
-    this.selectTab(next);
-    const focusSelectedTab = (): void => {
+    // Focus AFTER the async re-render completes. A zero-delay timer used to
+    // focus the old tab button, which the redraw then destroyed — dropping
+    // keyboard focus to the body on every arrow press.
+    void this.selectTab(next).then(() => {
       const target = this.contentEl.querySelector(`#clinical-tab-${next}`);
       if (target?.instanceOf(HTMLElement)) target.focus();
-    };
-    const viewWindow = this.contentEl.ownerDocument.defaultView;
-    if (viewWindow) viewWindow.setTimeout(focusSelectedTab, 0);
-    else queueMicrotask(focusSelectedTab);
+    });
   }
 
   private renderToday(container: HTMLElement, snapshot: ClinicalSnapshot): void {
@@ -616,10 +662,41 @@ export class ClinicalWorkspaceView extends ItemView {
     this.summaryCard(summary, inpatient.length, "Inpatients");
     this.summaryCard(summary, activeEpisodes.length, "Active episodes");
 
+    // Ward round: inpatients in priority order, one glance per patient.
+    const wardEpisodes = inpatient
+      .slice()
+      .sort((a, b) => this.episodeSortKey(a).localeCompare(this.episodeSortKey(b)));
+    if (wardEpisodes.length) {
+      this.sectionHeader(container, "Ward round", `${wardEpisodes.length} inpatient${wardEpisodes.length === 1 ? "" : "s"}`);
+      const ward = container.createDiv({ cls: "clinical-ward-list" });
+      for (const episode of wardEpisodes.slice(0, 30)) {
+        const patient = this.patientFor(snapshot, episode.patient_id);
+        const row = ward.createDiv({ cls: "clinical-ward-row" });
+        const text = row.createDiv({ cls: "clinical-ward-text" });
+        text.createEl("strong", { text: this.patientLabel(patient), attr: { dir: "auto" } });
+        text.createSpan({
+          text: `${episode.case ? bidiIsolate(episode.case) : "Case not recorded"} · ${priorityLabel(episode.priority)}${
+            normalizeText(episode.next_action) ? ` · next: ${bidiIsolate(episode.next_action)}` : ""
+          }${episode.due_date ? ` (${episode.due_date})` : ""}`,
+          cls: "clinical-card-meta"
+        });
+        this.actionButton(row, "Open", () => this.openRecord("episode", episode.id), false, false, this.episodeContext(episode, patient));
+      }
+    }
+
     this.sectionHeader(container, "Overdue", overdueTasks.length ? "Needs attention" : "All clear");
     this.renderTaskList(container, overdueTasks, snapshot, "today-overdue");
     this.sectionHeader(container, "Today", todayIso());
     this.renderTaskList(container, todayTasks, snapshot, "today-due");
+    // The coming week, so tomorrow's clinic is visible tonight without
+    // leaving the Today view. Shown only when something is scheduled.
+    const upcomingTasks = openTasks
+      .filter((task) => taskIsUpcoming(task))
+      .sort((a, b) => this.taskSortKey(a).localeCompare(this.taskSortKey(b)));
+    if (upcomingTasks.length) {
+      this.sectionHeader(container, "Next 7 days", `${upcomingTasks.length} scheduled`);
+      this.renderTaskList(container, upcomingTasks, snapshot, "today-upcoming");
+    }
     // Undated work is still outstanding; without this section Today under-reports.
     if (undatedTasks.length) {
       this.sectionHeader(container, "No date set", `${undatedTasks.length} open`);
@@ -640,17 +717,94 @@ export class ClinicalWorkspaceView extends ItemView {
   }
 
   private renderTasks(container: HTMLElement, snapshot: ClinicalSnapshot): void {
-    const tasks = snapshot.tasks
-      .filter(taskIsOpen)
+    const open = snapshot.tasks.filter(taskIsOpen);
+    const filtered = open
+      .filter(
+        (task) =>
+          (this.taskPriorityFilter === "all" || task.priority === this.taskPriorityFilter) &&
+          (this.taskTypeFilter === "all" || task.task_type === this.taskTypeFilter)
+      )
       .sort((a, b) => this.taskSortKey(a).localeCompare(this.taskSortKey(b)));
-    this.sectionHeader(container, "Open tasks", `${tasks.length} total`);
-    this.renderTaskList(container, tasks, snapshot, "tasks-open");
+    const filteredNote =
+      filtered.length === open.length
+        ? `${open.length} total`
+        : `${filtered.length} of ${open.length} shown`;
+    this.sectionHeader(container, "Open tasks", filteredNote);
+    this.renderTaskFilters(container, open);
+    this.renderTaskList(container, filtered, snapshot, "tasks-open");
+  }
+
+  /** Chip rows: one for priority, one for the task types actually in use. */
+  private renderTaskFilters(container: HTMLElement, open: TaskRecord[]): void {
+    const filters = container.createDiv({ cls: "clinical-chip-rows" });
+    const chip = (
+      row: HTMLElement,
+      label: string,
+      active: boolean,
+      apply: () => void,
+      accessible: string
+    ): void => {
+      const button = row.createEl("button", {
+        text: label,
+        cls: `clinical-chip${active ? " is-active" : ""}`,
+        attr: { type: "button", "aria-pressed": String(active), "aria-label": accessible }
+      });
+      button.addEventListener("click", () => {
+        apply();
+        // A filter change re-reads nothing it does not need; refresh() serves
+        // the redraw and keeps the scroll position like any other re-render.
+        void this.refresh();
+      });
+    };
+
+    const priorityRow = filters.createDiv({ cls: "clinical-chip-row" });
+    chip(priorityRow, "All", this.taskPriorityFilter === "all", () => {
+      this.taskPriorityFilter = "all";
+    }, "Show every priority");
+    for (const priority of PRIORITIES) {
+      chip(priorityRow, priorityLabel(priority), this.taskPriorityFilter === priority, () => {
+        this.taskPriorityFilter = this.taskPriorityFilter === priority ? "all" : priority;
+      }, `Filter tasks by ${priority} priority`);
+    }
+
+    const typesInUse = [...new Set(open.map((task) => task.task_type))].sort();
+    if (typesInUse.length > 1) {
+      const typeRow = filters.createDiv({ cls: "clinical-chip-row" });
+      chip(typeRow, "All types", this.taskTypeFilter === "all", () => {
+        this.taskTypeFilter = "all";
+      }, "Show every task type");
+      for (const type of typesInUse) {
+        chip(typeRow, titleCaseType(type), this.taskTypeFilter === type, () => {
+          this.taskTypeFilter = this.taskTypeFilter === type ? "all" : type;
+        }, `Filter tasks by type ${type}`);
+      }
+    }
   }
 
   private renderSurgery(container: HTMLElement, snapshot: ClinicalSnapshot): void {
     const bookings = snapshot.episodes
       .filter((episode) => this.isActiveEpisode(episode) && episode.pathway === "or-booking")
       .sort((a, b) => this.episodeSortKey(a).localeCompare(this.episodeSortKey(b)));
+
+    // Logbook at a glance: the counts a surgeon reports — total cases, the
+    // current month, and primary-operator cases — computed locally from the
+    // same records the list below shows.
+    const completedProcedures = snapshot.procedures.filter(
+      (procedure) => procedure.status === "completed"
+    );
+    const currentMonth = todayIso().slice(0, 7);
+    const thisMonth = completedProcedures.filter((procedure) =>
+      normalizeText(procedure.procedure_date).startsWith(currentMonth)
+    );
+    const asPrimary = completedProcedures.filter(
+      (procedure) => normalizeComparable(procedure.role) === "primary surgeon"
+    );
+    const summary = container.createDiv({ cls: "clinical-summary-grid" });
+    this.summaryCard(summary, completedProcedures.length, "Total logged");
+    this.summaryCard(summary, thisMonth.length, "This month");
+    this.summaryCard(summary, asPrimary.length, "As primary");
+    this.summaryCard(summary, bookings.length, "Awaiting OR");
+
     this.sectionHeader(container, "OR booking", `${bookings.length} awaiting surgery`);
     const list = container.createDiv({ cls: "clinical-list" });
     if (!bookings.length) this.empty(list, "No active OR bookings.");
@@ -678,7 +832,10 @@ export class ClinicalWorkspaceView extends ItemView {
     }
     this.renderPagination(container, "surgery-bookings", bookingPage);
 
-    const procedures = [...snapshot.procedures].sort((a, b) =>
+    // Only completed procedures belong in a list headed "N completed" and
+    // badged "Completed" — a hand-edited cancelled/entered-in-error record
+    // would otherwise be shown with a badge contradicting its own status.
+    const procedures = [...completedProcedures].sort((a, b) =>
       this.text(b.procedure_date).localeCompare(this.text(a.procedure_date))
     );
     this.sectionHeader(container, "Surgery logbook", `${procedures.length} completed`);
@@ -687,6 +844,48 @@ export class ClinicalWorkspaceView extends ItemView {
     const procedurePage = this.pageFor("surgery-logbook", procedures);
     for (const procedure of procedurePage.items) this.renderProcedureCard(procedureList, procedure, snapshot);
     this.renderPagination(container, "surgery-logbook", procedurePage);
+
+    // The counts a training portfolio asks for: per procedure, how many and
+    // in what role — computed locally from the same records listed above.
+    if (completedProcedures.length) {
+      this.sectionHeader(container, "Logbook breakdown", "By procedure");
+      const groups = new Map<string, { label: string; total: number; primary: number; year: number }>();
+      const currentYear = todayIso().slice(0, 4);
+      for (const procedure of completedProcedures) {
+        const key = normalizeComparable(procedure.procedure) || "(not recorded)";
+        const group = groups.get(key) ?? {
+          label: procedure.procedure || "Not recorded",
+          total: 0,
+          primary: 0,
+          year: 0
+        };
+        group.total += 1;
+        if (normalizeComparable(procedure.role) === "primary surgeon") group.primary += 1;
+        if (normalizeText(procedure.procedure_date).startsWith(currentYear)) group.year += 1;
+        groups.set(key, group);
+      }
+      const rows = [...groups.values()].sort((a, b) => b.total - a.total).slice(0, 15);
+      const tableWrap = container.createDiv({ cls: "clinical-table-wrap" });
+      const table = tableWrap.createEl("table", { cls: "clinical-breakdown-table" });
+      const head = table.createEl("thead").createEl("tr");
+      for (const column of ["Procedure", "Total", "As primary", "This year"]) {
+        head.createEl("th", { text: column });
+      }
+      const tbody = table.createEl("tbody");
+      for (const row of rows) {
+        const tr = tbody.createEl("tr");
+        tr.createEl("td", { text: row.label, attr: { dir: "auto" } });
+        tr.createEl("td", { text: String(row.total) });
+        tr.createEl("td", { text: String(row.primary) });
+        tr.createEl("td", { text: String(row.year) });
+      }
+      if (groups.size > rows.length) {
+        container.createEl("p", {
+          text: `Showing the ${rows.length} most frequent of ${groups.size} distinct procedures.`,
+          cls: "clinical-section-note"
+        });
+      }
+    }
   }
 
   private renderMore(container: HTMLElement, snapshot: ClinicalSnapshot): void {
@@ -741,6 +940,16 @@ export class ClinicalWorkspaceView extends ItemView {
     }
     this.renderPagination(container, "more-archive", archivePage);
 
+    this.sectionHeader(container, "Ward handover", "Generated from today's records");
+    const handover = container.createDiv({ cls: "clinical-card" });
+    handover.createEl("h4", { text: "End-of-day handover note" });
+    handover.createEl("p", {
+      text: "Writes one note in the documents folder listing inpatients and the overdue and due-today work. It contains identifiers, stays inside the clinical folder, and should be deleted after use.",
+      cls: "clinical-card-meta"
+    });
+    const handoverActions = handover.createDiv({ cls: "clinical-card-actions" });
+    this.actionButton(handoverActions, "Generate handover", () => void this.generateHandover());
+
     this.sectionHeader(container, "Safety", "Data integrity");
     const safety = container.createDiv({ cls: "clinical-card" });
     safety.createEl("h4", { text: "Data integrity" });
@@ -766,6 +975,61 @@ export class ClinicalWorkspaceView extends ItemView {
           new Notice(`${count} synthetic episodes created.`);
         })
       );
+    }
+  }
+
+  /** One screen per patient: episodes, work, logbook, and trail together. */
+  private async openPatientDetail(patient: PatientRecord): Promise<void> {
+    try {
+      const [snapshot, events] = await Promise.all([
+        this.repository.snapshot(),
+        this.repository.list<EventRecord>("event")
+      ]);
+      new PatientDetailModal(
+        this.app,
+        {
+          patient,
+          episodes: snapshot.episodes.filter((episode) => episode.patient_id === patient.id),
+          tasks: snapshot.tasks.filter((task) => task.patient_id === patient.id),
+          procedures: snapshot.procedures.filter((procedure) => procedure.patient_id === patient.id),
+          events: events.map((item) => item.record).filter((event) => event.patient_id === patient.id)
+        },
+        (entity, id) => this.openRecord(entity, id),
+        (taskId) =>
+          void this.runAction(async () => {
+            await this.service.reopenTask(taskId);
+            new Notice("Task reopened.");
+          })
+      ).open();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "The patient view could not be opened.", 7000);
+    }
+  }
+
+  /** One search box across patients, episodes, tasks, and the logbook. */
+  async openSearch(): Promise<void> {
+    try {
+      const snapshot = await this.repository.snapshot();
+      new ClinicalSearchModal(this.app, snapshot, (entity, id) => this.openRecord(entity, id)).open();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Search could not be opened.", 7000);
+    }
+  }
+
+  /** Writes today's ward handover note into the Documents folder and opens it. */
+  async generateHandover(): Promise<void> {
+    try {
+      const snapshot = await this.repository.snapshot();
+      const today = todayIso();
+      const path = await this.repository.createLooseNote(
+        clinicalFolder("documents"),
+        `Handover ${today}`,
+        buildHandoverNote(snapshot, today)
+      );
+      new Notice("Handover note created in the documents folder. Delete it after use.", 7000);
+      await this.openPath(path);
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "The handover note could not be created.", 7000);
     }
   }
 
@@ -795,6 +1059,7 @@ export class ClinicalWorkspaceView extends ItemView {
     }
     const patientContext = this.patientLabel(patient);
     const actions = card.createDiv({ cls: "clinical-card-actions" });
+    this.actionButton(actions, "View", () => void this.openPatientDetail(patient), false, false, patientContext);
     this.actionButton(actions, "Open", () => this.openRecord("patient", patient.id), false, false, patientContext);
     this.actionButton(actions, "Edit identity", () => {
       new PatientIdentityModal(this.app, patient, async (input) => {
@@ -869,6 +1134,8 @@ export class ClinicalWorkspaceView extends ItemView {
           await this.refresh();
         }).open();
       }, false, false, context);
+      this.actionButton(actions, "Template", () => void this.openApplyTemplate(episode), false, false, context);
+      this.actionButton(actions, "History", () => void this.openEpisodeHistory(episode), false, false, context);
       this.actionButton(
         actions,
         "Discharge",
@@ -890,6 +1157,60 @@ export class ClinicalWorkspaceView extends ItemView {
       );
     }
     this.renderPagination(container, pageKey, page);
+  }
+
+  /** Explicit, previewed application of a user-authored task bundle. */
+  private async openApplyTemplate(episode: EpisodeRecord): Promise<void> {
+    try {
+      const bundles = (await listTaskBundles(this.app.vault)).filter(
+        (bundle) => bundle.pathway === null || bundle.pathway === episode.pathway
+      );
+      new ApplyTemplateModal(this.app, episode.case, bundles, (bundle) => {
+        void this.applyTemplate(episode, bundle);
+      }).open();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Templates could not be read.", 7000);
+    }
+  }
+
+  private async applyTemplate(episode: EpisodeRecord, bundle: TaskBundle): Promise<void> {
+    try {
+      let created = 0;
+      let existing = 0;
+      for (const item of bundle.tasks) {
+        const result = await this.service.createTask({
+          patientId: episode.patient_id,
+          episodeId: episode.id,
+          task: item.task,
+          taskType: item.taskType,
+          priority: item.priority ?? episode.priority,
+          dueDate: item.dueInDays !== null ? isoDateWithOffset(item.dueInDays) : "",
+          owner: ""
+        });
+        if (result.duplicate) existing += 1;
+        else created += 1;
+      }
+      new Notice(
+        existing
+          ? `${created} task${created === 1 ? "" : "s"} created; ${existing} already existed and ${existing === 1 ? "was" : "were"} kept.`
+          : `${created} task${created === 1 ? "" : "s"} created from the template.`
+      );
+      await this.refresh();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "The template could not be applied.", 7000);
+      await this.refresh();
+    }
+  }
+
+  private async openEpisodeHistory(episode: EpisodeRecord): Promise<void> {
+    try {
+      const events = (await this.repository.list<EventRecord>("event"))
+        .map((item) => item.record)
+        .filter((event) => event.episode_id === episode.id || event.target_id === episode.id);
+      new EpisodeHistoryModal(this.app, episode.case, events).open();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "The episode history could not be read.", 7000);
+    }
   }
 
   private renderTaskList(
@@ -920,7 +1241,13 @@ export class ClinicalWorkspaceView extends ItemView {
       }
       const badges = card.createDiv({ cls: "clinical-badges" });
       this.badge(badges, priorityLabel(task.priority), task.priority);
-      if (taskIsOverdue(task)) this.badge(badges, "Overdue", "overdue");
+      // The age matters: "overdue since yesterday" and "overdue for a month"
+      // need different responses, and a bare badge hides the difference.
+      const overdueDays = daysOverdue(task);
+      if (overdueDays > 0) {
+        this.badge(badges, overdueDays === 1 ? "Overdue 1 day" : `Overdue ${overdueDays} days`, "overdue");
+      }
+      if ((task.repeat_every_days ?? 0) > 0) this.badge(badges, "Repeats", "pathway");
       if (task.owner) this.badge(badges, task.owner, "owner");
       const context = this.taskContext(task, patient);
       const actions = card.createDiv({ cls: "clinical-card-actions" });
@@ -937,6 +1264,13 @@ export class ClinicalWorkspaceView extends ItemView {
         false,
         context
       );
+      this.actionButton(actions, "Reschedule", () => {
+        new RescheduleTaskModal(this.app, task, async (dueDate) => {
+          await this.service.rescheduleTask(task.id, dueDate);
+          new Notice(`Task moved to ${dueDate}.`);
+          await this.refresh();
+        }).open();
+      }, false, false, context);
       this.actionButton(actions, "Cancel", () => {
         new CancelTaskModal(this.app, task, async (reason) => {
           await this.service.cancelTask(task.id, reason);
@@ -1066,7 +1400,9 @@ export class ClinicalWorkspaceView extends ItemView {
   private async openPath(path: string): Promise<void> {
     const abstract = this.app.vault.getAbstractFileByPath(path);
     if (!(abstract instanceof TFile)) {
-      new Notice(`File not found: ${path}`);
+      // No path in the message: record notes can be renamed to patient
+      // names, and Notice text must stay identifier-free.
+      new Notice("That file could not be found in the vault. Run the clinical data integrity check.");
       return;
     }
     await this.app.workspace.getLeaf(false).openFile(abstract);

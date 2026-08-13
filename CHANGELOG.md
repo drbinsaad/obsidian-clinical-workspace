@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-13
+
+Review-and-roadmap release: a full independent review of 0.5.0 with every
+confirmed finding fixed under regression coverage (`tests/ultra-review-remediation.test.ts`),
+plus the first block of workflow features (`tests/roadmap-features.test.ts`,
+`tests/interleaving.test.ts`). The suite grows from 219 to 245 tests.
+
+### Fixed
+
+- Replacing an episode's next action can no longer cancel the wrong task: every idempotency-key match now also compares the underlying task text and due date, so a hand-edited or re-worded task is never mistaken for the one the plan raised.
+- Records missing while Obsidian was closed now fail closed at load exactly like a live deletion: the on-disk count is checked against the persisted baseline, the recovery inventory only ratchets forward (never rebasing from a depleted root), and a momentary zero count can no longer disarm the deletion detector.
+- A crash between closing a task and updating its episode is now repaired by the retry instead of being permanently stuck; the duplicate-episode path repairs a missing first task but never supersedes live work; and episode updates validate every field before the first write.
+- The automatic patient archive is skipped while any episode note is unreadable, since invisible notes may still be active care.
+- YAML 1.1 date objects keep their calendar day in every timezone (UTC-midnight dates read as UTC, local moments as local).
+- Sync-recovery hardening: baseline adoption and the body-migration command re-check for a migration marker or armed barrier at decision time, not just before their confirmation opened; a record-free synced folder move stays pending until the destination folder actually arrives; CRLF-normalized legacy patient bodies are recognised by the identifier-removal command; and concurrent first-use entry points share one initialization run.
+- Interface correctness: background refreshes keep the scroll position; arrow-key tab switching keeps keyboard focus; modals lock while a clinical write is in flight, refuse saves over records that changed after the form opened, and fold invalid frontmatter enums to the value actually displayed; the missing-file notice no longer embeds a potentially patient-named path; and the surgery logbook lists only genuinely completed procedures.
+- Integrity coverage: corrupted MRNs (non-digits) are reported, non-boolean follow-up flags are flagged instead of silently suppressing the contradiction check, event notes pass field validation, and closed records whose audit trail lacks its closure entry are reported (`missing-transition-event`).
+- Normalization: zero-width characters (ZWSP, word joiner, BOM) are stripped from matching keys so visually identical names cannot split one patient into two; phone numbers keep "+" only as the international prefix. ZWNJ/ZWJ remain preserved.
+- The repository refuses to adopt a different record occupying a managed path as an idempotent retry; an episode created without a next action no longer stores a phantom due date; `install-to-vault` resolves `dist/` from the repository rather than the caller's working directory; and release verification now scans the shipped stylesheet for identifier-shaped literals and remote `url()` references.
+- The destructive "Move records" migration now requires a typed MOVE confirmation showing the plan, matching its own description.
+
+### Added
+
+- **Task templates:** a Templates-folder note with `clinical_template: task-bundle` frontmatter becomes an applyable bundle ("Tonsillectomy: consent → book OR → post-op review"). Applying is explicit and previewed; identical open tasks are kept, never duplicated. See the data model reference.
+- **Recurring follow-ups:** a task can repeat (weekly to yearly). Completing it raises the next occurrence before the completion is written, so a crash between the two converges on retry; cancelling ends the series.
+- **Reschedule and reopen:** open tasks move to a new date in one step (the idempotency key follows the fields it hashes), and a mis-tapped completion can be reopened from the patient view — audited, and blocked while the episode is archived.
+- **Ward handover note:** one command writes an end-of-day summary of inpatients and overdue/due-today work into the Documents folder. It contains identifiers by design, stays inside the clinical folder, and says so.
+- **Search:** one box across patients, MRNs, cases, tasks, and procedures, from the header or the command palette.
+- **Patient view:** episodes, open and recently closed work, procedures, and audit history on one screen, with reopen for closed tasks.
+- **Episode history:** the existing audit Events shown per episode, newest first.
+- **Today view:** a ward-round list of inpatients in priority order, a "Next 7 days" section, and overdue badges that show the age ("Overdue 12 days") instead of a bare flag.
+- **Tasks view:** filter chips by priority and task type.
+- **Surgery view:** logbook summary (total, this month, as primary, awaiting OR) and a per-procedure breakdown table (total / as primary / this year) for training portfolios.
+- **Forms:** date fields carry +1w/+2w/+1m/+3m quick chips.
+- **Integrity report:** a selectable identifier-free summary (issue codes and counts only) for usable bug reports. Shown as text to copy manually — programmatic clipboard access stays banned by the community preflight.
+- Development-only scale benchmark command; a data model reference (`docs/data-model.md`); seeded random-interleaving tests over the workflow.
+
+### Changed
+
+- Task transition table: `completed → open` is now legal, exclusively for the audited reopen path.
+
 ## [0.5.0] - 2026-08-12
 
 Reliability release implementing the findings of an independent review of

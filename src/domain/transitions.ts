@@ -15,7 +15,9 @@ const ALLOWED_TASK_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   open: ["in-progress", "waiting", "completed", "cancelled", "entered-in-error"],
   "in-progress": ["open", "waiting", "completed", "cancelled", "entered-in-error"],
   waiting: ["open", "in-progress", "completed", "cancelled", "entered-in-error"],
-  completed: ["entered-in-error"],
+  // completed -> open exists for mis-tap recovery. The reopen is audited, so
+  // the trail shows both the completion and the correction.
+  completed: ["open", "entered-in-error"],
   cancelled: ["open", "entered-in-error"],
   "entered-in-error": []
 };
