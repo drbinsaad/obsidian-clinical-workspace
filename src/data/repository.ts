@@ -71,6 +71,19 @@ export class ClinicalRepository {
   private readonly queue = new KeyedWriteQueue();
   /** Parsed records keyed by the exact cachedRead content that produced them. */
   private readonly parsedRecords = new Map<string, { content: string; record: ClinicalRecord | null }>();
+  /**
+   * Parsed records by path, trusted until the path is invalidated.
+   *
+   * Every workflow action lists whole folders, so without this each action
+   * re-reads and re-parses every record note — quadratic-feeling latency at
+   * multi-thousand-record scale on a phone. Obsidian guarantees a vault
+   * event for every file change (including Sync), and the plugin routes all
+   * of them through invalidatePath, so an entry is trustworthy exactly
+   * until then. Write verification uses fresh reads, which update this
+   * index authoritatively; a file's absence is always re-checked against
+   * the live vault before an entry is served.
+   */
+  private readonly recordIndex = new Map<string, ClinicalRecord | null>();
   /** Recorded as the actor on audit notes; set from settings on load. */
   private actor = "local-user";
   /** Non-null while Sync/migration recovery cannot identify one writable root. */
@@ -100,9 +113,15 @@ export class ClinicalRepository {
     if (this.writeBlockReason) throw new Error(this.writeBlockReason);
   }
 
-  /** Drops memoized YAML after Obsidian reports a vault change for this path. */
+  /**
+   * Drops the trusted index entry after Obsidian reports a vault change for
+   * this path. The content-keyed parse memo deliberately survives: it
+   * verifies exact content equality on every use, so it can never serve a
+   * stale record — and a spurious change event (Sync touches a file without
+   * altering it) then re-reads but skips the re-parse.
+   */
   invalidatePath(path: string): void {
-    this.parsedRecords.delete(normalizePath(path));
+    this.recordIndex.delete(normalizePath(path));
   }
 
   private parseRecord(path: string, content: string): ClinicalRecord | null {
@@ -259,10 +278,21 @@ export class ClinicalRepository {
   async read<T extends ClinicalRecord>(path: string, fresh = false): Promise<RecordWithPath<T> | null> {
     const abstract = this.app.vault.getAbstractFileByPath(normalizePath(path));
     if (!(abstract instanceof TFile)) return null;
+    if (!fresh) {
+      // Served from the index only while the file still exists (checked
+      // above) and no vault event has invalidated the path since it was
+      // parsed. This is what keeps whole-folder lists linear-in-changes
+      // instead of linear-in-records on every workflow action.
+      const indexed = this.recordIndex.get(abstract.path);
+      if (indexed !== undefined) {
+        return indexed ? { record: indexed as T, path: abstract.path } : null;
+      }
+    }
     const content = fresh
       ? await this.app.vault.read(abstract)
       : await this.app.vault.cachedRead(abstract);
     const record = this.parseRecord(abstract.path, content);
+    this.recordIndex.set(abstract.path, record);
     return record ? { record: record as T, path: abstract.path } : null;
   }
 
@@ -319,8 +349,14 @@ export class ClinicalRepository {
     const files = markdownFilesInFolder(this.app.vault, folderForEntity(entity));
     const results = await Promise.all(
       files.map(async (file) => {
+        // The healthy common case is served from the index; only files that
+        // are unindexed, unreadable, or wrongly filed re-read their content
+        // (the raw YAML is needed to attribute an unreadable task).
+        const indexed = this.recordIndex.get(file.path);
+        if (indexed !== undefined && indexed?.entity === entity) return null;
         const content = await this.app.vault.cachedRead(file);
         const record = this.parseRecord(file.path, content);
+        this.recordIndex.set(file.path, record);
         if (record?.entity === entity) return null;
         return {
           path: file.path,

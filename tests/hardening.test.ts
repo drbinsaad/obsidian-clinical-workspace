@@ -21,6 +21,9 @@ test("an unreadable task note blocks discharge instead of silently vanishing", a
     episodeInput({ nextAction: "Chase histopathology", dueDate: "2026-08-10" })
   );
   app.vault.writeRaw(created.task!.path, corrupt(app.vault.files.get(created.task!.path)!));
+  // Mirrors the vault modify event Obsidian fires for every external edit,
+  // which the plugin routes to invalidatePath.
+  repository.invalidatePath(created.task!.path);
 
   // The record is now invisible to list(), which is exactly the danger.
   assert.equal((await repository.list<TaskRecord>("task")).length, 0);
@@ -34,9 +37,11 @@ test("an unreadable task note blocks discharge instead of silently vanishing", a
 });
 
 test("integrity reports an unreadable note", async () => {
-  const { service, integrity, app } = await harness();
+  const { service, integrity, repository, app } = await harness();
   const created = await service.createEpisode(episodeInput({ nextAction: "Chase result", dueDate: "2026-08-10" }));
   app.vault.writeRaw(created.task!.path, corrupt(app.vault.files.get(created.task!.path)!));
+  // Mirrors the vault modify event for the external edit.
+  repository.invalidatePath(created.task!.path);
 
   const issues = await integrity.scan();
   const unreadable = issues.filter((issue) => issue.code === "unreadable-record");

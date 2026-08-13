@@ -107,6 +107,8 @@ test("a hand-edited record does not take down the whole snapshot", async () => {
     bad.episode.path,
     raw.replace(/^case: Bad case$/m, "case:").replace(/^priority: routine$/m, "priority: Routine")
   );
+  // Mirrors the vault modify event for the external edit.
+  repository.invalidatePath(bad.episode.path);
 
   const snapshot = await repository.snapshot();
   assert.equal(snapshot.episodes.length, 2, "both episodes still load");
@@ -121,13 +123,15 @@ test("a hand-edited record does not take down the whole snapshot", async () => {
 });
 
 test("integrity reports the corrupt record rather than passing silently", async () => {
-  const { service, integrity, app } = await harness();
+  const { service, integrity, repository, app } = await harness();
   const bad = await service.createEpisode(episodeInput({ caseName: "Bad case" }));
   const raw = app.vault.files.get(bad.episode.path)!;
   app.vault.writeRaw(
     bad.episode.path,
     raw.replace(/^case: Bad case$/m, "case:").replace(/^priority: routine$/m, "priority: Routine")
   );
+  // Mirrors the vault modify event for the external edit.
+  repository.invalidatePath(bad.episode.path);
 
   const issues = await integrity.scan();
   const codes = issues.map((issue) => issue.code);
