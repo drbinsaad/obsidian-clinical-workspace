@@ -94,6 +94,21 @@ if (await exists("dist/main.js")) {
   ok("dist/main.js contains no network, eval or innerHTML usage");
 }
 
+// --- Shipped stylesheet -----------------------------------------------------
+// styles.css ships in every release too. It should never carry an
+// identifier-shaped literal or a remote url() — a pasted MRN in a comment or
+// an external font would otherwise pass every gate above.
+if (await exists("dist/styles.css")) {
+  const stylesheet = await readFile(url("dist/styles.css"), "utf8");
+  const styleDigits = stylesheet.match(/(?<![\w.])\d{7,}(?![\w.])/g) ?? [];
+  if (styleDigits.length) {
+    fail(`dist/styles.css contains identifier-shaped literals: ${[...new Set(styleDigits)].join(", ")}`);
+  } else ok("dist/styles.css contains no identifier-shaped literals");
+  if (/url\s*\(\s*["']?(?:https?:)?\/\//i.test(stylesheet)) {
+    fail("dist/styles.css references a remote url()");
+  } else ok("dist/styles.css references no remote resources");
+}
+
 // --- Report -----------------------------------------------------------------
 console.log("");
 if (failures.length) {

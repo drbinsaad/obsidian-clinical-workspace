@@ -75,6 +75,12 @@ export class IntegrityService {
     // usable on phone-class hardware at multi-thousand-record scale.
     const episodeById = new Map(episodes.map((item) => [item.record.id, item] as const));
     const eventTargets = new Set(events.map((item) => item.record.target_id));
+    const actionsByTarget = new Map<string, Set<string>>();
+    for (const event of events) {
+      const actions = actionsByTarget.get(event.record.target_id) ?? new Set<string>();
+      actions.add(event.record.action);
+      actionsByTarget.set(event.record.target_id, actions);
+    }
 
     // --- Structure ----------------------------------------------------------
     // A managed folder moved in the file explorer detaches every record inside
@@ -105,7 +111,9 @@ export class IntegrityService {
     }
 
     // --- Field-level validation (shared central validators) -----------------
-    for (const list of [patients, episodes, tasks, procedures] as const) {
+    // Events are included: their declared timestamp checks were unreachable
+    // when only the four workflow entities passed through validateRecord.
+    for (const list of [patients, episodes, tasks, procedures, events] as const) {
       for (const item of list) {
         for (const problem of validateRecord(item.record)) {
           issues.push({
@@ -389,6 +397,36 @@ export class IntegrityService {
           path: item.path
         });
       }
+    }
+    // Zero events is one failure mode; a lost transition event is another. A
+    // closed record whose trail exists but lacks its closure entry means an
+    // audit write failed mid-workflow — found here while still traceable.
+    const expectClosure = (
+      id: string,
+      path: string,
+      closed: boolean,
+      action: string,
+      description: string
+    ): void => {
+      const actions = actionsByTarget.get(id);
+      if (!closed || !actions || actions.has(action)) return;
+      issues.push({
+        code: "missing-transition-event",
+        severity: "warning",
+        message: `This record is ${description} but its audit trail has no matching entry. An audit note write may have failed; the record itself is intact.`,
+        recordId: id,
+        path
+      });
+    };
+    for (const task of tasks) {
+      expectClosure(task.record.id, task.path, task.record.status === "completed", "task-completed", "completed");
+      expectClosure(task.record.id, task.path, task.record.status === "cancelled", "task-cancelled", "cancelled");
+    }
+    for (const episode of episodes) {
+      expectClosure(episode.record.id, episode.path, episode.record.status === "archived", "episode-archived", "archived");
+    }
+    for (const patient of patients) {
+      expectClosure(patient.record.id, patient.path, Boolean(patient.record.merged_into), "patient-merged", "merged");
     }
 
     return {

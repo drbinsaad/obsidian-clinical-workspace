@@ -135,6 +135,12 @@ export interface TaskRecord extends BaseRecord {
   completed_at: string;
   cancelled_at: string;
   cancel_reason: string;
+  /**
+   * Days between recurrences; 0 or absent means one-off. Completing (not
+   * cancelling) a recurring task raises the next occurrence automatically.
+   * Absent on records written before 0.6.0.
+   */
+  repeat_every_days?: number;
   idempotency_key: string;
 }
 
@@ -208,6 +214,8 @@ export interface NewTaskInput {
   priority: Priority;
   dueDate: string;
   owner: string;
+  /** Days between recurrences; 0 or absent creates a one-off task. */
+  repeatEveryDays?: number;
 }
 
 export interface EpisodeUpdateInput {
@@ -216,12 +224,20 @@ export interface EpisodeUpdateInput {
   priority: Priority;
   nextAction: string;
   dueDate: string;
+  /**
+   * `updated_at` of the record the form was seeded from. When set, the save
+   * is refused if the record changed after the form opened, so a stale
+   * snapshot cannot silently revert another device's edit.
+   */
+  expectedUpdatedAt?: string;
 }
 
 export interface PatientIdentityInput {
   mrn: string;
   patientName: string;
   phone: string;
+  /** Same stale-snapshot guard as EpisodeUpdateInput. */
+  expectedUpdatedAt?: string;
 }
 
 export interface CompleteProcedureInput {

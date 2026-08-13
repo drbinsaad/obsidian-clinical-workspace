@@ -130,7 +130,9 @@ test("restore picks a status consistent with the episode's outstanding work", ()
 test("state machines reject illegal transitions", () => {
   assert.equal(canTransitionEpisode("entered-in-error", "active"), false);
   assert.equal(canTransitionEpisode("archived", "active"), true);
-  assert.equal(canTransitionTask("completed", "open"), false);
+  // completed -> open exists for audited mis-tap recovery (reopen).
+  assert.equal(canTransitionTask("completed", "open"), true);
+  assert.equal(canTransitionTask("entered-in-error", "open"), false);
   assert.equal(canTransitionTask("open", "cancelled"), true);
 });
 

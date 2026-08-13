@@ -119,9 +119,18 @@ export function isClinicalEntity(value: unknown): value is EntityType {
 export function coerceFrontmatterValue(key: string, value: unknown): unknown {
   if (value instanceof Date) {
     if (DATE_ONLY_FIELDS.has(key)) {
-      const year = value.getFullYear();
-      const month = String(value.getMonth() + 1).padStart(2, "0");
-      const day = String(value.getDate()).padStart(2, "0");
+      // YAML 1.1 parses a bare `2026-08-03` as exactly UTC midnight; reading
+      // it with local getters shifts the day backwards anywhere west of
+      // Greenwich. A Date at any other instant was produced as a local
+      // moment, where the local calendar day is the intended one.
+      const isUtcMidnight =
+        value.getUTCHours() === 0 &&
+        value.getUTCMinutes() === 0 &&
+        value.getUTCSeconds() === 0 &&
+        value.getUTCMilliseconds() === 0;
+      const year = isUtcMidnight ? value.getUTCFullYear() : value.getFullYear();
+      const month = String((isUtcMidnight ? value.getUTCMonth() : value.getMonth()) + 1).padStart(2, "0");
+      const day = String(isUtcMidnight ? value.getUTCDate() : value.getDate()).padStart(2, "0");
       return `${year}-${month}-${day}`;
     }
     return value.toISOString();

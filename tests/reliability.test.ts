@@ -420,7 +420,10 @@ test("the integrity scan stays linear on a large balanced synthetic caseload", a
     for (let t = 0; t < 5; t += 1) {
       const taskId = `TSK-h${index}-${t}`;
       vault.writeRaw(`${root}/Tasks/${taskId}.md`, `---\nschema_version: 3\nentity: task\nid: ${taskId}\ncreated_at: "2026-08-11T00:00:00.000Z"\nupdated_at: "2026-08-11T00:00:00.000Z"\ntags: []\npatient_id: ${patientId}\npatient: "link"\nepisode_id: ${episodeId}\nepisode: "link"\ntask: "Synthetic task ${index}-${t}"\ntask_type: clinical-review\nstatus: completed\npriority: routine\ndue_date: "2026-09-01"\nowner: ""\ncompleted_at: "2026-08-11T00:00:00.000Z"\ncancelled_at: ""\ncancel_reason: ""\nidempotency_key: task-h${index}${t}\n---\n`);
-      vault.writeRaw(`${root}/Events/EVT-t${index}-${t}.md`, `---\nschema_version: 3\nentity: event\nid: EVT-t${index}-${t}\ncreated_at: "2026-08-11T00:00:00.000Z"\nupdated_at: "2026-08-11T00:00:00.000Z"\ntags: []\naction: task-created\nactor: local-user\npatient_id: ${patientId}\nepisode_id: ${episodeId}\ntarget_id: ${taskId}\ntarget_entity: task\nsummary: "Task created"\nprevious_state: ""\nnew_state: open\n---\n`);
+      // The seeded tasks are completed, so a healthy trail carries the
+      // closure event — the audit-transition check would rightly flag a
+      // completed task whose only event is its creation.
+      vault.writeRaw(`${root}/Events/EVT-t${index}-${t}.md`, `---\nschema_version: 3\nentity: event\nid: EVT-t${index}-${t}\ncreated_at: "2026-08-11T00:00:00.000Z"\nupdated_at: "2026-08-11T00:00:00.000Z"\ntags: []\naction: task-completed\nactor: local-user\npatient_id: ${patientId}\nepisode_id: ${episodeId}\ntarget_id: ${taskId}\ntarget_entity: task\nsummary: "Task completed"\nprevious_state: open\nnew_state: completed\n---\n`);
     }
     for (let p = 0; p < 2; p += 1) {
       const procedureId = `PRC-h${index}-${p}`;

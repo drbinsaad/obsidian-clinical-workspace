@@ -4,6 +4,7 @@ import type {
   CompleteProcedureInput,
   EpisodeRecord,
   EpisodeUpdateInput,
+  EventRecord,
   IntegrityIssue,
   MergePreview,
   NewEpisodeInput,
@@ -12,6 +13,7 @@ import type {
   PatientRecord,
   Pathway,
   Priority,
+  ProcedureRecord,
   TaskRecord,
   TaskType
 } from "../domain/types";
@@ -25,10 +27,13 @@ import {
   careSettingLabel,
   displayMrn,
   displayPhone,
+  isoDateWithOffset,
   pathwayLabel,
   priorityLabel,
+  taskIsOpen,
   todayIso
 } from "../domain/schema";
+import type { TaskBundle } from "../data/templates";
 import type { QuickEntryAction } from "../quick-entry";
 
 type AsyncSubmit<T> = (value: T) => Promise<void>;
@@ -532,8 +537,20 @@ export class QuickEntryEpisodeModal extends ClinicalResponsiveModal {
   }
 }
 
+/**
+ * A dropdown can only display values it offers. Seeding it with an
+ * unrecognised frontmatter value makes it SHOW the first option while the
+ * form still SUBMITS the invalid one — the user approves a value they never
+ * saw. The seed is folded to a valid option so display and write agree.
+ */
+function seedOption<T extends string>(value: string, allowed: readonly T[], fallback: T): T {
+  return (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+}
+
 export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
   private errorEl: HTMLElement | null = null;
+  private cancelEl: HTMLButtonElement | null = null;
+  private submitting = false;
 
   protected constructor(
     app: App,
@@ -543,14 +560,53 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
     super(app);
   }
 
+  close(): void {
+    // Escape or a backdrop tap during an in-flight submit would let the
+    // modal report cancellation while the clinical write completes anyway.
+    // The submit settles within moments and then decides: close on success,
+    // stay open with the error on failure.
+    if (this.submitting) return;
+    super.close();
+  }
+
   protected abstract value(): T;
 
-  protected addDateSetting(container: HTMLElement, label: string, value: string, onChange: (value: string) => void): void {
+  protected addDateSetting(
+    container: HTMLElement,
+    label: string,
+    value: string,
+    onChange: (value: string) => void,
+    quickOffsets = false
+  ): void {
+    let dateInput: HTMLInputElement | null = null;
     namedSetting(container, label).addText((component) => {
       component.inputEl.type = "date";
       component.inputEl.setAttribute("aria-label", label);
       component.setValue(value).onChange(onChange);
+      dateInput = component.inputEl;
     });
+    if (!quickOffsets) return;
+    // Interval chips: clinicians think in "see again in two weeks", and
+    // typing a date is the slowest input in the form on a phone.
+    const chips = container.createDiv({ cls: "clinical-date-chips" });
+    const offsets: ReadonlyArray<[string, number, string]> = [
+      ["+1w", 7, "one week from today"],
+      ["+2w", 14, "two weeks from today"],
+      ["+1m", 30, "one month from today"],
+      ["+3m", 90, "three months from today"]
+    ];
+    for (const [chipLabel, days, description] of offsets) {
+      const chip = chips.createEl("button", {
+        text: chipLabel,
+        cls: "clinical-chip",
+        attr: { type: "button", "aria-label": `Set ${label.toLocaleLowerCase()} ${description}` }
+      });
+      chip.addEventListener("click", () => {
+        const next = isoDateWithOffset(days);
+        if (dateInput) dateInput.value = next;
+        onChange(next);
+      });
+    }
   }
 
   protected addActions(container: HTMLElement): void {
@@ -560,6 +616,7 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
     const actions = container.createDiv({ cls: "clinical-modal-actions" });
     const cancel = actions.createEl("button", { text: "Cancel" });
     cancel.addEventListener("click", () => this.close());
+    this.cancelEl = cancel;
     const submit = actions.createEl("button", {
       text: this.submitLabel,
       cls: "mod-cta"
@@ -581,9 +638,12 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
   private async handleSubmit(button: HTMLButtonElement): Promise<void> {
     if (button.disabled) return;
     button.disabled = true;
+    this.submitting = true;
+    if (this.cancelEl) this.cancelEl.disabled = true;
     this.errorEl?.hide();
     try {
       await this.onSubmit(this.value());
+      this.submitting = false;
       this.close();
     } catch (error) {
       const message = error instanceof Error ? error.message : "The clinical action could not be completed.";
@@ -592,6 +652,8 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
         this.errorEl.show();
       }
       new Notice(message, 7000);
+      this.submitting = false;
+      if (this.cancelEl) this.cancelEl.disabled = false;
       button.disabled = false;
     }
   }
@@ -678,7 +740,7 @@ export class NewEpisodeModal extends ClinicalModal<NewEpisodeInput> {
         .setPlaceholder("What must happen next?")
         .onChange((value) => (this.input.nextAction = value));
     });
-    this.addDateSetting(form, "Due date", this.input.dueDate, (value) => (this.input.dueDate = value));
+    this.addDateSetting(form, "Due date", this.input.dueDate, (value) => (this.input.dueDate = value), true);
     this.addActions(this.contentEl);
   }
 
@@ -749,7 +811,7 @@ export class NewTaskModal extends ClinicalModal<NewTaskInput> {
       episodeId: episode.id,
       task: "",
       taskType: "clinical-review",
-      priority: episode.priority,
+      priority: seedOption(episode.priority, PRIORITIES, "routine"),
       dueDate: episode.due_date || todayIso(),
       owner: ""
     };
@@ -766,12 +828,30 @@ export class NewTaskModal extends ClinicalModal<NewTaskInput> {
         this.input.taskType = value as TaskType;
       });
     });
-    this.addDateSetting(form, "Due date", this.input.dueDate, (value) => (this.input.dueDate = value));
+    this.addDateSetting(form, "Due date", this.input.dueDate, (value) => (this.input.dueDate = value), true);
     namedSetting(form, "Priority").addDropdown((field) => {
       field.addOptions(PRIORITY_OPTIONS).setValue(this.input.priority).onChange((value) => {
         this.input.priority = value as Priority;
       });
     });
+    namedSetting(form, "Repeat")
+      .setDesc("Completing the task schedules the next occurrence; cancelling stops the series.")
+      .addDropdown((field) => {
+        field
+          .addOptions({
+            "0": "No repeat",
+            "7": "Weekly",
+            "14": "Every 2 weeks",
+            "30": "Monthly",
+            "90": "Every 3 months",
+            "180": "Every 6 months",
+            "365": "Yearly"
+          })
+          .setValue(String(this.input.repeatEveryDays ?? 0))
+          .onChange((value) => {
+            this.input.repeatEveryDays = Number(value) || 0;
+          });
+      });
     namedSetting(form, "Owner").addText((field) => {
       field.setPlaceholder("Optional team member").onChange((value) => (this.input.owner = value));
     });
@@ -783,6 +863,36 @@ export class NewTaskModal extends ClinicalModal<NewTaskInput> {
   }
 }
 
+/** Moves an open task to a new date without the cancel-and-recreate dance. */
+export class RescheduleTaskModal extends ClinicalModal<string> {
+  private dueDate: string;
+  private readonly task: TaskRecord;
+
+  constructor(app: App, task: TaskRecord, onSubmit: AsyncSubmit<string>) {
+    super(app, "Reschedule", onSubmit);
+    this.task = task;
+    this.dueDate = task.due_date || todayIso();
+  }
+
+  onOpen(): void {
+    const form = this.prepare(
+      "Reschedule task",
+      "The task keeps its wording, priority, and owner; only the due date moves."
+    );
+    form.createEl("h3", { text: this.task.task, attr: { dir: "auto" } });
+    if (this.task.due_date) {
+      form.createEl("p", { text: `Currently due ${this.task.due_date}`, cls: "clinical-card-meta" });
+    }
+    this.addDateSetting(form, "New due date", this.dueDate, (value) => (this.dueDate = value), true);
+    this.addActions(this.contentEl);
+  }
+
+  protected value(): string {
+    if (!this.dueDate) throw new Error("Choose the new due date.");
+    return this.dueDate;
+  }
+}
+
 export class UpdateEpisodeModal extends ClinicalModal<EpisodeUpdateInput> {
   private input: EpisodeUpdateInput;
   private readonly episode: EpisodeRecord;
@@ -791,11 +901,14 @@ export class UpdateEpisodeModal extends ClinicalModal<EpisodeUpdateInput> {
     super(app, "Save changes", onSubmit);
     this.episode = episode;
     this.input = {
-      careSetting: episode.care_setting,
-      pathway: episode.pathway,
-      priority: episode.priority,
+      careSetting: seedOption(episode.care_setting, CARE_SETTINGS, "outpatient"),
+      pathway: seedOption(episode.pathway, PATHWAYS, "assessment"),
+      priority: seedOption(episode.priority, PRIORITIES, "routine"),
       nextAction: episode.next_action,
-      dueDate: episode.due_date
+      dueDate: episode.due_date,
+      // Saving over a record that changed after this form opened would
+      // silently revert fields the user never touched.
+      expectedUpdatedAt: episode.updated_at
     };
   }
 
@@ -827,7 +940,7 @@ export class UpdateEpisodeModal extends ClinicalModal<EpisodeUpdateInput> {
           this.input.nextAction = value;
         });
       });
-    this.addDateSetting(form, "Due date", this.input.dueDate, (value) => (this.input.dueDate = value));
+    this.addDateSetting(form, "Due date", this.input.dueDate, (value) => (this.input.dueDate = value), true);
     this.addActions(this.contentEl);
   }
 
@@ -844,7 +957,9 @@ export class PatientIdentityModal extends ClinicalModal<PatientIdentityInput> {
     this.input = {
       mrn: patient.mrn,
       patientName: patient.patient_name,
-      phone: patient.phone
+      phone: patient.phone,
+      // Same stale-snapshot guard as the episode form.
+      expectedUpdatedAt: patient.updated_at
     };
   }
 
@@ -876,6 +991,14 @@ export class PatientIdentityModal extends ClinicalModal<PatientIdentityInput> {
 export class MergePatientsModal extends ClinicalResponsiveModal {
   private targetId = "";
   private typedConfirmation = "";
+  private merging = false;
+
+  close(): void {
+    // A merge in flight re-points many notes; dismissing the modal mid-way
+    // would report cancellation while the writes complete anyway.
+    if (this.merging) return;
+    super.close();
+  }
 
   constructor(
     app: App,
@@ -969,13 +1092,18 @@ export class MergePatientsModal extends ClinicalResponsiveModal {
           return;
         }
         confirm.disabled = true;
+        cancel.disabled = true;
+        this.merging = true;
         errorEl.hide();
         try {
           await this.onConfirm(this.targetId);
+          this.merging = false;
           this.close();
         } catch (error) {
           errorEl.setText(error instanceof Error ? error.message : "The merge could not be completed.");
           errorEl.show();
+          this.merging = false;
+          cancel.disabled = false;
           confirm.disabled = false;
         }
       })();
@@ -1129,7 +1257,7 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
     followUpFields.hidden = !this.input.followUpRequired;
     this.addDateSetting(followUpFields, "Follow-up date", this.input.followUpDate, (value) => {
       this.input.followUpDate = value;
-    });
+    }, true);
     namedSetting(followUpFields, "Follow-up plan").addText((field) => {
       field.setPlaceholder("Required only when follow-up is on").onChange((value) => {
         this.input.followUpPlan = value;
@@ -1180,6 +1308,38 @@ export class IntegrityReportModal extends ClinicalResponsiveModal {
     body.createEl("p", {
       text: `${this.issues.length} issue${this.issues.length === 1 ? "" : "s"} found (${errors} error${errors === 1 ? "" : "s"}). Open a record to correct it.`,
       cls: "clinical-section-note"
+    });
+    // Identifier-free summary for a bug report: issue codes and counts only —
+    // no record ids, paths, or clinical text. Shown as selectable text and
+    // copied manually: programmatic clipboard access is deliberately banned
+    // by the community preflight, because the clipboard leaves the app.
+    const show = body.createEl("button", {
+      text: "Show identifier-free summary",
+      cls: "clinical-card-button"
+    });
+    const summaryBox = body.createEl("textarea", {
+      cls: "clinical-summary-export",
+      attr: { readonly: "readonly", rows: "6", "aria-label": "Identifier-free integrity summary" }
+    });
+    summaryBox.hide();
+    show.addEventListener("click", () => {
+      const counts = new Map<string, number>();
+      for (const issue of this.issues) {
+        const key = `${issue.code} (${issue.severity})`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      summaryBox.value = [
+        "Clinical Workspace integrity summary",
+        this.checkScope
+          ? `${this.checkScope.checkFamilies} check families over ${this.checkScope.scannedRecords} records`
+          : "scope not recorded",
+        ...[...counts.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([key, count]) => `- ${key}: ${count}`)
+      ].join("\n");
+      summaryBox.show();
+      summaryBox.focus();
+      summaryBox.select();
     });
     const list = body.createDiv({ cls: "clinical-integrity-list" });
     for (const issue of this.issues) {
@@ -1299,6 +1459,403 @@ export class ConfirmMaintenanceModal extends ClinicalResponsiveModal {
   onClose(): void {
     if (!this.decided) this.options.onDecide(false);
     this.contentEl.empty();
+  }
+}
+
+/**
+ * Previews a task-bundle template and applies it on explicit confirmation.
+ * The ordinary duplicate suppression means re-applying a bundle is safe.
+ */
+export class ApplyTemplateModal extends ClinicalResponsiveModal {
+  constructor(
+    app: App,
+    private readonly episodeCase: string,
+    private readonly bundles: readonly TaskBundle[],
+    private readonly onApply: (bundle: TaskBundle) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("clinical-modal");
+    this.contentEl.empty();
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
+    body.createEl("h2", { text: "Apply task template", cls: "clinical-modal-heading" });
+    body.createEl("p", {
+      text: `Creates the template's standard tasks for ${bidiIsolate(this.episodeCase) || "this episode"}. Identical open tasks are kept, not duplicated. Nothing runs automatically.`,
+      cls: "clinical-section-note"
+    });
+    if (!this.bundles.length) {
+      body.createEl("p", {
+        text: "No task template matches this episode. Create one in the templates folder — see the data model reference for the format.",
+        cls: "clinical-empty"
+      });
+    }
+    const list = body.createDiv({ cls: "clinical-list" });
+    for (const bundle of this.bundles) {
+      const card = list.createDiv({ cls: "clinical-card" });
+      const top = card.createDiv({ cls: "clinical-card-top" });
+      top.createEl("h4", { text: bundle.name, attr: { dir: "auto" } });
+      top.createSpan({
+        text: `${bundle.tasks.length} task${bundle.tasks.length === 1 ? "" : "s"}`,
+        cls: "clinical-card-meta"
+      });
+      if (bundle.pathway) {
+        card.createEl("p", { text: pathwayLabel(bundle.pathway), cls: "clinical-card-meta" });
+      }
+      for (const item of bundle.tasks.slice(0, 6)) {
+        card.createEl("p", {
+          text: `• ${item.task}${item.dueInDays !== null ? ` — due in ${item.dueInDays} day${item.dueInDays === 1 ? "" : "s"}` : ""}`,
+          cls: "clinical-card-meta",
+          attr: { dir: "auto" }
+        });
+      }
+      if (bundle.tasks.length > 6) {
+        card.createEl("p", { text: `…and ${bundle.tasks.length - 6} more`, cls: "clinical-card-meta" });
+      }
+      const actions = card.createDiv({ cls: "clinical-card-actions" });
+      const apply = actions.createEl("button", {
+        text: "Apply template",
+        cls: "clinical-card-button mod-cta",
+        attr: { "aria-label": `Apply template ${bundle.name}` }
+      });
+      apply.addEventListener("click", () => {
+        this.close();
+        this.onApply(bundle);
+      });
+    }
+    const footer = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
+    const cancel = footer.createEl("button", { text: "Cancel" });
+    cancel.addEventListener("click", () => this.close());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+/** Chronological audit trail for one episode, from the existing Event notes. */
+export class EpisodeHistoryModal extends ClinicalResponsiveModal {
+  constructor(
+    app: App,
+    private readonly episodeCase: string,
+    private readonly events: readonly EventRecord[]
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("clinical-modal");
+    this.contentEl.empty();
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
+    body.createEl("h2", { text: "Episode history", cls: "clinical-modal-heading" });
+    body.createEl("p", {
+      text: `${bidiIsolate(this.episodeCase) || "Episode"} — audit events recorded on this device, newest first.`,
+      cls: "clinical-section-note"
+    });
+    const sorted = [...this.events].sort((a, b) => b.created_at.localeCompare(a.created_at));
+    if (!sorted.length) {
+      body.createEl("p", { text: "No audit events recorded for this episode.", cls: "clinical-empty" });
+    }
+    const list = body.createDiv({ cls: "clinical-integrity-list" });
+    for (const event of sorted.slice(0, 100)) {
+      const row = list.createDiv({ cls: "clinical-integrity-issue" });
+      const head = row.createDiv({ cls: "clinical-card-top" });
+      head.createEl("strong", { text: event.summary || event.action });
+      head.createSpan({ text: event.created_at.slice(0, 16).replace("T", " "), cls: "clinical-card-meta" });
+      const change = [event.previous_state, event.new_state].filter(Boolean).join(" → ");
+      row.createEl("p", {
+        text: `${event.action}${change ? ` · ${change}` : ""} · ${event.actor}`,
+        cls: "clinical-card-meta"
+      });
+    }
+    if (sorted.length > 100) {
+      body.createEl("p", { text: `Showing the most recent 100 of ${sorted.length} events.`, cls: "clinical-section-note" });
+    }
+    const footer = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
+    const close = footer.createEl("button", { text: "Close", cls: "mod-cta" });
+    close.addEventListener("click", () => this.close());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+export interface PatientDetailData {
+  patient: PatientRecord;
+  episodes: EpisodeRecord[];
+  tasks: TaskRecord[];
+  procedures: ProcedureRecord[];
+  events: EventRecord[];
+}
+
+/** One screen per patient: episodes, work, logbook, and trail together. */
+export class PatientDetailModal extends ClinicalResponsiveModal {
+  constructor(
+    app: App,
+    private readonly data: PatientDetailData,
+    private readonly onOpenRecord: (entity: "patient" | "episode" | "task" | "procedure", id: string) => void,
+    private readonly onReopenTask: (taskId: string) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("clinical-modal");
+    this.contentEl.empty();
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
+    const { patient } = this.data;
+    body.createEl("h2", {
+      text: patient.patient_name ? bidiIsolate(patient.patient_name) : "Patient record",
+      cls: "clinical-modal-heading",
+      attr: { dir: "auto" }
+    });
+    body.createEl("p", {
+      text: `${patientIdentityLabel(patient.mrn, patient.patient_name)} · Phone ${displayPhone(patient.phone)} · ${patient.status}`,
+      cls: "clinical-section-note"
+    });
+
+    const section = (title: string, note: string): HTMLElement => {
+      const header = body.createDiv({ cls: "clinical-section-header" });
+      header.createEl("h3", { text: title });
+      header.createSpan({ text: note, cls: "clinical-section-note" });
+      return body.createDiv({ cls: "clinical-list" });
+    };
+
+    const episodes = [...this.data.episodes].sort((a, b) => b.opened_at.localeCompare(a.opened_at));
+    const episodeList = section("Episodes", `${episodes.length} total`);
+    if (!episodes.length) episodeList.createDiv({ text: "No episodes.", cls: "clinical-empty" });
+    for (const episode of episodes.slice(0, 20)) {
+      const card = episodeList.createDiv({ cls: "clinical-card" });
+      const top = card.createDiv({ cls: "clinical-card-top" });
+      top.createEl("h4", { text: episode.case || "Case not recorded", attr: { dir: "auto" } });
+      top.createSpan({ text: episode.status, cls: "clinical-card-meta" });
+      card.createEl("p", { text: pathwayLabel(episode.pathway), cls: "clinical-card-meta" });
+      const actions = card.createDiv({ cls: "clinical-card-actions" });
+      const open = actions.createEl("button", {
+        text: "Open",
+        cls: "clinical-card-button",
+        attr: { "aria-label": `Open episode ${bidiIsolate(episode.case) || episode.id}` }
+      });
+      open.addEventListener("click", () => {
+        this.close();
+        this.onOpenRecord("episode", episode.id);
+      });
+    }
+
+    const openTasks = this.data.tasks.filter(taskIsOpen);
+    const openList = section("Open work", `${openTasks.length} task${openTasks.length === 1 ? "" : "s"}`);
+    if (!openTasks.length) openList.createDiv({ text: "Nothing outstanding.", cls: "clinical-empty" });
+    for (const task of openTasks.slice(0, 20)) {
+      const card = openList.createDiv({ cls: "clinical-card" });
+      const top = card.createDiv({ cls: "clinical-card-top" });
+      top.createEl("h4", { text: task.task || "Task not recorded", attr: { dir: "auto" } });
+      top.createSpan({ text: task.due_date || "No date", cls: "clinical-card-meta" });
+    }
+
+    // Closed work is where a mis-tapped completion is recovered from — the
+    // open-task lists elsewhere can never show it.
+    const closedTasks = this.data.tasks
+      .filter((task) => ["completed", "cancelled"].includes(task.status))
+      .sort((a, b) =>
+        `${b.completed_at || b.cancelled_at || ""}`.localeCompare(`${a.completed_at || a.cancelled_at || ""}`)
+      );
+    const closedList = section("Recently closed", `${closedTasks.length} task${closedTasks.length === 1 ? "" : "s"}`);
+    if (!closedTasks.length) closedList.createDiv({ text: "No closed tasks.", cls: "clinical-empty" });
+    const closableEpisodes = new Set(
+      this.data.episodes
+        .filter((episode) => !["archived", "cancelled", "entered-in-error"].includes(episode.status))
+        .map((episode) => episode.id)
+    );
+    for (const task of closedTasks.slice(0, 10)) {
+      const card = closedList.createDiv({ cls: "clinical-card" });
+      const top = card.createDiv({ cls: "clinical-card-top" });
+      top.createEl("h4", { text: task.task || "Task not recorded", attr: { dir: "auto" } });
+      top.createSpan({ text: task.status, cls: "clinical-card-meta" });
+      if (closableEpisodes.has(task.episode_id)) {
+        const actions = card.createDiv({ cls: "clinical-card-actions" });
+        const reopen = actions.createEl("button", {
+          text: "Reopen",
+          cls: "clinical-card-button",
+          attr: { "aria-label": `Reopen task ${bidiIsolate(task.task) || task.id}` }
+        });
+        reopen.addEventListener("click", () => {
+          this.close();
+          this.onReopenTask(task.id);
+        });
+      }
+    }
+
+    const procedures = [...this.data.procedures].sort((a, b) =>
+      (b.procedure_date || "").localeCompare(a.procedure_date || "")
+    );
+    const procedureList = section("Procedures", `${procedures.length} logged`);
+    if (!procedures.length) procedureList.createDiv({ text: "No procedures logged.", cls: "clinical-empty" });
+    for (const procedure of procedures.slice(0, 10)) {
+      const card = procedureList.createDiv({ cls: "clinical-card" });
+      const top = card.createDiv({ cls: "clinical-card-top" });
+      top.createEl("h4", { text: procedure.procedure || "Procedure not recorded", attr: { dir: "auto" } });
+      top.createSpan({ text: procedure.procedure_date || "No date", cls: "clinical-card-meta" });
+    }
+
+    const events = [...this.data.events].sort((a, b) => b.created_at.localeCompare(a.created_at));
+    const eventList = section("Recent history", `${events.length} audit event${events.length === 1 ? "" : "s"}`);
+    if (!events.length) eventList.createDiv({ text: "No audit events.", cls: "clinical-empty" });
+    for (const event of events.slice(0, 15)) {
+      const row = eventList.createDiv({ cls: "clinical-integrity-issue" });
+      const head = row.createDiv({ cls: "clinical-card-top" });
+      head.createEl("strong", { text: event.summary || event.action });
+      head.createSpan({ text: event.created_at.slice(0, 16).replace("T", " "), cls: "clinical-card-meta" });
+    }
+
+    const footer = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
+    const close = footer.createEl("button", { text: "Close", cls: "mod-cta" });
+    close.addEventListener("click", () => this.close());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+export interface ClinicalSearchData {
+  patients: PatientRecord[];
+  episodes: EpisodeRecord[];
+  tasks: TaskRecord[];
+  procedures: ProcedureRecord[];
+}
+
+/** One search box across patients, episodes, tasks, and the logbook. */
+export class ClinicalSearchModal extends ClinicalResponsiveModal {
+  private query = "";
+  private resultsEl: HTMLElement | null = null;
+
+  constructor(
+    app: App,
+    private readonly data: ClinicalSearchData,
+    private readonly onOpenRecord: (entity: "patient" | "episode" | "task" | "procedure", id: string) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("clinical-modal");
+    this.contentEl.empty();
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body clinical-episode-picker-body" });
+    body.createEl("h2", { text: "Search clinical records", cls: "clinical-modal-heading" });
+    const search = body.createEl("input", {
+      cls: "clinical-quick-entry-search",
+      attr: {
+        type: "search",
+        placeholder: "Patient, MRN, case, task, or procedure",
+        "aria-label": "Search clinical records",
+        autocomplete: "off"
+      }
+    });
+    search.addEventListener("input", () => {
+      this.query = search.value;
+      this.renderResults();
+    });
+    this.resultsEl = body.createDiv({ cls: "clinical-quick-entry-results" });
+    this.renderResults();
+    const footer = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
+    const cancel = footer.createEl("button", { text: "Close" });
+    cancel.addEventListener("click", () => this.close());
+    queueMicrotask(() => search.focus());
+  }
+
+  onClose(): void {
+    this.query = "";
+    this.resultsEl = null;
+    this.contentEl.empty();
+  }
+
+  private renderResults(): void {
+    if (!this.resultsEl) return;
+    this.resultsEl.empty();
+    const query = this.query.trim().toLocaleLowerCase();
+    if (query.length < 2) {
+      this.resultsEl.createEl("p", {
+        text: "Type at least two characters to search.",
+        cls: "clinical-empty"
+      });
+      return;
+    }
+    const matches = (text: string): boolean => text.toLocaleLowerCase().includes(query);
+    const groups: Array<{
+      title: string;
+      rows: Array<{ label: string; meta: string; entity: "patient" | "episode" | "task" | "procedure"; id: string }>;
+    }> = [
+      {
+        title: "Patients",
+        rows: this.data.patients
+          .filter((patient) => matches(`${patient.patient_name} ${patient.mrn}`))
+          .slice(0, 8)
+          .map((patient) => ({
+            label: patientIdentityLabel(patient.mrn, patient.patient_name),
+            meta: patient.status,
+            entity: "patient",
+            id: patient.id
+          }))
+      },
+      {
+        title: "Episodes",
+        rows: this.data.episodes
+          .filter((episode) => matches(episode.case))
+          .slice(0, 8)
+          .map((episode) => ({
+            label: episode.case || "Case not recorded",
+            meta: `${pathwayLabel(episode.pathway)} · ${episode.status}`,
+            entity: "episode",
+            id: episode.id
+          }))
+      },
+      {
+        title: "Tasks",
+        rows: this.data.tasks
+          .filter((task) => matches(task.task))
+          .slice(0, 8)
+          .map((task) => ({
+            label: task.task || "Task not recorded",
+            meta: `${task.status}${task.due_date ? ` · due ${task.due_date}` : ""}`,
+            entity: "task",
+            id: task.id
+          }))
+      },
+      {
+        title: "Procedures",
+        rows: this.data.procedures
+          .filter((procedure) => matches(procedure.procedure))
+          .slice(0, 8)
+          .map((procedure) => ({
+            label: procedure.procedure || "Procedure not recorded",
+            meta: procedure.procedure_date || "No date",
+            entity: "procedure",
+            id: procedure.id
+          }))
+      }
+    ];
+    const withRows = groups.filter((group) => group.rows.length);
+    if (!withRows.length) {
+      this.resultsEl.createEl("p", { text: "Nothing matches this search.", cls: "clinical-empty" });
+      return;
+    }
+    for (const group of withRows) {
+      this.resultsEl.createEl("h3", { text: group.title, cls: "clinical-search-group" });
+      for (const row of group.rows) {
+        const button = this.resultsEl.createEl("button", {
+          cls: "clinical-quick-entry-option",
+          attr: { type: "button", "aria-label": `Open ${group.title.toLocaleLowerCase().replace(/s$/, "")}: ${row.label}` }
+        });
+        button.createEl("strong", { text: row.label, attr: { dir: "auto" } });
+        button.createSpan({ text: row.meta, cls: "clinical-section-note" });
+        button.addEventListener("click", () => {
+          this.close();
+          this.onOpenRecord(row.entity, row.id);
+        });
+      }
+    }
   }
 }
 

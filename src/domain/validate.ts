@@ -11,7 +11,7 @@ import {
   TASK_STATUSES,
   TASK_TYPES
 } from "./types";
-import { isIsoDate, normalizeText } from "./schema";
+import { isIsoDate, normalizeMrn, normalizeText } from "./schema";
 
 /**
  * One field-level problem found in a persisted record.
@@ -99,6 +99,16 @@ function validatePatientRecord(record: PatientRecord): RecordProblem[] {
   checkEnum(record.status, PATIENT_STATUSES, "patient status", problems);
   checkEnum(record.mrn_status, MRN_STATUSES, "MRN status", problems);
   checkEnum(record.phone_status, PHONE_STATUSES, "phone status", problems);
+  // A hand-edited MRN with stray characters silently changes its match key,
+  // so the duplicate-MRN check can no longer pair it with the same patient.
+  const mrn = normalizeMrn(record.mrn);
+  if (mrn && !/^\d+$/.test(mrn)) {
+    problems.push({
+      code: "invalid-mrn",
+      severity: "error",
+      message: "MRN contains characters other than digits, so duplicate detection cannot match it reliably."
+    });
+  }
   return problems;
 }
 
@@ -141,6 +151,15 @@ function validateProcedureRecord(record: ProcedureRecord): RecordProblem[] {
       code: "invalid-follow-up-date",
       severity: "warning",
       message: "Procedure follow-up date is not a valid calendar date."
+    });
+  }
+  // A hand-edited non-boolean (the string "yes", 1, "true") would silently
+  // fall into the no-follow-up branch below and suppress the contradiction.
+  if (typeof record.follow_up_required !== "boolean") {
+    problems.push({
+      code: "invalid-value",
+      severity: "error",
+      message: "Unrecognised follow-up required value; the note may have been edited by hand."
     });
   }
   if (record.follow_up_required === true) {
