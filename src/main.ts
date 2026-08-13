@@ -385,7 +385,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       });
     }
 
-    this.app.workspace.onLayoutReady(() => this.registerVaultEvents());
+    this.app.workspace.onLayoutReady(() => {
+      this.registerVaultEvents();
+      // The what's-new window appears as soon as the UPDATED plugin loads,
+      // not only when the workspace is next opened: an update the user never
+      // hears about is an update they cannot judge. Layout-ready keeps it
+      // from interrupting app startup itself.
+      void this.maybeShowWhatsNew();
+    });
   }
 
   onunload(): void {
@@ -1091,10 +1098,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   }
 
   /**
-   * Shows the what's-new window once after an update, from the workspace-open
-   * path rather than plugin load, so it never interrupts app startup. The
-   * shown-for version travels in data.json, so a device that has seen it
-   * spares the user's other devices after Sync.
+   * Shows the what's-new window once after an update — at layout-ready on
+   * the first load of the new version, with the workspace-open path kept as
+   * a fallback. The shown-for version travels in data.json, so a device that
+   * has seen it spares the user's other devices after Sync.
    */
   private async maybeShowWhatsNew(): Promise<void> {
     if (this.whatsNewShownThisSession) return;
