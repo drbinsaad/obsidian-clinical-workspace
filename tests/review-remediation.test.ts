@@ -402,10 +402,18 @@ test("unchanged records reuse parsed YAML and changed content replaces it", asyn
   const second = (await repository.list<EpisodeRecord>("episode"))[0]!;
   assert.equal(first.record, second.record);
 
+  // An invalidation with UNCHANGED content re-reads but reuses the parsed
+  // object (the content-keyed memo under the path index).
+  repository.invalidatePath(created.episode.path);
+  const reread = (await repository.list<EpisodeRecord>("episode"))[0]!;
+  assert.equal(reread.record, second.record);
+
   const changed = app.vault.files
     .get(created.episode.path)!
     .replace(/^case: Original case$/m, "case: Updated case");
   app.vault.writeRaw(created.episode.path, changed);
+  // Mirrors the vault modify event for the external edit.
+  repository.invalidatePath(created.episode.path);
   const third = (await repository.list<EpisodeRecord>("episode"))[0]!;
   assert.notEqual(third.record, second.record);
   assert.equal(third.record.case, "Updated case");

@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The what's-new window now appears as soon as the updated plugin loads (at layout-ready), instead of waiting until the workspace is next opened. It still shows once per version per synced device set.
+- Whole-folder record reads are served from a path-keyed index that is trusted until Obsidian reports a change for that path, so a workflow action no longer re-reads every record note. On large caseloads this removes the dominant per-action cost on phones; a file's existence is always re-checked before an entry is served, and write verification updates the index authoritatively.
+
+### Added
+
+- A property harness for the sync-safety state machine: seeded random sequences of restarts, folder renames, record deletions, and data.json deliveries assert after every event that a clinical write is accepted only against a root holding the trusted record count — and that the trusted baseline only ratchets upward.
 
 ## [0.6.0] - 2026-08-13
 
