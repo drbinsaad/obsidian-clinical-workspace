@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-13
+
+Fast-follow to 0.6.0.
+
 ### Changed
 
 - The what's-new window now appears as soon as the updated plugin loads (at layout-ready), instead of waiting until the workspace is next opened. It still shows once per version per synced device set.
