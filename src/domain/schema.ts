@@ -208,8 +208,8 @@ export function daysOverdue(task: TaskRecord, today = todayIso()): number {
   if (!taskIsOverdue(task, today)) return 0;
   const due = normalizeIsoDate(task.due_date);
   const difference = Date.parse(`${today}T00:00:00Z`) - Date.parse(`${due}T00:00:00Z`);
-  // Written as arithmetic, not a bare 86400000: long digit literals trip the
-  // CI identifier guard, which deliberately treats them all as suspect.
+  // One day in milliseconds, written as arithmetic: bare long digit literals
+  // trip the CI identifier guard, which deliberately treats them as suspect.
   return Math.max(1, Math.round(difference / (24 * 60 * 60 * 1000)));
 }
 
