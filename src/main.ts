@@ -105,8 +105,8 @@ const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
   "Recurring follow-ups, one-tap rescheduling with +1w/+1m date chips, and an audited reopen for mis-tapped completions.",
   "One search box across patients, cases, tasks, and the surgery logbook — plus a per-patient view with episodes, work, and history together.",
   "Today gains a ward-round list and a Next 7 days section; overdue work shows how old it is; the surgery logbook adds portfolio counts by procedure and role.",
-  "A ward handover note can be generated into the Documents folder at the end of the day; it contains identifiers and stays inside the clinical folder.",
-  "Dozens of reliability fixes from an independent review: safer sync recovery, forms that refuse to overwrite concurrent edits, and stronger integrity checks."
+  "A ward handover note can be generated into the documents folder at the end of the day; it contains identifiers and stays inside the clinical folder.",
+  "Dozens of reliability fixes from an independent review, large caseloads redraw much faster on phones, and this update notice now appears as soon as the new version loads."
 ];
 
 /**
