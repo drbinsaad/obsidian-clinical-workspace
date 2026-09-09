@@ -21,6 +21,11 @@ import {
 } from "../src/domain/types";
 import { MigrationService, type MigrationResult } from "../src/services/migration";
 import { ClinicalSettingTab } from "../src/ui/settings-tab";
+import {
+  CLINICAL_ROOT_UNAVAILABLE_MESSAGE,
+  hideClinicalRecoveryNotice,
+  showClinicalNotice
+} from "../src/ui/notices";
 import { Notice as StubNotice, type App as StubApp } from "./support/obsidian-stub";
 import { episodeInput, harness, withLatency } from "./support/harness";
 
@@ -88,6 +93,26 @@ test("a failed marker-clear save after rename never points the plugin back at th
       pendingMigrationMarker: unknown;
       pendingMigrationConfiguredRoot: string | null;
       migrationRecoveryBlocked: boolean;
+      workspaceInitialized: boolean;
+      managedRecordsExpected: boolean;
+      expectedManagedRecordCount: number;
+      expectedEntityCounts: {
+        patient: number;
+        episode: number;
+        task: number;
+        procedure: number;
+      } | null;
+      expectedRecordDigest: string | null;
+      parsedRecordInventory: (root: string) => Promise<{
+        counts: {
+          patient: number;
+          episode: number;
+          task: number;
+          procedure: number;
+        };
+        digest: string;
+        total: number;
+      }>;
       refreshOpenViews: () => Promise<void>;
       saveData: (data: unknown) => Promise<void>;
       migrateRootFolder: (target: string) => Promise<MigrationResult>;
@@ -99,6 +124,12 @@ test("a failed marker-clear save after rename never points the plugin back at th
     plugin.migration = new MigrationService(app as unknown as App);
     plugin.pendingMigrationMarker = null;
     plugin.pendingMigrationConfiguredRoot = null;
+    const committedInventory = await plugin.parsedRecordInventory(DEFAULT_SETTINGS.rootFolder);
+    plugin.workspaceInitialized = true;
+    plugin.managedRecordsExpected = committedInventory.total > 0;
+    plugin.expectedManagedRecordCount = committedInventory.total;
+    plugin.expectedEntityCounts = committedInventory.counts;
+    plugin.expectedRecordDigest = committedInventory.digest;
     plugin.refreshOpenViews = async () => undefined;
     plugin.saveData = async (data) => {
       saveCalls += 1;
@@ -179,6 +210,87 @@ test("workspace activation errors are shown instead of becoming unhandled reject
 
   assert.equal(StubNotice.history.length, 1);
   assert.equal(StubNotice.history[0]?.message, "Simulated read-only vault");
+  assert.equal(StubNotice.history[0]?.classes.size, 0);
+});
+
+test("recovery notices are compact, accessible, responsive, and deduplicated", () => {
+  const fullMessage =
+    "Clinical Workspace is temporarily read-only because the configured folder is unavailable. After Sync finishes or the folder is restored, run “Retry pending folder move recovery” from the Command Palette.";
+  const plugin = new ClinicalWorkspacePlugin(new App(), {} as never) as unknown as {
+    recoveryBlockMessage: string;
+    showMigrationRecoveryNotice: (duration?: number, message?: string) => void;
+    setMigrationRecoveryBlocked: (blocked: boolean) => void;
+    onunload: () => void;
+  };
+  plugin.recoveryBlockMessage = fullMessage;
+  StubNotice.history.length = 0;
+
+  plugin.showMigrationRecoveryNotice();
+  const first = StubNotice.history[0];
+  assert.ok(first);
+  assert.ok(first.message.length < fullMessage.length);
+  assert.match(first.message, /Retry pending folder move recovery/);
+  assert.equal(first.classes.has("clinical-workspace-recovery-notice"), true);
+  assert.equal(first.attributes.get("aria-label"), fullMessage);
+  assert.equal(first.attributes.get("title"), fullMessage);
+
+  plugin.showMigrationRecoveryNotice(7000);
+  const second = StubNotice.history[1];
+  assert.ok(second);
+  assert.equal(first.hidden, true, "a Sync event burst must not stack recovery notices");
+  assert.equal(second.duration, 7000);
+
+  plugin.setMigrationRecoveryBlocked(false);
+  assert.equal(second.hidden, true, "successful recovery must dismiss stale guidance");
+
+  plugin.showMigrationRecoveryNotice();
+  const third = StubNotice.history[2];
+  assert.ok(third);
+  plugin.onunload();
+  assert.equal(third.hidden, true);
+});
+
+test("the shared presenter styles and deduplicates recovery errors from open UI actions", () => {
+  StubNotice.history.length = 0;
+
+  const formNotice = showClinicalNotice(
+    CLINICAL_ROOT_UNAVAILABLE_MESSAGE,
+    7000
+  ) as unknown as StubNotice;
+  const actionNotice = showClinicalNotice(
+    CLINICAL_ROOT_UNAVAILABLE_MESSAGE,
+    9000
+  ) as unknown as StubNotice;
+
+  assert.equal(formNotice.classes.has("clinical-workspace-recovery-notice"), true);
+  assert.equal(formNotice.hidden, true, "the next UI surface must replace the prior recovery notice");
+  assert.equal(actionNotice.classes.has("clinical-workspace-recovery-notice"), true);
+  assert.equal(actionNotice.attributes.get("aria-label"), CLINICAL_ROOT_UNAVAILABLE_MESSAGE);
+  assert.match(actionNotice.message, /Retry pending folder move recovery/);
+
+  hideClinicalRecoveryNotice();
+  assert.equal(actionNotice.hidden, true);
+});
+
+test("a blocked integrity command uses the responsive recovery notice", async () => {
+  const fullMessage =
+    "Clinical Workspace is temporarily read-only because the configured folder is unavailable. After Sync finishes or the folder is restored, run “Retry pending folder move recovery” from the Command Palette.";
+  const plugin = new ClinicalWorkspacePlugin(new App(), {} as never) as unknown as {
+    ensureStructure: () => Promise<void>;
+    runIntegrityCheck: () => Promise<void>;
+  };
+  plugin.ensureStructure = async () => {
+    throw new Error(fullMessage);
+  };
+  StubNotice.history.length = 0;
+
+  await plugin.runIntegrityCheck();
+
+  const notice = StubNotice.history[0];
+  assert.ok(notice);
+  assert.ok(notice.message.length < fullMessage.length);
+  assert.equal(notice.classes.has("clinical-workspace-recovery-notice"), true);
+  assert.equal(notice.attributes.get("aria-label"), fullMessage);
 });
 
 test("post-rename failures stay identifier-free and cannot roll the plugin back", async () => {

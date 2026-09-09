@@ -48,6 +48,12 @@ folder, if the folder rename arrives before settings, or if a final settings
 file arrives without the intermediate marker, the plugin preserves or
 reconstructs recovery intent instead of activating an unproven root.
 
+After a move settles, `data.json` retains the losing clinical-folder name as a
+safety tombstone (up to 64 roots). A delivery into any retired root re-arms the
+move marker, including after restart and on another Mac. The device-local
+journal stores only one-way fingerprints of these names and refuses to reopen
+if an interrupted Sync callback appears to have dropped part of the history.
+
 | Visible state after Sync | Plugin behaviour | What to do |
 |---|---|---|
 | Destination alone contains the complete expected managed-record count | Settles at the destination and clears the recovery marker. | Wait for the success notice, then run the integrity check. |
@@ -95,8 +101,9 @@ are created and the workspace remains read-only.
 5. Run **Run clinical data integrity check**.
 6. Review any notes elsewhere in the vault that link into the moved folder.
 
-Plugin `data.json` stores the visible settings plus versioned, path-free
-initialization/recovery flags and an aggregate managed-file count. It does not
-store MRNs, patient names, phone numbers, record IDs, record paths, or clinical
-text. For the complete trust boundary and limitations, see
+Plugin `data.json` stores the visible settings, versioned path-free
+initialization/recovery flags, an aggregate managed-file count, and the bounded
+retired-root name list described above. It does not store MRNs, patient names,
+phone numbers, record IDs, clinical-note paths, or clinical text. For the
+complete trust boundary and limitations, see
 [Security and privacy](../SECURITY.md).

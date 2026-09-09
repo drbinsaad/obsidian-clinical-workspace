@@ -183,6 +183,49 @@ test("stacked-tab CSS contracts reflow pane content without view overflow", asyn
   assert.match(styles, /\.clinical-form-section \.setting-item-control,[\s\S]*min-width: 0;[\s\S]*max-width: 100%;/s);
 });
 
+test("recovery notices stay inside phone and narrow desktop viewports", async () => {
+  const [styles, source] = await Promise.all([
+    readFile(new URL("../styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/main.ts", import.meta.url), "utf8")
+  ]);
+  assert.match(
+    styles,
+    /\.notice\.clinical-workspace-recovery-notice\s*\{[^}]*inline-size:\s*min\(360px,\s*calc\(100vw - 24px\)\);[^}]*min-inline-size:\s*0;[^}]*max-inline-size:\s*calc\(100vw - 24px\);/s
+  );
+  assert.match(
+    styles,
+    /\.notice\.clinical-workspace-recovery-notice\s*\{[^}]*max-block-size:[^;]+;[^}]*overflow-y:\s*auto;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s
+  );
+  assert.match(
+    styles,
+    /\.is-mobile \.notice\.clinical-workspace-recovery-notice\s*\{[^}]*inline-size:\s*min\(\s*360px,[^}]*safe-area-inset-left[^}]*safe-area-inset-right[^}]*max-block-size:\s*min\(35dvh,\s*220px\);/s
+  );
+  assert.match(
+    source,
+    /onLayoutReady\(\(\) => \{[\s\S]*registerVaultEvents\(\);[\s\S]*retryExactRestoredRootRecovery\(\);/
+  );
+  assert.match(
+    source,
+    /doActivateWorkspace\(\): Promise<ClinicalWorkspaceView>[\s\S]*missingRootRecoveryBlocked[\s\S]*await this\.retryExactRestoredRootRecovery\(\);/
+  );
+  assert.doesNotMatch(source, /new Notice\(this\.recoveryBlockMessage/);
+});
+
+test("forms, workspace actions, and settings share the recovery notice presenter", async () => {
+  const [modalSource, workspaceSource, settingsSource] = await Promise.all([
+    readFile(new URL("../src/ui/modals.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/ui/workspace-view.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/ui/settings-tab.ts", import.meta.url), "utf8")
+  ]);
+
+  assert.match(modalSource, /showClinicalNotice\(message, 7000\)/);
+  assert.match(workspaceSource, /showClinicalNotice\([\s\S]*The clinical action could not be completed/);
+  assert.match(settingsSource, /showClinicalNotice\([\s\S]*The move could not be completed/);
+  for (const source of [modalSource, workspaceSource, settingsSource]) {
+    assert.doesNotMatch(source, /new Notice\(\s*error instanceof Error/);
+  }
+});
+
 test("mobile lists render one bounded page and clamp after synced deletions", () => {
   const values = Array.from({ length: CLINICAL_PAGE_SIZE * 2 + 3 }, (_, index) => index);
   const middle = pageWindow(values, 1);

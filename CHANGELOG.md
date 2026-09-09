@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-09
+
+### Fixed
+
+- Cross-device folder recovery now keeps a device-local, path-free inventory
+  journal, rejects stale or overlapping Sync callbacks by generation, and
+  verifies the exact Patient/Episode/Task/Procedure ID set before reopening
+  writes. Corrupt or unwritable journal state fails closed; typed `ADOPT`
+  remains the only way to replace a conflicting trusted baseline.
+- Successfully retired clinical roots are retained as a bounded, synced list
+  so a late old-folder delivery on another Mac—or after restart—reconstructs
+  recovery instead of appearing as unrelated notes. The device-local journal
+  commits one-way fingerprints of that list before applying Sync; malformed,
+  truncated, over-limit, or crash-interrupted provenance fails closed.
+- Managed-record writes and root moves now serialize at their boundary. Vault
+  events are accepted as plugin-owned only after revision-stable identity
+  readback, so same-path Sync replacements, suspended reads, final recovery
+  scans, concurrent creates, observer failures, and a create racing a root move
+  cannot silently advance trust or strand a successful record under the old
+  root. Legacy count-only moves require an exact explicit Retry before writes
+  reopen.
+- Recovery notices now use one responsive, deduplicated presenter that stays
+  within narrow desktop and phone viewports instead of covering the workspace.
+
+### Security
+
+- Recovery metadata and its privacy limits are documented explicitly. The
+  journal contains aggregate counts and one-way commitments, not raw paths,
+  record IDs, patient identifiers, clinical text, timestamps, or device IDs.
+
 ## [0.6.1] - 2026-08-13
 
 Fast-follow to 0.6.0.

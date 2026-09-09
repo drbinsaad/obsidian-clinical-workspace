@@ -63,18 +63,30 @@ external location.
 - **No third-party runtime dependencies.** The bundle imports only the Obsidian
   API. Everything in `package.json` is a build-time or test-time dependency.
 - **Folder-scoped reads.** Runtime record and integrity scans begin at the
-  configured clinical root and recurse only through that folder. The plugin
-  does not enumerate unrelated vault files.
+  configured clinical root. Recovery additionally checks its bounded list of
+  retired clinical roots for late Sync deliveries. The plugin does not
+  enumerate unrelated vault files.
 - **Ordinary writes stay inside its own folder.** Clinical records and scaffold
   files are created or modified only under the configured clinical folder. A
   user-confirmed clinical-folder migration is the exception: it delegates the
   rename to Obsidian so inbound links elsewhere in the vault may be rewritten.
   Back up the vault first and review notes that link into the clinical folder
   after a move.
-- **Plugin settings hold no patient identity or clinical text.** `data.json`
-  stores the visible configuration plus path-free initialization/recovery
-  booleans and an aggregate managed-file count. It contains no MRN, patient
-  name, phone number, record ID, record path, case text, or record content.
+- **Plugin settings hold no raw patient identity or clinical text.** `data.json`
+  stores the visible configuration, path-free initialization/recovery flags,
+  aggregate per-entity counts, a SHA-256 commitment over sorted opaque Patient,
+  Episode, Task, and Procedure IDs, and at most 64 normalized names of clinical
+  roots retired by successful moves. Those folder names are safety tombstones:
+  they let another synced device recognize a late old-root delivery. Audit
+  Event-log continuity is intentionally outside this recovery commitment. A
+  vault-scoped, device-local Obsidian storage entry retains one rolling trusted
+  tuple plus SHA-256 bindings to the normalized active root and each retired
+  root, so an interrupted Sync callback cannot replace either commitment.
+  Device-local state contains no raw path or folder name. Neither store contains
+  a raw MRN, patient name, phone number, record ID, clinical-note path, case
+  text, or record content. Counts disclose workspace size and the commitments
+  are persistent pseudonymous fingerprints; protect the Obsidian profile and
+  device accordingly.
 - **No identifiers in logs.** Integrity results are rendered in the interface.
   Messages are written so that they never contain an MRN, name, or phone
   number, and this is enforced by a test.
@@ -193,6 +205,7 @@ vault/root/output path boundaries.
 | 16 | A pre-0.3.6 workspace being baselined from an empty or partial Sync delivery | Every safetyless legacy workspace remains read-only on its first 0.3.6 open, regardless of the visible record count. After Sync is complete, the user must explicitly adopt the current records through **Initialize new workspace**, or initialize a genuinely new/record-free vault. The exact settings/root/count shown at confirmation are revalidated before saving, and a two-phase path-free approval marker makes interruption before scaffolding resumable. |
 | 17 | An automation URL exposes or silently attaches clinical context | Quick Entry uses separate fixed action names and rejects every query parameter, including identifiers, record IDs, file paths, note paths, text, content, and vault selection. Task/procedure actions show an unselected Episode picker; procedure choices remain limited to active OR bookings. An exact current managed-Episode path may be visibly promoted but still requires confirmation. Local patient-owned writes use one patient-merge → Episode-lifecycle → task/procedure lock order, re-read the relationship inside it, and reject inactive or interrupted-merge contexts. Episode creation, update, archive, restore, and identity correction participate in the same patient lock. A merge locks both source and target in stable ID order and requires an active surviving target. This prevents stale forms, opposite-direction merge cycles, cross-merge links, and revival of a retired Episode. Sync remains an external asynchronous writer, so the procedure flow re-reads context again before its final Episode transition. Apple Shortcuts, Siri, notifications, and automation history remain external trust boundaries. |
 | 18 | Concurrent identity edits or Episode creation assign one MRN to two active patients, or use a stale MRN resolution | Creation and correction share one lock keyed by the normalized MRN around the real collision lookup and identity write. Identity correction takes patient-merge → patient-identity → MRN locks; Episode resolution releases its short MRN lock before taking a patient lock, avoiding an inverted cycle. It then re-reads and revalidates the resolved MRN after the patient lock and again immediately before Episode creation. External Sync remains asynchronous, so integrity checks are still required after cross-device editing. |
+| 19 | Sync replaces a trusted recovery commitment or retired-root history and the app exits before the conflict flag reaches `data.json` | Before reading an external settings snapshot, the plugin synchronously marks a vault-scoped device-local journal pending while retaining the prior count/digest tuple and the bounded set of one-way retired-root fingerprints. Restart accepts a synced tombstone superset but fails closed if any locally committed fingerprint disappeared; only an exact final rescan or typed `ADOPT` can clear/replace conflicting trust. The record tuple covers Patient, Episode, Task, and Procedure IDs—not body content or Audit Events. The journal stores no raw path, folder name, ID, timestamps, history, or device identity. Clearing local Obsidian storage or opening on a genuinely new device removes this independent anchor and returns that device to trust-on-first-use; it is therefore an additional crash barrier, not a backup or multi-device consensus system. |
 
 ## Before using this with identifiable patient data
 

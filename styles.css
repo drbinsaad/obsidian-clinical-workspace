@@ -23,6 +23,42 @@
   box-sizing: border-box;
 }
 
+/* Recovery guidance is global Obsidian chrome, so scope every override to the
+   class added by this plugin. Long safety text must wrap inside both a phone
+   viewport and a narrow desktop window instead of covering the workspace. */
+.notice.clinical-workspace-recovery-notice {
+  box-sizing: border-box;
+  inline-size: min(360px, calc(100vw - 24px));
+  min-inline-size: 0;
+  max-inline-size: calc(100vw - 24px);
+  max-block-size: min(40vh, 240px);
+  max-block-size: min(40dvh, 240px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font-size: var(--font-ui-small);
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.notice.clinical-workspace-recovery-notice .notice-message {
+  min-inline-size: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.is-mobile .notice.clinical-workspace-recovery-notice {
+  inline-size: min(
+    360px,
+    calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right))
+  );
+  max-inline-size: calc(
+    100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right)
+  );
+  max-block-size: min(35vh, 220px);
+  max-block-size: min(35dvh, 220px);
+}
+
 .clinical-workspace-shell {
   width: min(100%, 860px);
   min-width: 0;
