@@ -60,6 +60,7 @@ import {
   bidiIsolate,
   patientIdentityLabel
 } from "./modals";
+import { showClinicalNotice } from "./notices";
 
 export const CLINICAL_WORKSPACE_VIEW = "clinical-workspace-view";
 
@@ -435,7 +436,7 @@ export class ClinicalWorkspaceView extends ItemView {
         }).open();
       }).open();
     } catch (error) {
-      new Notice(error instanceof Error ? error.message : "Could not open task quick entry.", 7000);
+      showClinicalNotice(error instanceof Error ? error.message : "Could not open task quick entry.", 7000);
     }
   }
 
@@ -458,7 +459,7 @@ export class ClinicalWorkspaceView extends ItemView {
         }).open();
       }).open();
     } catch (error) {
-      new Notice(
+      showClinicalNotice(
         error instanceof Error ? error.message : "Could not open procedure quick entry.",
         7000
       );
@@ -1002,7 +1003,7 @@ export class ClinicalWorkspaceView extends ItemView {
           })
       ).open();
     } catch (error) {
-      new Notice(error instanceof Error ? error.message : "The patient view could not be opened.", 7000);
+      showClinicalNotice(error instanceof Error ? error.message : "The patient view could not be opened.", 7000);
     }
   }
 
@@ -1012,7 +1013,7 @@ export class ClinicalWorkspaceView extends ItemView {
       const snapshot = await this.repository.snapshot();
       new ClinicalSearchModal(this.app, snapshot, (entity, id) => this.openRecord(entity, id)).open();
     } catch (error) {
-      new Notice(error instanceof Error ? error.message : "Search could not be opened.", 7000);
+      showClinicalNotice(error instanceof Error ? error.message : "Search could not be opened.", 7000);
     }
   }
 
@@ -1029,7 +1030,7 @@ export class ClinicalWorkspaceView extends ItemView {
       new Notice("Handover note created in the documents folder. Delete it after use.", 7000);
       await this.openPath(path);
     } catch (error) {
-      new Notice(error instanceof Error ? error.message : "The handover note could not be created.", 7000);
+      showClinicalNotice(error instanceof Error ? error.message : "The handover note could not be created.", 7000);
     }
   }
 
@@ -1169,7 +1170,7 @@ export class ClinicalWorkspaceView extends ItemView {
         void this.applyTemplate(episode, bundle);
       }).open();
     } catch (error) {
-      new Notice(error instanceof Error ? error.message : "Templates could not be read.", 7000);
+      showClinicalNotice(error instanceof Error ? error.message : "Templates could not be read.", 7000);
     }
   }
 
@@ -1197,7 +1198,7 @@ export class ClinicalWorkspaceView extends ItemView {
       );
       await this.refresh();
     } catch (error) {
-      new Notice(error instanceof Error ? error.message : "The template could not be applied.", 7000);
+      showClinicalNotice(error instanceof Error ? error.message : "The template could not be applied.", 7000);
       await this.refresh();
     }
   }
@@ -1209,7 +1210,7 @@ export class ClinicalWorkspaceView extends ItemView {
         .filter((event) => event.episode_id === episode.id || event.target_id === episode.id);
       new EpisodeHistoryModal(this.app, episode.case, events).open();
     } catch (error) {
-      new Notice(error instanceof Error ? error.message : "The episode history could not be read.", 7000);
+      showClinicalNotice(error instanceof Error ? error.message : "The episode history could not be read.", 7000);
     }
   }
 
@@ -1347,7 +1348,7 @@ export class ClinicalWorkspaceView extends ItemView {
         checkFamilies: report.checkFamilies
       }).open();
     } catch (error) {
-      new Notice(error instanceof Error ? error.message : "Integrity check failed.", 7000);
+      showClinicalNotice(error instanceof Error ? error.message : "Integrity check failed.", 7000);
     }
   }
 
@@ -1368,7 +1369,7 @@ export class ClinicalWorkspaceView extends ItemView {
       await action();
       await this.refresh();
     } catch (error) {
-      new Notice(error instanceof Error ? error.message : "The clinical action could not be completed.", 7000);
+      showClinicalNotice(error instanceof Error ? error.message : "The clinical action could not be completed.", 7000);
       await this.refresh();
     }
   }

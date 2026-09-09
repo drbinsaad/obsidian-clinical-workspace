@@ -240,13 +240,42 @@ export class FileManager {
 export class App {
   readonly vault = new Vault();
   readonly fileManager = new FileManager(this.vault);
+  /** Device-local values survive fresh plugin instances that reuse this App. */
+  readonly localStorage = new Map<string, unknown>();
+
+  loadLocalStorage(key: string): unknown {
+    return structuredClone(this.localStorage.get(key) ?? null);
+  }
+
+  saveLocalStorage(key: string, data: unknown): void {
+    this.localStorage.set(key, structuredClone(data));
+  }
 }
 
 /* Declarations below exist only so modules that import them can be loaded. */
 export class Notice {
   static readonly history: Notice[] = [];
+  readonly classes = new Set<string>();
+  readonly attributes = new Map<string, string>();
+  readonly noticeEl = {
+    addClass: (...names: string[]) => {
+      for (const name of names) this.classes.add(name);
+    },
+    setAttribute: (name: string, value: string) => {
+      this.attributes.set(name, value);
+    }
+  };
+  readonly messageEl = {
+    closest: () => this.noticeEl
+  };
+  hidden = false;
+
   constructor(public message: string, public duration?: number) {
     Notice.history.push(this);
+  }
+
+  hide(): void {
+    this.hidden = true;
   }
 }
 export class Plugin {}

@@ -95,12 +95,21 @@ matches the released plugin.
   folder (`Clinical Workspace` by default).
 - The installed plugin makes no HTTP requests and contains no telemetry,
   analytics, crash reporting, or update checks.
-- Runtime record and integrity scans recurse only through the configured
-  clinical folder. Other Obsidian plugins may still have access to the entire
-  vault; install only the minimum institutionally approved set.
-- Plugin settings contain the visible configuration and path-free safety state,
-  but no MRN, patient name, phone number, record ID, record path, or clinical
-  text.
+- Runtime record and integrity scans recurse through the configured clinical
+  folder. Recovery also checks the bounded list of retired clinical roots for
+  late Sync deliveries; unrelated vault folders are not scanned. Other
+  Obsidian plugins may still have access to the entire vault; install only the
+  minimum institutionally approved set.
+- Plugin settings contain the visible configuration plus aggregate recovery
+  counts and a SHA-256 commitment over sorted opaque Patient, Episode, Task,
+  and Procedure IDs. They can also retain up to 64 prior clinical-folder names
+  after successful moves so a late old-folder Sync delivery remains visible to
+  recovery. The audit Event log is intentionally outside this recovery
+  commitment. A one-entry device-local recovery journal additionally stores
+  those aggregates, a SHA-256 binding to the configured root, and one-way
+  fingerprints of the retired-folder list. Neither store contains a raw MRN,
+  patient name, phone number, raw record ID, clinical-note path, or clinical
+  text; only synced settings contain the configured and retired folder names.
 - Notes are plain text. Confidentiality depends on device encryption, screen
   lock, vault access, the chosen sync route, and organizational controls.
 - Duplicate prevention is per device. After a Sync conflict or concurrent edits
@@ -180,7 +189,9 @@ Open **Settings → Community plugins → Clinical Workspace**.
 | Clinical folder | Moves the complete managed workspace; this is a migration, not a toggle. |
 
 Folder changes deliberately fail closed when Sync evidence is incomplete or
-ambiguous. Perform a move on one fully synced device at a time and read
+ambiguous. A bounded history of retired clinical folders is synced so a late
+delivery into an old root re-arms recovery on another Mac. Perform a move on
+one fully synced device at a time and read
 [Moving the clinical folder safely](docs/folder-migration.md) before changing
 the setting.
 

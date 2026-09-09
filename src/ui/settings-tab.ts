@@ -12,6 +12,7 @@ import { careSettingLabel, pathwayLabel, priorityLabel } from "../domain/schema"
 import { validateRootFolder } from "../domain/settings";
 import type { MigrationService } from "../services/migration";
 import { ConfirmMaintenanceModal } from "./modals";
+import { showClinicalNotice } from "./notices";
 
 function renderSetting(
   name: string,
@@ -42,7 +43,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
     try {
       await this.plugin.updateSettings(patch);
     } catch (error) {
-      new Notice(error instanceof Error ? error.message : "The setting could not be saved.", 7000);
+      showClinicalNotice(error instanceof Error ? error.message : "The setting could not be saved.", 7000);
       (this as unknown as { update?: () => void }).update?.();
     }
   }
@@ -289,7 +290,10 @@ export class ClinicalSettingTab extends PluginSettingTab {
                             new Notice(`Moved ${result.files} note${result.files === 1 ? "" : "s"} to “${result.to}”.`, 7000);
                             this.update();
                           } catch (error) {
-                            new Notice(error instanceof Error ? error.message : "The move could not be completed.", 9000);
+                            showClinicalNotice(
+                              error instanceof Error ? error.message : "The move could not be completed.",
+                              9000
+                            );
                             button.setDisabled(false);
                           }
                         })();

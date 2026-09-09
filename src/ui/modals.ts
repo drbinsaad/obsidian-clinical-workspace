@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Setting } from "obsidian";
+import { App, Modal, Setting } from "obsidian";
 import type {
   CareSetting,
   CompleteProcedureInput,
@@ -35,6 +35,7 @@ import {
 } from "../domain/schema";
 import type { TaskBundle } from "../data/templates";
 import type { QuickEntryAction } from "../quick-entry";
+import { showClinicalNotice } from "./notices";
 
 type AsyncSubmit<T> = (value: T) => Promise<void>;
 
@@ -651,7 +652,7 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
         this.errorEl.setText(message);
         this.errorEl.show();
       }
-      new Notice(message, 7000);
+      showClinicalNotice(message, 7000);
       this.submitting = false;
       if (this.cancelEl) this.cancelEl.disabled = false;
       button.disabled = false;
