@@ -328,10 +328,10 @@ async function retiredRootFingerprint(root: string): Promise<string> {
 
 /** Static, identifier-free highlights shown once after an update. */
 const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
-  "Cross-device folder recovery now verifies the exact clinical record inventory before reopening writes after Sync or a folder move.",
-  "Retired clinical folders remain protected, so a late old-folder delivery on another Mac safely reopens recovery instead of being treated as unrelated notes.",
-  "Clinical record writes now settle their recovery metadata durably before reporting success or allowing a folder move to proceed.",
-  "Recovery messages are compact, deduplicated, and responsive on phones and narrow desktop panes."
+  "The iPhone header now keeps Search, Quick Entry, and Refresh together, with all five workspace tabs available without clipped labels.",
+  "Surgery summaries and record actions use compact touch-safe grids, so important content appears sooner on phone screens.",
+  "Mobile Patients now has a labelled Add patient action that stays in the page instead of floating over records or Obsidian controls.",
+  "Quick Entry and Search are denser, respect iPhone safe areas, and announce Search result states to assistive technology."
 ];
 
 /**

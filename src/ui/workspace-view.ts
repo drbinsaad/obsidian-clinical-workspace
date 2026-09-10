@@ -536,7 +536,7 @@ export class ClinicalWorkspaceView extends ItemView {
     const scroller = root.createDiv({ cls: "clinical-workspace-scroll" });
     const shell = scroller.createDiv({ cls: "clinical-workspace-shell" });
     this.renderHeader(shell);
-    this.renderTabs(shell);
+    const activeTab = this.renderTabs(shell);
     const panel = shell.createDiv({
       cls: "clinical-workspace-panel",
       attr: { id: PANEL_ID, role: "tabpanel", "aria-labelledby": `clinical-tab-${this.activeTab}` }
@@ -568,6 +568,7 @@ export class ClinicalWorkspaceView extends ItemView {
       scroller.scrollTop = previousScrollTop;
     }
     this.restorePageContext(scroller);
+    this.revealActiveTab(activeTab, scroller);
   }
 
   private renderHeader(container: HTMLElement): void {
@@ -584,11 +585,17 @@ export class ClinicalWorkspaceView extends ItemView {
     search.addEventListener("click", () => void this.openSearch());
     const quickEntry = actions.createEl("button", {
       cls: "clinical-quick-entry-button",
-      attr: { "aria-label": "Open Clinical Workspace quick entry" }
+      attr: {
+        "aria-label": "Open Clinical Workspace quick entry",
+        title: "Quick entry"
+      }
     });
-    const quickEntryIcon = quickEntry.createSpan();
+    const quickEntryIcon = quickEntry.createSpan({
+      cls: "clinical-quick-entry-icon",
+      attr: { "aria-hidden": "true" }
+    });
     setIcon(quickEntryIcon, "square-pen");
-    quickEntry.createSpan({ text: "Quick entry" });
+    quickEntry.createSpan({ text: "Quick entry", cls: "clinical-quick-entry-label" });
     quickEntry.addEventListener("click", () => this.openQuickEntry());
     const refresh = actions.createEl("button", {
       attr: { "aria-label": "Refresh Clinical Workspace" },
@@ -598,8 +605,9 @@ export class ClinicalWorkspaceView extends ItemView {
     refresh.addEventListener("click", () => void this.refresh());
   }
 
-  private renderTabs(container: HTMLElement): void {
+  private renderTabs(container: HTMLElement): HTMLElement | null {
     const tabs = container.createDiv({ cls: "clinical-workspace-tabs", attr: { role: "tablist" } });
+    let activeButton: HTMLElement | null = null;
     for (const [tab, label] of Object.entries(TAB_LABELS) as [WorkspaceTab, string][]) {
       const selected = this.activeTab === tab;
       const button = tabs.createEl("button", {
@@ -614,9 +622,21 @@ export class ClinicalWorkspaceView extends ItemView {
           tabindex: selected ? "0" : "-1"
         }
       });
+      if (selected) activeButton = button;
       button.addEventListener("click", () => void this.selectTab(tab));
       button.addEventListener("keydown", (event) => this.handleTabKey(event, tab));
     }
+    return activeButton;
+  }
+
+  /** Reveal the selected intrinsic-width tab without disturbing reading position. */
+  private revealActiveTab(activeTab: HTMLElement | null, scroller: HTMLElement): void {
+    if (!activeTab || typeof activeTab.scrollIntoView !== "function") return;
+    const previousScrollTop = scroller.scrollTop;
+    activeTab.scrollIntoView({ inline: "nearest", block: "nearest" });
+    // scrollIntoView understands both RTL scroll models, but its block axis can
+    // also touch the ancestor scroller. Keep this operation horizontal-only.
+    scroller.scrollTop = previousScrollTop;
   }
 
   private selectTab(tab: WorkspaceTab): Promise<void> {
@@ -706,6 +726,20 @@ export class ClinicalWorkspaceView extends ItemView {
   }
 
   private renderPatients(container: HTMLElement, snapshot: ClinicalSnapshot): void {
+    // Obsidian's mobile navbar shares the bottom edge with view content. A
+    // floating, context-free "+" could cover the final card and did not say
+    // what it created, so mobile layouts get one explicit action inside
+    // Patients. CSS keeps this hidden on desktop, where the existing FAB remains.
+    const mobileAction = container.createDiv({ cls: "clinical-mobile-context-action" });
+    const addPatient = mobileAction.createEl("button", {
+      cls: "mod-cta clinical-mobile-add-button",
+      attr: { type: "button", "aria-label": "Add patient" }
+    });
+    const addPatientIcon = addPatient.createSpan({ cls: "clinical-mobile-add-icon" });
+    setIcon(addPatientIcon, "user-plus");
+    addPatient.createSpan({ text: "Add patient" });
+    addPatient.addEventListener("click", () => this.openAddPatient());
+
     const active = snapshot.episodes
       .filter((episode) => this.isActiveEpisode(episode))
       .sort((a, b) => this.episodeSortKey(a).localeCompare(this.episodeSortKey(b)));
@@ -1278,7 +1312,7 @@ export class ClinicalWorkspaceView extends ItemView {
           new Notice("Task cancelled.");
           await this.refresh();
         }).open();
-      }, false, false, context);
+      }, false, true, context);
       if (episode) {
         this.actionButton(actions, "+ Task", () => {
           new NewTaskModal(this.app, episode, this.patientLabel(patient), async (input) => {
