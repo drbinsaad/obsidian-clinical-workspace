@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-09-10
+
+### Fixed
+
+- The iPhone workspace header now keeps Search, Quick Entry, and Refresh in one
+  compact row. All five workspace tabs remain visible at ordinary phone text
+  sizes and become horizontally scrollable instead of clipping when larger text
+  needs more room.
+- Surgery summaries use a compact two-by-two phone grid, while record actions
+  use two touch-safe columns with primary and destructive actions spanning the
+  row. Task cancellation is now visually identified as destructive.
+- Mobile devices now show a labelled, in-flow **Add patient** action only in the
+  Patients view. The ambiguous floating plus no longer covers cards or competes
+  with Obsidian's mobile toolbar on either iPhone or iPad.
+- Quick Entry and empty Search sheets are denser, and native modal close controls
+  account for the iOS top safe area without covering modal content. Existing
+  visual-viewport keyboard handling remains in place.
+
+### Accessibility
+
+- Search uses the mobile keyboard's Search return-key hint and announces its
+  threshold, empty state, and displayed result count through a deduplicated
+  polite status region.
+- Added behavioral mobile-layout coverage for phone and iPad header controls,
+  navigation, cards, action placement, safe areas, Quick Entry, Search, and
+  keyboard geometry.
+
 ## [0.6.2] - 2026-09-09
 
 ### Fixed

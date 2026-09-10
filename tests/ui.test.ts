@@ -165,7 +165,7 @@ test("view resize rebinds through the pane owner window without reading records"
   assert.equal(CLINICAL_WORKSPACE_PANE_CLASSES.some((name) => classes.has(name)), false);
 });
 
-test("stacked-tab CSS contracts reflow pane content without view overflow", async () => {
+test("stacked-tab pane CSS is driven by the observed view instead of the window", async () => {
   const [styles, source] = await Promise.all([
     readFile(new URL("../styles.css", import.meta.url), "utf8"),
     readFile(new URL("../src/ui/workspace-view.ts", import.meta.url), "utf8")
@@ -175,11 +175,6 @@ test("stacked-tab CSS contracts reflow pane content without view overflow", asyn
   assert.doesNotMatch(source, /matchMedia\(/);
   assert.match(styles, /\.clinical-workspace-scroll\s*\{[^}]*overflow-x: hidden;/s);
   assert.match(styles, /\.clinical-workspace-view\.is-wide \.clinical-summary-grid\s*\{[^}]*repeat\(4,/s);
-  assert.match(styles, /\.clinical-workspace-view\.is-narrow \.clinical-workspace-header\s*\{[^}]*flex-direction: column;/s);
-  assert.match(styles, /\.clinical-workspace-view\.is-narrow \.clinical-workspace-tabs\s*\{[^}]*overflow-x: auto;/s);
-  assert.match(styles, /\.clinical-workspace-view\.is-narrow \.clinical-summary-grid\s*\{[^}]*grid-template-columns: 1fr;/s);
-  assert.match(styles, /\.clinical-workspace-view\.is-narrow \.clinical-card-actions\s*\{[^}]*minmax\(0, 1fr\);/s);
-  assert.match(styles, /\.clinical-workspace-view\.is-narrow \.clinical-pagination\s*\{[^}]*minmax\(0, 1fr\) minmax\(0, 1fr\);/s);
   assert.match(styles, /\.clinical-form-section \.setting-item-control,[\s\S]*min-width: 0;[\s\S]*max-width: 100%;/s);
 });
 

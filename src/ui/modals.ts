@@ -369,6 +369,7 @@ export class QuickEntryModal extends ClinicalResponsiveModal {
 
   onOpen(): void {
     this.modalEl.addClass("clinical-modal");
+    this.modalEl.addClass("clinical-quick-entry-modal");
     this.contentEl.empty();
     this.contentEl.createEl("h2", { text: "Quick entry", cls: "clinical-modal-heading" });
     this.contentEl.createEl("p", {
@@ -1731,6 +1732,7 @@ export interface ClinicalSearchData {
 export class ClinicalSearchModal extends ClinicalResponsiveModal {
   private query = "";
   private resultsEl: HTMLElement | null = null;
+  private statusEl: HTMLElement | null = null;
 
   constructor(
     app: App,
@@ -1742,6 +1744,7 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
 
   onOpen(): void {
     this.modalEl.addClass("clinical-modal");
+    this.modalEl.addClass("clinical-search-modal");
     this.contentEl.empty();
     const body = this.contentEl.createDiv({ cls: "clinical-modal-body clinical-episode-picker-body" });
     body.createEl("h2", { text: "Search clinical records", cls: "clinical-modal-heading" });
@@ -1751,12 +1754,21 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
         type: "search",
         placeholder: "Patient, MRN, case, task, or procedure",
         "aria-label": "Search clinical records",
-        autocomplete: "off"
+        autocomplete: "off",
+        enterkeyhint: "search"
       }
     });
     search.addEventListener("input", () => {
       this.query = search.value;
       this.renderResults();
+    });
+    this.statusEl = body.createDiv({
+      cls: "clinical-section-note clinical-search-status",
+      attr: {
+        role: "status",
+        "aria-live": "polite",
+        "aria-atomic": "true"
+      }
     });
     this.resultsEl = body.createDiv({ cls: "clinical-quick-entry-results" });
     this.renderResults();
@@ -1769,18 +1781,18 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
   onClose(): void {
     this.query = "";
     this.resultsEl = null;
+    this.statusEl = null;
     this.contentEl.empty();
   }
 
   private renderResults(): void {
-    if (!this.resultsEl) return;
+    if (!this.resultsEl || !this.statusEl) return;
     this.resultsEl.empty();
     const query = this.query.trim().toLocaleLowerCase();
     if (query.length < 2) {
-      this.resultsEl.createEl("p", {
-        text: "Type at least two characters to search.",
-        cls: "clinical-empty"
-      });
+      this.modalEl.addClass("is-search-compact");
+      this.statusEl.addClass("clinical-empty");
+      this.setSearchStatus("Type at least two characters to search.");
       return;
     }
     const matches = (text: string): boolean => text.toLocaleLowerCase().includes(query);
@@ -1839,9 +1851,15 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
     ];
     const withRows = groups.filter((group) => group.rows.length);
     if (!withRows.length) {
-      this.resultsEl.createEl("p", { text: "Nothing matches this search.", cls: "clinical-empty" });
+      this.modalEl.addClass("is-search-compact");
+      this.statusEl.addClass("clinical-empty");
+      this.setSearchStatus("Nothing matches this search.");
       return;
     }
+    this.modalEl.removeClass("is-search-compact");
+    this.statusEl.removeClass("clinical-empty");
+    const resultCount = withRows.reduce((count, group) => count + group.rows.length, 0);
+    this.setSearchStatus(`${resultCount} result${resultCount === 1 ? "" : "s"} shown.`);
     for (const group of withRows) {
       this.resultsEl.createEl("h3", { text: group.title, cls: "clinical-search-group" });
       for (const row of group.rows) {
@@ -1857,6 +1875,11 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
         });
       }
     }
+  }
+
+  private setSearchStatus(message: string): void {
+    if (this.statusEl?.textContent === message) return;
+    this.statusEl?.setText(message);
   }
 }
 

@@ -55,8 +55,11 @@ finds patients, MRNs, cases, tasks, and procedures from one field.
 
 The workspace follows the width of its own Obsidian pane. In split layouts and
 stacked tabs it shifts between wide, compact, and narrow presentations without
-requiring the desktop window to be resized. Narrow panes keep cards and actions
-in one readable column and make the workspace tab row independently scrollable.
+requiring the desktop window to be resized. Narrow panes keep the five workspace
+tabs visible at ordinary text sizes, allow them to scroll rather than clip under
+enlarged text, and arrange summaries and record actions in compact, touch-safe
+grids. On mobile, **Add patient** is a labelled action inside the Patients view
+instead of a floating control over clinical content.
 
 The command palette now includes a **Quick entry** hub plus separate actions
 for a new patient/Episode, task or follow-up, procedure, and today's pending

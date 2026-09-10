@@ -13,6 +13,11 @@ test record, not evidence that the checks have been performed.
 
 ## Access and commands
 
+- [ ] Search, Quick Entry, and Refresh stay on one non-overlapping header row;
+  every control has a readable label or accessible name and a 44-pixel target.
+- [ ] Today, Patients, Tasks, Surgery, and More are all visible at the default
+  text size. At enlarged text, no label is clipped and every tab remains
+  reachable by scrolling.
 - [ ] The **Clinical Workspace quick entry** ribbon action appears in the
   mobile **Open menu** and opens the hub.
 - [ ] Under **Settings → Mobile → Manage toolbar options**, scrolling to the
@@ -38,6 +43,15 @@ Open each exact URL from Apple Shortcuts **Open URLs**:
 
 ## Picker and forms
 
+- [ ] Surgery summary cards form a two-by-two grid in portrait; Patient and Task
+  actions use compact columns without clipping their labels.
+- [ ] The labelled **Add patient** action appears in Patients only and never
+  covers a card, action, scrollbar, keyboard, or Obsidian's mobile toolbar.
+- [ ] Quick Entry options are evenly packed near the heading rather than spread
+  across the full sheet, and the native close control remains below the status
+  area without covering text or controls.
+- [ ] Search covers threshold, no-match, capped-result, clear, and reopen states;
+  its polite status announcement describes the number of results shown.
 - [ ] Task Quick Entry shows the searchable, initially unselected Episode
   picker; procedure Quick Entry shows only active OR-booking Episodes.
 - [ ] Opening from a managed Episode note promotes **Current episode** but still
@@ -56,6 +70,14 @@ Open each exact URL from Apple Shortcuts **Open URLs**:
 - [ ] With folder migration or Sync recovery deliberately left unresolved,
   every Quick Entry command and URL shows the normal blocked/recovery behavior
   and creates or changes no clinical record.
+
+## Device and presentation matrix
+
+- [ ] iPhone portrait and landscape; default and enlarged text.
+- [ ] iPad portrait, landscape, and narrow split view.
+- [ ] Light and dark appearance; left-to-right and right-to-left interface.
+- [ ] VoiceOver announces selected tabs, Search status changes, and contextual
+  actions once; external-keyboard focus order and Escape dismissal are correct.
 
 ## Sign-off
 
