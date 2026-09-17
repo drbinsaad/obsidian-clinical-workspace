@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-09-17
+
+### Fixed
+
+- Repeated delivery of unchanged plugin settings no longer writes another pair
+  of recovery states back through Sync. This stops the settings feedback loop
+  that could keep workspace activation busy and repeatedly display a recovery
+  warning after baseline confirmation.
+- An unchanged healthy delivery still pauses record writes and verifies the
+  complete record inventory against the device-local journal. Pending folder
+  moves, changed commitments, and existing review requirements retain their
+  normal recovery checks.
+
 ## [0.6.4] - 2026-09-17
 
 ### Fixed

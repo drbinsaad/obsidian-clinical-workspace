@@ -2988,6 +2988,120 @@ test("restart with marker-before-folder remains blocked and does not scaffold th
   }
 });
 
+test("identical healthy settings deliveries do not write another Sync update", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
+    const { app, repository, service } = await harness();
+    await service.createEpisode(episodeInput());
+    let stored: unknown = { ...DEFAULT_SETTINGS };
+    let saves = 0;
+    const plugin = makePlugin(app, repository, () => stored, (data) => {
+      saves += 1;
+      stored = data;
+    });
+    await plugin.noteManagedRecordWrite();
+    // Establish the durable restart-validation sentinel before testing echoes.
+    await plugin.onExternalSettingsChange();
+    const savesBeforeEcho = saves;
+    const scansBeforeEcho = plugin.parsedRecordInventory.bind(plugin);
+    let scans = 0;
+    plugin.parsedRecordInventory = async (root) => {
+      scans += 1;
+      return scansBeforeEcho(root);
+    };
+    await plugin.onExternalSettingsChange();
+    await plugin.onExternalSettingsChange();
+    assert.equal(saves, savesBeforeEcho, "identical deliveries must converge without Sync writes");
+    assert.ok(scans >= 2, "echoes still verify the trusted inventory before reopening writes");
+    assert.equal(plugin.migrationRecoveryBlocked, false);
+    assert.equal(plugin.baselineReviewRequired, false);
+    plugin.structureReady = false;
+    await plugin.ensureStructure();
+    assert.equal(plugin.structureReady, true, "activation scaffolding can complete after an echo");
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("identical blocked settings deliveries retain review without writing another Sync update", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
+    const { app, repository, service } = await harness();
+    await service.createEpisode(episodeInput());
+    let stored: unknown = { ...DEFAULT_SETTINGS };
+    let saves = 0;
+    const plugin = makePlugin(app, repository, () => stored, (data) => {
+      saves += 1;
+      stored = data;
+    });
+    await plugin.noteManagedRecordWrite();
+    stored = {
+      ...(stored as Record<string, unknown>),
+      workspaceSafety: {
+        ...(stored as { workspaceSafety: Record<string, unknown> }).workspaceSafety,
+        baselineReviewRequired: true
+      }
+    };
+    await plugin.onExternalSettingsChange();
+    const savesBeforeEcho = saves;
+    await plugin.onExternalSettingsChange();
+    await plugin.onExternalSettingsChange();
+    assert.equal(saves, savesBeforeEcho, "a stable review barrier must not generate more Sync traffic");
+    assert.equal(plugin.baselineReviewRequired, true);
+    assert.equal(plugin.migrationRecoveryBlocked, true);
+    await assert.rejects(() => repository.ensureStructure(), /recovery information conflicts/);
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("record loss during an unchanged settings echo keeps the journal and writes blocked", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
+    const { app, repository, service } = await harness();
+    await service.createEpisode(episodeInput());
+    let stored: unknown = { ...DEFAULT_SETTINGS };
+    let saves = 0;
+    const plugin = makePlugin(app, repository, () => stored, (data) => {
+      saves += 1;
+      stored = data;
+    });
+    await plugin.noteManagedRecordWrite();
+    await plugin.onExternalSettingsChange();
+    const readInventory = plugin.parsedRecordInventory.bind(plugin);
+    let deleted = false;
+    plugin.parsedRecordInventory = async (root) => {
+      const inventory = await readInventory(root);
+      if (!deleted) {
+        deleted = true;
+        const path = managedRecordPaths(app, root)[0]!;
+        app.vault.deleteRaw(path);
+        plugin.observeManagedRecordDelivery(path);
+      }
+      return inventory;
+    };
+    await plugin.onExternalSettingsChange();
+    assert.equal(deleted, true);
+    assert.equal(plugin.migrationRecoveryBlocked, true);
+    assert.equal(plugin.missingRootRecoveryBlocked, true);
+    assert.equal(
+      (app.loadLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY) as TestTrustedInventoryJournal).pending,
+      true
+    );
+    await assert.rejects(() => repository.ensureStructure());
+    const savesAfterLoss = saves;
+    await plugin.onExternalSettingsChange();
+    await plugin.onExternalSettingsChange();
+    assert.equal(saves, savesAfterLoss, "failed recovery must converge while the root remains incomplete");
+    assert.equal(plugin.migrationRecoveryBlocked, true);
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
 test("a benign external settings read blocks writes until its callback fully applies", async () => {
   const originalRoot = clinicalRootFolder();
   try {
