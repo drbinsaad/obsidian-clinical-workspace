@@ -1673,7 +1673,7 @@ test("externally strengthened safety invalidates an open baseline preview before
   }
 });
 
-test("only fresh typed adoption clears a persisted baseline-review barrier", async () => {
+test("a persisted baseline-review barrier clears through the membership proof and typed adoption still works", async () => {
   const originalRoot = clinicalRootFolder();
   try {
     setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
@@ -1706,9 +1706,11 @@ test("only fresh typed adoption clears a persisted baseline-review barrier", asy
     await reviewing.loadSettings();
     reviewingRepository.setWriteBlock(reviewing.recoveryBlockMessage);
     assert.equal(reviewing.baselineReviewRequired, true);
-    assert.equal(await reviewing.retryPendingMigrationRecovery(), false);
-    assert.equal(reviewing.baselineReviewRequired, true);
-    assert.equal(reviewing.migrationRecoveryBlocked, true);
+    // The saved flag records no unverifiable reason, and every trusted record
+    // is on disk: the same scan that reopens growth clears it without ADOPT.
+    assert.equal(await reviewing.retryPendingMigrationRecovery(), true);
+    assert.equal(reviewing.baselineReviewRequired, false);
+    assert.equal(reviewing.migrationRecoveryBlocked, false);
 
     const freshCandidate = await reviewing.captureBaselineAdoptionCandidate(
       DEFAULT_SETTINGS.rootFolder
@@ -1720,7 +1722,7 @@ test("only fresh typed adoption clears a persisted baseline-review barrier", asy
         freshCandidate
       ),
       true,
-      "a fresh frozen typed confirmation is the only sanctioned review exit"
+      "a fresh frozen typed confirmation remains available on a healthy workspace"
     );
     assert.equal(reviewing.baselineReviewRequired, false);
     assert.equal(reviewing.migrationRecoveryBlocked, false);
@@ -3011,7 +3013,9 @@ test("identical blocked settings deliveries retain review without writing anothe
       ...(stored as Record<string, unknown>),
       workspaceSafety: {
         ...(stored as { workspaceSafety: Record<string, unknown> }).workspaceSafety,
-        baselineReviewRequired: true
+        baselineReviewRequired: true,
+        // Raised by something a record scan cannot verify, so it stays.
+        baselineReviewNeedsTypedAdoption: true
       }
     };
     await plugin.onExternalSettingsChange();
@@ -3022,6 +3026,42 @@ test("identical blocked settings deliveries retain review without writing anothe
     assert.equal(plugin.baselineReviewRequired, true);
     assert.equal(plugin.migrationRecoveryBlocked, true);
     await assert.rejects(() => repository.ensureStructure(), /recovery information conflicts/);
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("a delivered review the membership proof clears is written once, and its echoes write nothing more", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
+    const { app, repository, service } = await harness();
+    await service.createEpisode(episodeInput());
+    let stored: unknown = { ...DEFAULT_SETTINGS };
+    let saves = 0;
+    const plugin = makePlugin(app, repository, () => stored, (data) => {
+      saves += 1;
+      stored = data;
+    });
+    await plugin.noteManagedRecordWrite();
+    stored = {
+      ...(stored as Record<string, unknown>),
+      workspaceSafety: {
+        ...(stored as { workspaceSafety: Record<string, unknown> }).workspaceSafety,
+        baselineReviewRequired: true
+      }
+    };
+    await plugin.onExternalSettingsChange();
+    assert.equal(plugin.baselineReviewRequired, false, "every trusted record is present, so the flag clears");
+    assert.equal(plugin.migrationRecoveryBlocked, false);
+    const persisted = (stored as { workspaceSafety?: { baselineReviewRequired?: boolean } }).workspaceSafety;
+    assert.equal(persisted?.baselineReviewRequired, false, "the cleared flag is what Sync carries onward");
+    const savesBeforeEcho = saves;
+    await plugin.onExternalSettingsChange();
+    await plugin.onExternalSettingsChange();
+    assert.equal(saves, savesBeforeEcho, "the canonical echo must not generate more Sync traffic");
+    assert.equal(plugin.migrationRecoveryBlocked, false);
+    await repository.ensureStructure();
   } finally {
     setClinicalRoot(originalRoot);
   }

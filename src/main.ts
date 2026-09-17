@@ -83,6 +83,12 @@ interface PersistedWorkspaceSafety {
   /** A conflicting/incomplete synced commitment requires typed adoption. */
   baselineReviewRequired: boolean;
   /**
+   * The review was raised by safety metadata a record scan cannot verify, so
+   * the membership proof must not clear it. Absent on state written before
+   * this field existed; such a review is treated as a comparison.
+   */
+  baselineReviewNeedsTypedAdoption?: boolean | undefined;
+  /**
    * Parsed-record commitment: per-entity counts of records that actually
    * parse, plus a SHA-256 over the sorted opaque record ids. A raw file
    * count cannot tell a healthy root from one whose files were replaced,
@@ -507,6 +513,18 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   private recoveryValidationRequired = false;
   /** True when Sync delivered a commitment that only typed adoption may resolve. */
   private baselineReviewRequired = false;
+  /**
+   * True while the current baseline review was raised by safety metadata this
+   * device cannot re-verify from its own records: an unreadable or
+   * unmergeable retired-root list, a journal that could not be armed or
+   * committed, a displaced move edge, an interrupted initialization, or a
+   * legacy anchor that never held a digest. Only typed ADOPT clears those.
+   * A review raised by a record comparison alone (a flag persisted by an
+   * older version, one delivered through Sync, or a snapshot whose files had
+   * not finished arriving) clears itself once the on-disk record set passes
+   * the same membership proof that reopens ordinary two-device growth.
+   */
+  private baselineReviewNeedsTypedAdoption = false;
   /** Precomputed so an external callback can arm its journal before any await. */
   private activeRootFingerprint: string | null = null;
   /** Serializes data.json writes so a delayed older snapshot cannot win. */
@@ -872,6 +890,11 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       safety?.recoveryValidationRequired === true || exactStartupValidationRequired;
     this.baselineReviewRequired =
       safety?.baselineReviewRequired === true || !retiredRootsRead.valid;
+    // A persisted or synced flag alone is a comparison this device can redo
+    // against its own journal; unreadable safety metadata, or a review the
+    // previous session recorded as unverifiable, is not.
+    this.baselineReviewNeedsTypedAdoption =
+      safety?.baselineReviewNeedsTypedAdoption === true || !retiredRootsRead.valid;
     if (!retiredRootsRead.valid) this.firstUseInitializationPending = false;
     if (journalEntry && journalRootMatches && journalRetiredRootsCompatible) {
       const journalInventory = recordInventoryFromJournalEntry(journalEntry);
@@ -923,6 +946,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       // bound to another root is not equivalent to a genuinely absent journal.
       this.recoveryValidationRequired = true;
       this.baselineReviewRequired = true;
+      this.baselineReviewNeedsTypedAdoption = true;
       this.firstUseInitializationPending = false;
     }
     if (
@@ -931,6 +955,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     ) {
       this.recoveryValidationRequired = true;
       this.baselineReviewRequired = true;
+      this.baselineReviewNeedsTypedAdoption = true;
       this.firstUseInitializationPending = false;
     }
     if (
@@ -1071,7 +1096,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       if (this.externalSettingsApplyOperations === 0) {
         if (
           this.missingRootRecoveryBlocked &&
-          !this.baselineReviewRequired &&
+          !this.baselineReviewBlocksAutomaticRecovery() &&
           !this.firstUseInitializationPending &&
           !this.currentMigrationMarker()
         ) {
@@ -1132,11 +1157,13 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         // Each input may be valid on its own while their monotonic union is
         // not. Never truncate the local history or persist a partial merge.
         this.baselineReviewRequired = true;
+        this.baselineReviewNeedsTypedAdoption = true;
       }
     } else {
       // This list is safety metadata: silently dropping a malformed or
       // over-limit value could make a late old-root delivery invisible.
       this.baselineReviewRequired = true;
+      this.baselineReviewNeedsTypedAdoption = true;
     }
     const retiredRootFingerprintsAfterMerge = this.currentRetiredRootFingerprints();
     const retiredRootCommitmentChanged =
@@ -1156,6 +1183,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       // The names remain in memory, but without a verified local commitment a
       // crash could let a newer synced snapshot erase this just-delivered root.
       this.baselineReviewRequired = true;
+      this.baselineReviewNeedsTypedAdoption = true;
     }
     const previousRoot = clinicalRootFolder();
     const previousSettingsRoot = this.settings.rootFolder;
@@ -1211,7 +1239,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
           this.pendingMigrationConfiguredRoot = previousPendingMigrationConfiguredRoot;
           this.settings = { ...this.settings, rootFolder: previousSettingsRoot };
           setClinicalRoot(previousRoot);
-          this.setBaselineReviewBlocked(this.managedRecordsExpected);
+          this.setBaselineReviewBlocked(this.managedRecordsExpected, true);
           try {
             await this.persistPluginData();
           } catch {
@@ -1342,6 +1370,17 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       higherCommitmentNeedsReview ||
       equalCommitmentConflicts ||
       equalCompleteUpgradesIncompleteLocal;
+    // A legacy anchor without a digest cannot prove that the delivered ids are
+    // the set it trusted, so an exact match against the delivered tuple is not
+    // a membership proof. A delivered flag or a comparison this device can
+    // redo against its own journal stays on the self-clearing path.
+    if (equalCompleteUpgradesIncompleteLocal) {
+      this.baselineReviewNeedsTypedAdoption = true;
+    }
+    // A peer that recorded its review as unverifiable had a reason this
+    // device cannot see; keep that human decision shared, as ADOPT is.
+    this.baselineReviewNeedsTypedAdoption ||=
+      deliveredSafety?.baselineReviewNeedsTypedAdoption === true;
     // A versioned safety state supersedes the one-time legacy adoption prompt.
     // A safetyless file remains ambiguous and is handled below without saving.
     if (this.firstUseInitializationPending && deliveredTrustedSafety) {
@@ -1533,7 +1572,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         ) {
           // The destination can be selected for reads, but growth or a changed
           // digest cannot prove that every previously trusted id survived.
-          this.setBaselineReviewBlocked(this.managedRecordsExpected);
+          this.setBaselineReviewBlocked(this.managedRecordsExpected, true);
         }
         this.settings = incoming;
         setClinicalRoot(incoming.rootFolder);
@@ -1919,7 +1958,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   private failClosedForTrustedInventoryJournal(): void {
     this.recoveryValidationRequired = true;
     this.workspaceSafetyNeedsPersistence = true;
-    this.setBaselineReviewBlocked(this.managedRecordsExpected);
+    this.setBaselineReviewBlocked(this.managedRecordsExpected, true);
     this.showMigrationRecoveryNotice(12000, CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE);
   }
 
@@ -1976,6 +2015,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       recoveryRequiresRecords: state.recoveryRequiresRecords === true,
       recoveryValidationRequired: state.recoveryValidationRequired === true,
       baselineReviewRequired: state.baselineReviewRequired === true,
+      baselineReviewNeedsTypedAdoption:
+        state.baselineReviewRequired === true &&
+        state.baselineReviewNeedsTypedAdoption === true,
       expectedEntityCounts,
       expectedRecordDigest:
         typeof state.expectedRecordDigest === "string" && /^[0-9a-f]{64}$/.test(state.expectedRecordDigest)
@@ -2013,6 +2055,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       recoveryRequiresRecords: this.missingRootRequiresRecords,
       recoveryValidationRequired: this.recoveryValidationRequired,
       baselineReviewRequired: this.baselineReviewRequired,
+      baselineReviewNeedsTypedAdoption:
+        this.baselineReviewRequired && this.baselineReviewNeedsTypedAdoption,
       expectedEntityCounts: persistedInventory?.counts ?? this.expectedEntityCounts ?? undefined,
       expectedRecordDigest: persistedInventory?.digest ?? this.expectedRecordDigest ?? undefined
     };
@@ -2294,11 +2338,28 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   }
 
   private setBaselineReviewBlocked(
-    requiresRecords = this.managedRecordsExpected
+    requiresRecords = this.managedRecordsExpected,
+    typedAdoptionOnly = false
   ): void {
     this.baselineReviewRequired = true;
+    this.baselineReviewNeedsTypedAdoption ||= typedAdoptionOnly;
     this.setMissingRootRecoveryBlocked(requiresRecords);
     this.setMigrationRecoveryBlocked(true, CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE);
+  }
+
+  /**
+   * A review raised by a record comparison is retried by the automatic and
+   * explicit marker-free recovery scans; it clears when the on-disk set passes
+   * the membership proof. A review raised by unreadable safety metadata is
+   * not something a scan can settle, so those scans leave it for typed ADOPT.
+   */
+  private baselineReviewBlocksAutomaticRecovery(): boolean {
+    return this.baselineReviewRequired && this.baselineReviewNeedsTypedAdoption;
+  }
+
+  /** Leaves a review in place after a scan that could not prove the record set. */
+  private restoreBaselineReview(wasRequired: boolean): void {
+    this.baselineReviewRequired ||= wasRequired;
   }
 
   /** Run automatic and user-confirmed marker-free recovery one at a time. */
@@ -2436,7 +2497,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   private async tryExactRestoredRootRecovery(): Promise<boolean> {
     if (
       !this.missingRootRecoveryBlocked ||
-      this.baselineReviewRequired ||
+      this.baselineReviewBlocksAutomaticRecovery() ||
       this.externalSettingsApplyOperations > 0 ||
       this.firstUseInitializationPending ||
       this.currentMigrationMarker()
@@ -2449,12 +2510,16 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     if (
       clinicalRootFolder() !== root ||
       !this.missingRootRecoveryBlocked ||
-      this.baselineReviewRequired ||
+      this.baselineReviewBlocksAutomaticRecovery() ||
       this.externalSettingsApplyOperations > 0 ||
       this.firstUseInitializationPending ||
       this.currentMigrationMarker()
     ) return false;
     this.activeRootFingerprint = fingerprint;
+    // A review raised by comparison is settled by this same scan: the flag is
+    // cleared only after the membership proof, in the same queued snapshot as
+    // the accepted tuple, and restored if that snapshot cannot be committed.
+    const reviewRequired = this.baselineReviewRequired;
     const recoveryRevision = this.markerFreeRecoveryRevision;
     const expectedCount = this.expectedManagedRecordCount;
     const expectedCounts = this.expectedEntityCounts
@@ -2482,7 +2547,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // trusted tuple before changing any state.
     if (
       !this.missingRootRecoveryBlocked ||
-      this.baselineReviewRequired ||
+      this.baselineReviewBlocksAutomaticRecovery() ||
+      this.baselineReviewRequired !== reviewRequired ||
       this.firstUseInitializationPending ||
       this.currentMigrationMarker() ||
       clinicalRootFolder() !== root ||
@@ -2497,8 +2563,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       return false;
     }
     const acceptedRawCount = this.rootManagedRecordCount(root);
+    // Clearing a review needs the membership witness even for an exact digest
+    // match: a legacy anchor cannot prove which ids it trusted, so it stays on
+    // the typed-review path until ADOPT records a witness.
     const classification = this.classifyInventoryForWrites(root, current);
-    if (!classification) {
+    if (
+      !classification ||
+      (reviewRequired && !this.inventoryPreservesTrustedRecords(current))
+    ) {
       if (this.stagedSyncedInventoryConflicts(root, current)) {
         // The other device's confirmed set has fully arrived and omits a
         // record this device trusted. Only typed ADOPT can resolve that.
@@ -2528,14 +2600,21 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // cleared missing-root flag. Direct maintenance actions consult the global
     // boolean, so dropping it before the save would create a write window.
     this.recoveryValidationRequired = true;
+    this.baselineReviewRequired = false;
+    this.baselineReviewNeedsTypedAdoption = false;
     this.missingRootRecoveryBlocked = false;
     this.missingRootRequiresRecords = false;
     this.structureReady = false;
-    this.repository?.setWriteBlock(CLINICAL_ROOT_UNAVAILABLE_MESSAGE);
+    this.repository?.setWriteBlock(
+      reviewRequired
+        ? CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
+        : CLINICAL_ROOT_UNAVAILABLE_MESSAGE
+    );
     try {
       await this.persistPluginData();
     } catch {
       this.workspaceSafetyNeedsPersistence = true;
+      this.restoreBaselineReview(reviewRequired);
       this.setMissingRootRecoveryBlocked(requiresRecords);
       return false;
     }
@@ -2571,6 +2650,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         ([entity]) => finalInventory?.counts[entity] === acceptedInventory.counts[entity]
       );
     if (!finalMatches || !finalInventory) {
+      this.restoreBaselineReview(reviewRequired);
       this.setMissingRootRecoveryBlocked(requiresRecords);
       try {
         await this.persistPluginData();
@@ -2877,7 +2957,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         this.rootManagedRecordCount(root) !== currentRecordCount ||
         !sameRecordInventory(finalInventory, currentInventory)
       ) {
-        this.setBaselineReviewBlocked(this.managedRecordsExpected);
+        this.setBaselineReviewBlocked(this.managedRecordsExpected, true);
         await this.persistPluginData().catch(() => {
           this.workspaceSafetyNeedsPersistence = true;
         });
@@ -3280,7 +3360,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         // Path convergence and record-set trust are separate decisions. Point
         // reads at the only complete physical root, but keep every write closed
         // until a fresh typed baseline confirmation proves the intended set.
-        this.setBaselineReviewBlocked(this.managedRecordsExpected);
+        this.setBaselineReviewBlocked(this.managedRecordsExpected, true);
       }
     }
 
@@ -3387,7 +3467,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
           rawCount !== this.expectedManagedRecordCount
         ) {
           this.setBaselineReviewBlocked(
-            this.managedRecordsExpected || rawCount > 0
+            this.managedRecordsExpected || rawCount > 0,
+            true
           );
           return false;
         }
@@ -3566,13 +3647,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
 
   /** User retry accepts the exact trusted set or growth that kept it; loss/replacement needs typed ADOPT. */
   private async retryMissingRootRecoveryExplicitly(): Promise<boolean> {
-    if (this.baselineReviewRequired) {
+    if (this.baselineReviewBlocksAutomaticRecovery()) {
       this.showMigrationRecoveryNotice(
         12000,
         CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
       );
       return false;
     }
+    const reviewRequired = this.baselineReviewRequired;
     if (this.externalSettingsApplyOperations > 0) {
       this.showMigrationRecoveryNotice();
       return false;
@@ -3616,6 +3698,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     const contextUnchanged = (): boolean =>
       !this.firstUseInitializationPending &&
       !this.currentMigrationMarker() &&
+      this.baselineReviewRequired === reviewRequired &&
+      !this.baselineReviewBlocksAutomaticRecovery() &&
       clinicalRootFolder() === root &&
       this.expectedManagedRecordCount === expectedCount &&
       this.expectedRecordDigest === expectedDigest &&
@@ -3679,8 +3763,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // record is ordinary two-device Sync. Comparing the higher disk tuple
     // directly with the older trusted tuple would turn it into a permanent
     // ADOPT conflict. Replacement, loss, and legacy count-only anchors still
-    // require typed review.
-    if (!this.classifyInventoryForWrites(root, verified.inventory)) {
+    // require typed review. Clearing an existing review additionally needs the
+    // membership witness, as in automatic recovery.
+    if (
+      !this.classifyInventoryForWrites(root, verified.inventory) ||
+      (reviewRequired && !this.inventoryPreservesTrustedRecords(verified.inventory))
+    ) {
       this.setBaselineReviewBlocked(requiresRecords || verified.inventory.total > 0);
       await this.persistWorkspaceSafety();
       this.showMigrationRecoveryNotice(
@@ -3709,6 +3797,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.expectedManagedRecordCount = acceptedRawCount;
     this.managedRecordsExpected ||= acceptedInventory.total > 0;
     this.recoveryValidationRequired = true;
+    this.baselineReviewRequired = false;
+    this.baselineReviewNeedsTypedAdoption = false;
     this.missingRootRecoveryBlocked = false;
     this.missingRootRequiresRecords = false;
     this.structureReady = false;
@@ -3719,6 +3809,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       await this.persistPluginData();
     } catch {
       this.workspaceSafetyNeedsPersistence = true;
+      this.restoreBaselineReview(reviewRequired);
       this.setMissingRootRecoveryBlocked(requiresRecords);
       this.showMigrationRecoveryNotice();
       return false;
@@ -3734,6 +3825,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.markerFreeRecoveryRevision === recoveryRevision &&
       finalInventory !== null &&
       !this.missingRootRecoveryBlocked &&
+      !this.baselineReviewRequired &&
       !this.firstUseInitializationPending &&
       !this.currentMigrationMarker() &&
       clinicalRootFolder() === root &&
@@ -3744,6 +3836,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         ([entity]) => finalInventory?.counts[entity] === acceptedInventory.counts[entity]
       );
     if (!finalMatches) {
+      this.restoreBaselineReview(reviewRequired);
       this.setMissingRootRecoveryBlocked(requiresRecords);
       try {
         await this.persistPluginData();
@@ -4538,10 +4631,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.expectedManagedRecordCount = acceptedRawCount;
     this.managedRecordsExpected = acceptedInventory.total > 0;
     this.recoveryValidationRequired = true;
-    // Typed ADOPT is the only sanctioned exit from a synced commitment
-    // conflict. Clear the durable review sentinel in the same queued snapshot
-    // as the newly accepted tuple.
+    // Typed ADOPT is the only sanctioned exit from a review raised by safety
+    // metadata, and the human exit from a comparison the membership proof
+    // could not settle. Clear the durable review sentinel in the same queued
+    // snapshot as the newly accepted tuple.
     this.baselineReviewRequired = false;
+    this.baselineReviewNeedsTypedAdoption = false;
     this.missingRootRecoveryBlocked = false;
     this.missingRootRequiresRecords = false;
     this.structureReady = false;
