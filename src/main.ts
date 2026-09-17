@@ -407,10 +407,7 @@ async function retiredRootFingerprint(root: string): Promise<string> {
 
 /** Static, identifier-free highlights shown once after an update. */
 const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
-  "iPad task forms now scroll normally with the keyboard open and keep entered text available when a save is blocked.",
-  "Safe cross-device additions verify every previously trusted record and resume automatically instead of requiring ADOPT.",
-  "Task and procedure forms now warn before data entry when Sync recovery already makes the workspace read-only.",
-  "Discharge status, split-pane accessibility, focus restoration, and mobile touch targets are more reliable."
+  "Unchanged settings no longer trigger repeated Sync updates, while records are still checked against the exact trusted baseline."
 ];
 
 /**
@@ -1117,6 +1114,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     batchInitialMarker: MigrationMarker | null,
     drainedManagedMutation: boolean
   ): Promise<void> {
+    if (await this.acceptUnchangedExternalSettings(stored, externalEpoch, drainedManagedMutation)) {
+      return;
+    }
     const incoming = normalizeSettings(stored, {
       careSettings: CARE_SETTINGS,
       pathways: PATHWAYS,
@@ -1576,6 +1576,49 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.integrityChecked = false;
     await this.refreshOpenViews();
     restoreSupersededPathState();
+  }
+
+  /** A canonical Sync echo must not generate another pair of synced safety writes. */
+  private async acceptUnchangedExternalSettings(
+    stored: unknown,
+    externalEpoch: number,
+    drainedManagedMutation: boolean
+  ): Promise<boolean> {
+    const eligible = (): boolean =>
+      externalEpoch === this.externalSettingsEpoch &&
+      this.externalSettingsApplyOperations === 1 &&
+      !drainedManagedMutation &&
+      !this.firstUseInitializationPending &&
+      !this.currentMigrationMarker() &&
+      !this.pendingSyncedInventory &&
+      !this.workspaceSafetyNeedsPersistence &&
+      this.recoveryValidationRequired;
+    if (!eligible()) return false;
+    const canonical = (): string => JSON.stringify(this.withPendingMarker(this.settings));
+    const delivered = JSON.stringify(stored);
+    if (delivered !== canonical()) return false;
+
+    // An older local save may still overwrite the delivered file. Join that
+    // save and check disk again before treating the echo as already persisted.
+    await this.pluginDataWriteQueue.catch(() => undefined);
+    const latest: unknown = await this.loadData();
+    if (!eligible() || delivered !== canonical() || JSON.stringify(latest) !== delivered) {
+      return false;
+    }
+    // Retain existing durable blockers without publishing them again. The
+    // callback wrapper still retries exact recovery for a missing root.
+    if (this.baselineReviewRequired || this.missingRootRecoveryBlocked) return true;
+
+    // Receipt already armed the device-local journal and closed admission.
+    // Preserve that durable barrier through an exact scan; no data.json
+    // recovery=true/false round trip is needed for an unchanged commitment.
+    const journal = this.readTrustedInventoryJournal();
+    if (journal.status !== "valid" || !journal.journal.pending) return false;
+    const verified = await this.commitTrustedInventoryJournalForExactRoot(
+      clinicalRootFolder(),
+      journal.journal.generation
+    );
+    return verified && eligible() && delivered === canonical();
   }
 
   private markerFrom(value: unknown): MigrationMarker | null {
