@@ -81,6 +81,37 @@ function namedSetting(container: HTMLElement, name: string): Setting {
   return setting;
 }
 
+/**
+ * Submission failures belong to the same scroll surface as their form fields.
+ * Keeping this choice explicit also gives the mobile layout contract a small,
+ * executable boundary instead of relying on a source-text assertion.
+ */
+export function clinicalModalErrorContainer(container: HTMLElement): HTMLElement {
+  return container.querySelector<HTMLElement>(".clinical-modal-body") ?? container;
+}
+
+interface ClinicalModalRect {
+  top: number;
+  bottom: number;
+}
+
+/** Reveal only controls that the form's own scrollport actually clips. */
+export function clinicalModalControlNeedsReveal(
+  control: ClinicalModalRect,
+  scrollport: ClinicalModalRect,
+  inset = 8
+): boolean {
+  const safeInset = Number.isFinite(inset) ? Math.max(0, inset) : 0;
+  if (
+    !Number.isFinite(control.top) ||
+    !Number.isFinite(control.bottom) ||
+    !Number.isFinite(scrollport.top) ||
+    !Number.isFinite(scrollport.bottom)
+  ) return true;
+  return control.top < scrollport.top + safeInset ||
+    control.bottom > scrollport.bottom - safeInset;
+}
+
 export interface ClinicalModalViewportLayout {
   height: number;
   keyboardOpen: boolean;
@@ -105,6 +136,7 @@ export interface ClinicalModalViewportHost {
   onViewportScroll: (listener: () => void) => () => void;
   onWindowResize: (listener: () => void) => () => void;
   onFocusIn: (listener: () => void) => () => void;
+  onUserScrollIntent: (listener: () => void) => () => void;
   setTimer: (listener: () => void, delay: number) => number;
   clearTimer: (timer: number) => void;
 }
@@ -150,7 +182,14 @@ export class ClinicalModalViewportController {
 
   constructor(private readonly host: ClinicalModalViewportHost) {}
 
-  private readonly sync = (): void => {
+  /**
+   * Keep the modal fitted to the visual viewport without changing the user's
+   * position inside its scrollable form. iPadOS emits visualViewport `scroll`
+   * events while a nested sheet is being dragged; revealing the still-focused
+   * input from that event snaps the form back toward the input and feels like
+   * the sheet has frozen.
+   */
+  private sync(revealFocusedControl: boolean): void {
     if (!this.running) return;
     const metrics = this.host.readMetrics();
     this.host.applyLayout(calculateClinicalModalViewportLayout(
@@ -159,7 +198,23 @@ export class ClinicalModalViewportController {
       metrics.viewportOffsetTop,
       metrics.keyboardHeight
     ));
-    this.host.revealFocusedControl();
+    if (revealFocusedControl) this.host.revealFocusedControl();
+  }
+
+  private readonly handleViewportScroll = (): void => {
+    // A focus schedules late keyboard-animation checkpoints. If the user
+    // starts moving the sheet before the final checkpoint, those callbacks
+    // must not pull the still-focused field back into view.
+    this.clearTimers();
+    this.sync(false);
+  };
+
+  private readonly cancelScheduledReveals = (): void => {
+    this.clearTimers();
+  };
+
+  private readonly syncLayoutAndReveal = (): void => {
+    this.sync(true);
   };
 
   private readonly handleFocus = (): void => {
@@ -170,10 +225,14 @@ export class ClinicalModalViewportController {
     if (this.running) return;
     this.running = true;
     this.cleanupListeners = [
-      this.host.onViewportResize(this.sync),
-      this.host.onViewportScroll(this.sync),
-      this.host.onWindowResize(this.sync),
-      this.host.onFocusIn(this.handleFocus)
+      // Resize can be a late keyboard transition, rotation, or Split View
+      // change. Ask the host to reveal only when the active control is truly
+      // clipped after the new geometry is applied.
+      this.host.onViewportResize(this.syncLayoutAndReveal),
+      this.host.onViewportScroll(this.handleViewportScroll),
+      this.host.onWindowResize(this.syncLayoutAndReveal),
+      this.host.onFocusIn(this.handleFocus),
+      this.host.onUserScrollIntent(this.cancelScheduledReveals)
     ];
     this.schedule();
   }
@@ -196,7 +255,7 @@ export class ClinicalModalViewportController {
     if (!this.running) return;
     this.clearTimers();
     this.timers = CLINICAL_MODAL_VIEWPORT_SYNC_DELAYS.map((delay) =>
-      this.host.setTimer(this.sync, delay)
+      this.host.setTimer(this.syncLayoutAndReveal, delay)
     );
   }
 }
@@ -250,13 +309,35 @@ abstract class ClinicalResponsiveModal extends Modal {
       },
       revealFocusedControl: () => {
         const target = this.contentEl.ownerDocument.activeElement as HTMLElement | null;
-        if (!target || !this.contentEl.contains(target) || typeof target.scrollIntoView !== "function") return;
+        const body = this.contentEl.querySelector<HTMLElement>(".clinical-modal-body");
+        if (
+          !target ||
+          !body ||
+          !body.contains(target) ||
+          typeof target.scrollIntoView !== "function" ||
+          !clinicalModalControlNeedsReveal(
+            target.getBoundingClientRect(),
+            body.getBoundingClientRect()
+          )
+        ) return;
         target.scrollIntoView({ block: "nearest", inline: "nearest" });
       },
       onViewportResize: (listener) => listen(viewWindow.visualViewport, "resize", listener),
       onViewportScroll: (listener) => listen(viewWindow.visualViewport, "scroll", listener),
       onWindowResize: (listener) => listen(viewWindow, "resize", listener),
       onFocusIn: (listener) => listen(this.contentEl, "focusin", listener),
+      onUserScrollIntent: (listener) => {
+        const body = this.contentEl.querySelector<HTMLElement>(".clinical-modal-body");
+        if (!body) return () => undefined;
+        const cleanups = [
+          listen(body, "pointerdown", listener),
+          listen(body, "touchstart", listener),
+          listen(body, "wheel", listener)
+        ];
+        return () => {
+          for (const cleanup of cleanups) cleanup();
+        };
+      },
       setTimer: (listener, delay) => viewWindow.setTimeout(listener, delay),
       clearTimer: (timer) => viewWindow.clearTimeout(timer)
     });
@@ -612,8 +693,15 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
   }
 
   protected addActions(container: HTMLElement): void {
+    // Keep a potentially long recovery/write error inside the form's one
+    // scrolling region. When it was a fixed sibling of the body and footer, a
+    // keyboard-sized iPad viewport could leave almost no draggable form area.
     // Announced to assistive technology when a submission fails.
-    this.errorEl = container.createDiv({ cls: "clinical-modal-error", attr: { role: "alert", "aria-live": "assertive" } });
+    const errorContainer = clinicalModalErrorContainer(container);
+    this.errorEl = errorContainer.createDiv({
+      cls: "clinical-modal-error",
+      attr: { role: "alert", "aria-live": "assertive" }
+    });
     this.errorEl.hide();
     const actions = container.createDiv({ cls: "clinical-modal-actions" });
     const cancel = actions.createEl("button", { text: "Cancel" });
@@ -652,6 +740,7 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
       if (this.errorEl) {
         this.errorEl.setText(message);
         this.errorEl.show();
+        this.errorEl.scrollIntoView({ block: "nearest", inline: "nearest" });
       }
       showClinicalNotice(message, 7000);
       this.submitting = false;

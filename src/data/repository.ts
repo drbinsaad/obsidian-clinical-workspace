@@ -138,6 +138,11 @@ export class ClinicalRepository {
     this.writeBlockReason = reason;
   }
 
+  /** Lets UI actions fail before opening a data-entry form that cannot save. */
+  getWriteBlockReason(): string | null {
+    return this.writeBlockReason;
+  }
+
   setManagedRecordWriteObserver(
     observer: ((paths: readonly string[]) => Promise<boolean | void>) | null
   ): void {

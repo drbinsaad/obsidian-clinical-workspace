@@ -46,6 +46,7 @@ import {
   CLINICAL_INITIALIZATION_REQUIRED_MESSAGE,
   CLINICAL_INITIALIZATION_SAVE_FAILED_MESSAGE,
   CLINICAL_ROOT_UNAVAILABLE_MESSAGE,
+  CLINICAL_SYNC_GROWTH_PENDING_MESSAGE,
   hideClinicalRecoveryNotice,
   showClinicalNotice,
   showClinicalRecoveryNotice
@@ -96,6 +97,12 @@ interface PersistedWorkspaceSafety {
 interface RecordInventory {
   counts: ExpectedEntityCounts;
   digest: string;
+  /**
+   * One SHA-256 per `entity:id`, sorted as a multiset. This stays only in the
+   * device-local journal and lets Sync growth prove that every previously
+   * trusted record identity survived without exposing identifiers.
+   */
+  identityDigests: string[];
   total: number;
 }
 
@@ -105,6 +112,8 @@ interface TrustedInventoryJournalEntry {
   expectedManagedRecordCount: number;
   expectedEntityCounts: ExpectedEntityCounts;
   expectedRecordDigest: string;
+  /** Optional for journals created before additive Sync recovery existed. */
+  expectedRecordIdentityDigests?: string[] | undefined;
 }
 
 interface TrustedInventoryJournal {
@@ -132,6 +141,9 @@ export const TRUSTED_INVENTORY_JOURNAL_KEY =
   "clinical-workspace:trusted-inventory-journal:v1";
 
 const MAX_RETIRED_ROOT_FOLDERS = 64;
+/** Avoid making a device-local journal unbounded; larger vaults stay conservative. */
+export const MAX_JOURNALED_RECORD_IDENTITIES = 20_000;
+export const RECORD_IDENTITY_HASH_BATCH_SIZE = 256;
 
 interface BaselineAdoptionCandidate {
   root: string;
@@ -149,7 +161,7 @@ function completeSafetyInventory(
   if (!counts || !digest) return null;
   const total = counts.patient + counts.episode + counts.task + counts.procedure;
   if (total !== safety.expectedManagedRecordCount) return null;
-  return { counts: { ...counts }, digest, total };
+  return { counts: { ...counts }, digest, identityDigests: [], total };
 }
 
 function sameRecordInventory(left: RecordInventory, right: RecordInventory): boolean {
@@ -158,12 +170,28 @@ function sameRecordInventory(left: RecordInventory, right: RecordInventory): boo
     ENTITY_FOLDER_NAMES.every(([entity]) => left.counts[entity] === right.counts[entity]);
 }
 
+function containsEveryTrustedIdentity(
+  current: readonly string[],
+  trusted: readonly string[]
+): boolean {
+  let currentIndex = 0;
+  for (const expected of trusted) {
+    while (currentIndex < current.length && current[currentIndex]! < expected) {
+      currentIndex += 1;
+    }
+    if (current[currentIndex] !== expected) return false;
+    currentIndex += 1;
+  }
+  return true;
+}
+
 function recordInventoryFromJournalEntry(
   entry: TrustedInventoryJournalEntry
 ): RecordInventory {
   return {
     counts: { ...entry.expectedEntityCounts },
     digest: entry.expectedRecordDigest,
+    identityDigests: [...(entry.expectedRecordIdentityDigests ?? [])],
     total: entry.expectedManagedRecordCount
   };
 }
@@ -239,6 +267,26 @@ function parseTrustedInventoryJournal(value: unknown): TrustedInventoryJournal |
   const total = expectedEntityCounts.patient + expectedEntityCounts.episode +
     expectedEntityCounts.task + expectedEntityCounts.procedure;
   if (total !== entry.expectedManagedRecordCount) return null;
+  const rawIdentityDigests = entry.expectedRecordIdentityDigests;
+  let expectedRecordIdentityDigests: string[] | undefined;
+  if (rawIdentityDigests !== undefined) {
+    if (
+      !Array.isArray(rawIdentityDigests) ||
+      rawIdentityDigests.length !== total ||
+      rawIdentityDigests.length > MAX_JOURNALED_RECORD_IDENTITIES
+    ) return null;
+    expectedRecordIdentityDigests = [];
+    let previous: string | null = null;
+    for (const candidate of rawIdentityDigests) {
+      if (
+        typeof candidate !== "string" ||
+        !/^[0-9a-f]{64}$/.test(candidate) ||
+        (previous !== null && candidate < previous)
+      ) return null;
+      expectedRecordIdentityDigests.push(candidate);
+      previous = candidate;
+    }
+  }
   return {
     version: 1,
     generation: journal.generation,
@@ -248,7 +296,8 @@ function parseTrustedInventoryJournal(value: unknown): TrustedInventoryJournal |
       rootFingerprint: entry.rootFingerprint,
       expectedManagedRecordCount: entry.expectedManagedRecordCount,
       expectedEntityCounts,
-      expectedRecordDigest: entry.expectedRecordDigest
+      expectedRecordDigest: entry.expectedRecordDigest,
+      ...(expectedRecordIdentityDigests ? { expectedRecordIdentityDigests } : {})
     }
   };
 }
@@ -272,6 +321,11 @@ function sameTrustedInventoryJournal(
   return leftEntry.rootFingerprint === rightEntry.rootFingerprint &&
     leftEntry.expectedManagedRecordCount === rightEntry.expectedManagedRecordCount &&
     leftEntry.expectedRecordDigest === rightEntry.expectedRecordDigest &&
+    leftEntry.expectedRecordIdentityDigests?.length ===
+      rightEntry.expectedRecordIdentityDigests?.length &&
+    leftEntry.expectedRecordIdentityDigests?.some(
+      (digest, index) => digest !== rightEntry.expectedRecordIdentityDigests?.[index]
+    ) !== true &&
     ENTITY_FOLDER_NAMES.every(
       ([entity]) =>
         leftEntry.expectedEntityCounts[entity] === rightEntry.expectedEntityCounts[entity]
@@ -318,6 +372,31 @@ async function sha256Hex(value: string): Promise<string> {
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+type RecordIdentityHasher = (identity: string) => Promise<string>;
+
+/**
+ * Hash the local membership witness without queueing tens of thousands of
+ * WebCrypto jobs at once. Above the journal cap we deliberately omit the
+ * witness and keep cross-device growth on the conservative review path.
+ */
+export async function journaledRecordIdentityDigests(
+  identities: readonly string[],
+  hashIdentity: RecordIdentityHasher = (identity) =>
+    sha256Hex(`clinical-workspace/record-identity/v1\0${identity}`)
+): Promise<string[]> {
+  if (identities.length > MAX_JOURNALED_RECORD_IDENTITIES) return [];
+  const digests: string[] = [];
+  for (let offset = 0; offset < identities.length; offset += RECORD_IDENTITY_HASH_BATCH_SIZE) {
+    digests.push(...await Promise.all(
+      identities
+        .slice(offset, offset + RECORD_IDENTITY_HASH_BATCH_SIZE)
+        .map((identity) => hashIdentity(identity))
+    ));
+  }
+  digests.sort();
+  return digests;
+}
+
 async function rootFingerprint(root: string): Promise<string> {
   return sha256Hex(`clinical-workspace/root/v1\0${normalizeFolderPath(root)}`);
 }
@@ -328,10 +407,10 @@ async function retiredRootFingerprint(root: string): Promise<string> {
 
 /** Static, identifier-free highlights shown once after an update. */
 const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
-  "The iPhone header now keeps Search, Quick Entry, and Refresh together, with all five workspace tabs available without clipped labels.",
-  "Surgery summaries and record actions use compact touch-safe grids, so important content appears sooner on phone screens.",
-  "Mobile Patients now has a labelled Add patient action that stays in the page instead of floating over records or Obsidian controls.",
-  "Quick Entry and Search are denser, respect iPhone safe areas, and announce Search result states to assistive technology."
+  "iPad task forms now scroll normally with the keyboard open and keep entered text available when a save is blocked.",
+  "Safe cross-device additions verify every previously trusted record and resume automatically instead of requiring ADOPT.",
+  "Task and procedure forms now warn before data entry when Sync recovery already makes the workspace read-only.",
+  "Discharge status, split-pane accessibility, focus restoration, and mobile touch targets are more reliable."
 ];
 
 /**
@@ -387,6 +466,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   /** Parsed-record commitment; null until first computed or for pre-0.5 state. */
   private expectedEntityCounts: ExpectedEntityCounts | null = null;
   private expectedRecordDigest: string | null = null;
+  /** Device-local membership proof for the currently trusted tuple. */
+  private expectedRecordIdentityDigests: string[] | null = null;
+  /**
+   * A complete higher tuple delivered through Sync but not trusted yet. It is
+   * promoted automatically only when the on-disk set proves strict additive
+   * growth over the device-local membership proof.
+   */
+  private pendingSyncedInventory: RecordInventory | null = null;
   /** Version the what's-new window was last shown for; null before 0.5.0. */
   private whatsNewVersion: string | null = null;
   private whatsNewShownThisSession = false;
@@ -806,9 +893,25 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       );
       this.expectedEntityCounts = { ...journalInventory.counts };
       this.expectedRecordDigest = journalInventory.digest;
+      this.expectedRecordIdentityDigests = journalInventory.identityDigests.length ===
+        journalInventory.total
+        ? [...journalInventory.identityDigests]
+        : null;
       this.managedRecordsExpected ||= journalInventory.total > 0;
       this.recoveryValidationRequired = true;
-      this.baselineReviewRequired ||= higherSyncedCommitment || equalSyncedConflict;
+      if (
+        higherSyncedCommitment &&
+        syncedInventory !== null &&
+        this.expectedRecordIdentityDigests !== null
+      ) {
+        // Keep the synced tuple as an untrusted candidate. A later exact scan
+        // may prove it is a strict superset of the local membership anchor;
+        // until then writes remain closed without forcing a false ADOPT.
+        this.pendingSyncedInventory = syncedInventory;
+      }
+      this.baselineReviewRequired ||=
+        equalSyncedConflict ||
+        (higherSyncedCommitment && this.pendingSyncedInventory === null);
     } else if (
       journalRead.status === "invalid" ||
       (
@@ -881,6 +984,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       ? CLINICAL_INITIALIZATION_REQUIRED_MESSAGE
       : this.baselineReviewRequired
         ? CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
+        : this.pendingSyncedInventory
+          ? CLINICAL_SYNC_GROWTH_PENDING_MESSAGE
         : this.missingRootRecoveryBlocked
           ? CLINICAL_ROOT_UNAVAILABLE_MESSAGE
           : CLINICAL_WRITES_BLOCKED_MESSAGE;
@@ -1133,13 +1238,16 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     const localCountTotal = localCounts
       ? localCounts.patient + localCounts.episode + localCounts.task + localCounts.procedure
       : -1;
-    const localInventory = localCounts && this.expectedRecordDigest &&
-      localCountTotal === localExpectedCount
+    const localTrustedInventory = localCounts && this.expectedRecordDigest
       ? {
           counts: { ...localCounts },
           digest: this.expectedRecordDigest,
-          total: localExpectedCount
+          identityDigests: [...(this.expectedRecordIdentityDigests ?? [])],
+          total: localCountTotal
         }
+      : null;
+    const localInventory = localTrustedInventory?.total === localExpectedCount
+      ? localTrustedInventory
       : null;
     const deliveredInventory = completeSafetyInventory(deliveredSafety);
     const deliveredIsHigher = deliveredExpectedCount > localExpectedCount;
@@ -1155,12 +1263,31 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       deliveredInventory !== null;
     const adoptDeliveredInventory =
       seedTrustedFirstUseInventory;
-    // A larger count plus one aggregate digest cannot prove set inclusion: a
-    // replacement plus growth can look like a harmless extension. Once this
-    // device has a trusted baseline, every higher commitment needs typed
-    // review rather than silently accepting possible record loss.
+    const deliveredIsHigherThanTrusted =
+      localTrustedInventory !== null &&
+      deliveredExpectedCount > localTrustedInventory.total;
+    const canStageAdditiveGrowth =
+      deliveredInventory !== null &&
+      deliveredIsHigherThanTrusted &&
+      !marker &&
+      !drainedManagedMutation &&
+      incoming.rootFolder === previousRoot &&
+      deliveredExpectedCount >=
+        (this.pendingSyncedInventory?.total ?? localTrustedInventory?.total ?? 0) &&
+      this.expectedRecordIdentityDigests?.length === localTrustedInventory?.total &&
+      localTrustedInventory !== null &&
+      ENTITY_FOLDER_NAMES.every(
+        ([entity]) => deliveredInventory.counts[entity] >= localTrustedInventory.counts[entity]
+      );
+    // A larger aggregate digest alone still cannot prove inclusion. Devices
+    // with a complete local membership anchor may stage the delivered tuple
+    // and prove it against the finished on-disk Sync set; legacy anchors stay
+    // on the typed-review path.
     const higherCommitmentNeedsReview =
-      deliveredIsHigher && localCommitmentEstablished && !adoptDeliveredInventory;
+      deliveredIsHigher &&
+      localCommitmentEstablished &&
+      !adoptDeliveredInventory &&
+      !canStageAdditiveGrowth;
     const equalCommitmentConflicts =
       deliveredIsEqual &&
       localInventory !== null &&
@@ -1170,7 +1297,11 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       deliveredIsEqual &&
       localCommitmentEstablished &&
       localInventory === null &&
-      deliveredInventory !== null;
+      deliveredInventory !== null &&
+      !canStageAdditiveGrowth;
+    const pendingCommitmentRegressed =
+      this.pendingSyncedInventory !== null &&
+      deliveredExpectedCount < this.pendingSyncedInventory.total;
     const drainedRootRebind =
       drainedManagedMutation && incoming.rootFolder !== previousRoot;
 
@@ -1182,12 +1313,16 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.expectedManagedRecordCount = deliveredInventory.total;
       this.expectedEntityCounts = { ...deliveredInventory.counts };
       this.expectedRecordDigest = deliveredInventory.digest;
+      this.expectedRecordIdentityDigests = null;
     } else {
       this.expectedManagedRecordCount = Math.max(
         localExpectedCount,
         deliveredExpectedCount,
         this.managedRecordsExpected ? 1 : 0
       );
+    }
+    if (canStageAdditiveGrowth && deliveredInventory) {
+      this.pendingSyncedInventory = deliveredInventory;
     }
     if (equalCompleteUpgradesIncompleteLocal && deliveredInventory) {
       // Retain the stronger tuple as pending evidence, but never call it
@@ -1202,7 +1337,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       deliveredSafety?.baselineReviewRequired === true ||
       higherCommitmentNeedsReview ||
       equalCommitmentConflicts ||
-      equalCompleteUpgradesIncompleteLocal;
+      equalCompleteUpgradesIncompleteLocal ||
+      pendingCommitmentRegressed;
     // A versioned safety state supersedes the one-time legacy adoption prompt.
     // A safetyless file remains ambiguous and is handled below without saving.
     if (this.firstUseInitializationPending && deliveredTrustedSafety) {
@@ -1263,6 +1399,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.setBaselineReviewBlocked(
         deliveredExpectedCount > 0 || this.managedRecordsExpected
       );
+    } else if (this.pendingSyncedInventory && !marker) {
+      // The complete higher tuple is evidence, not trust. Keep writes closed
+      // until the record files arrive and membership inclusion is proven.
+      this.setMissingRootRecoveryBlocked(true);
     }
 
     // Apply non-path settings immediately, but keep reads pointed at the last
@@ -1627,7 +1767,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     if (!counts || !digest || !/^[0-9a-f]{64}$/.test(digest)) return null;
     const total = counts.patient + counts.episode + counts.task + counts.procedure;
     if (total !== this.expectedManagedRecordCount) return null;
-    return { counts: { ...counts }, digest, total };
+    return {
+      counts: { ...counts },
+      digest,
+      identityDigests: [...(this.expectedRecordIdentityDigests ?? [])],
+      total
+    };
   }
 
   private journalEntryForCurrentInventory(): TrustedInventoryJournalEntry | null {
@@ -1637,7 +1782,11 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       rootFingerprint: this.activeRootFingerprint,
       expectedManagedRecordCount: inventory.total,
       expectedEntityCounts: { ...inventory.counts },
-      expectedRecordDigest: inventory.digest
+      expectedRecordDigest: inventory.digest,
+      ...(inventory.identityDigests.length === inventory.total &&
+      inventory.total <= MAX_JOURNALED_RECORD_IDENTITIES
+        ? { expectedRecordIdentityDigests: [...inventory.identityDigests] }
+        : {})
     };
   }
 
@@ -1666,6 +1815,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       !this.inventoryExactlyMatchesExpected(root, inventory)
     ) return false;
     this.activeRootFingerprint = fingerprint;
+    this.expectedRecordIdentityDigests = [...inventory.identityDigests];
     return this.commitTrustedInventoryJournal(expectedGeneration);
   }
 
@@ -1800,18 +1950,25 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   }
 
   private workspaceSafety(): PersistedWorkspaceSafety {
+    const pendingInventoryAtFloor =
+      !this.baselineReviewRequired &&
+      this.pendingSyncedInventory?.total === this.expectedManagedRecordCount
+        ? this.pendingSyncedInventory
+        : null;
+    const persistedInventory = pendingInventoryAtFloor ?? this.currentCompleteInventory();
     return {
       version: 1,
       initialized: this.workspaceInitialized,
       initializationApproved: this.initializationScaffoldApproved,
       managedRecordsExpected: this.managedRecordsExpected,
-      expectedManagedRecordCount: this.expectedManagedRecordCount,
+      expectedManagedRecordCount:
+        persistedInventory?.total ?? this.expectedManagedRecordCount,
       rootRecoveryRequired: this.missingRootRecoveryBlocked,
       recoveryRequiresRecords: this.missingRootRequiresRecords,
       recoveryValidationRequired: this.recoveryValidationRequired,
       baselineReviewRequired: this.baselineReviewRequired,
-      expectedEntityCounts: this.expectedEntityCounts ?? undefined,
-      expectedRecordDigest: this.expectedRecordDigest ?? undefined
+      expectedEntityCounts: persistedInventory?.counts ?? this.expectedEntityCounts ?? undefined,
+      expectedRecordDigest: persistedInventory?.digest ?? this.expectedRecordDigest ?? undefined
     };
   }
 
@@ -1833,10 +1990,15 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         ids.push(`${entity}:${record.id}`);
       }
     }
-    const digest = await sha256Hex(ids.sort().join("\n"));
+    ids.sort();
+    const [digest, identityDigests] = await Promise.all([
+      sha256Hex(ids.join("\n")),
+      journaledRecordIdentityDigests(ids)
+    ]);
     return {
       counts,
       digest,
+      identityDigests,
       total: counts.patient + counts.episode + counts.task + counts.procedure
     };
   }
@@ -1934,9 +2096,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     const changed =
       !previous ||
       JSON.stringify(next) !== JSON.stringify(previous) ||
-      this.expectedRecordDigest !== current.digest;
+      this.expectedRecordDigest !== current.digest ||
+      this.expectedRecordIdentityDigests?.length !== current.identityDigests.length ||
+      this.expectedRecordIdentityDigests?.some(
+        (digest, index) => digest !== current.identityDigests[index]
+      ) === true;
     this.expectedEntityCounts = next;
     this.expectedRecordDigest = current.digest;
+    this.expectedRecordIdentityDigests = [...current.identityDigests];
     return changed;
   }
 
@@ -1955,10 +2122,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     const externalSettingsBlocked = !blocked && this.externalSettingsApplyOperations > 0;
     const effectiveBlocked = blocked || initializationBlocked || reviewBlocked ||
       missingRootBlocked || markerBlocked || externalSettingsBlocked;
-    const effectiveMessage = initializationBlocked
+    const effectiveMessage = this.firstUseInitializationPending || initializationBlocked
       ? CLINICAL_INITIALIZATION_REQUIRED_MESSAGE
-      : reviewBlocked
+      : this.baselineReviewRequired || reviewBlocked
         ? CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
+        : this.pendingSyncedInventory
+          ? CLINICAL_SYNC_GROWTH_PENDING_MESSAGE
         : missingRootBlocked
           ? CLINICAL_ROOT_UNAVAILABLE_MESSAGE
           : message;
@@ -2143,6 +2312,69 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
   }
 
+  /**
+   * Turns a complete higher Sync tuple into trust only after the current disk
+   * proves strict multiset inclusion of every device-local trusted identity.
+   * An exact candidate that omits even one prior identity is a real conflict;
+   * an incomplete candidate is simply still syncing and remains retryable.
+   */
+  private async promotePendingSyncedGrowth(): Promise<"promoted" | "waiting" | "conflict"> {
+    const candidate = this.pendingSyncedInventory;
+    const trustedIdentities = this.expectedRecordIdentityDigests;
+    if (!candidate || !trustedIdentities) return "waiting";
+    const root = clinicalRootFolder();
+    const recoveryRevision = this.markerFreeRecoveryRevision;
+    let current: RecordInventory;
+    try {
+      current = await this.parsedRecordInventory(root);
+    } catch {
+      return "waiting";
+    }
+    if (
+      this.pendingSyncedInventory !== candidate ||
+      this.markerFreeRecoveryRevision !== recoveryRevision ||
+      clinicalRootFolder() !== root ||
+      this.externalSettingsApplyOperations > 0 ||
+      this.firstUseInitializationPending ||
+      this.currentMigrationMarker()
+    ) return "waiting";
+
+    const currentExactlyMatchesCandidate =
+      this.rootManagedRecordCount(root) === candidate.total &&
+      sameRecordInventory(current, candidate);
+    if (!currentExactlyMatchesCandidate) return "waiting";
+
+    const trustedTotal = trustedIdentities.length;
+    const preservesTrustedTuple =
+      candidate.total > trustedTotal &&
+      containsEveryTrustedIdentity(current.identityDigests, trustedIdentities) &&
+      this.expectedEntityCounts !== null &&
+      ENTITY_FOLDER_NAMES.every(
+        ([entity]) => current.counts[entity] >= (this.expectedEntityCounts?.[entity] ?? 0)
+      );
+    if (!preservesTrustedTuple) {
+      this.pendingSyncedInventory = null;
+      this.setBaselineReviewBlocked(this.managedRecordsExpected || candidate.total > 0);
+      try {
+        await this.persistWorkspaceSafety();
+      } catch {
+        this.workspaceSafetyNeedsPersistence = true;
+      }
+      this.showMigrationRecoveryNotice(
+        12000,
+        CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
+      );
+      return "conflict";
+    }
+
+    this.expectedManagedRecordCount = candidate.total;
+    this.expectedEntityCounts = { ...candidate.counts };
+    this.expectedRecordDigest = candidate.digest;
+    this.expectedRecordIdentityDigests = [...current.identityDigests];
+    this.pendingSyncedInventory = null;
+    return "promoted";
+  }
+
   private async tryExactRestoredRootRecovery(): Promise<boolean> {
     if (
       !this.missingRootRecoveryBlocked ||
@@ -2152,6 +2384,11 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.currentMigrationMarker()
     ) {
       return !this.migrationRecoveryBlocked;
+    }
+
+    if (this.pendingSyncedInventory) {
+      const promotion = await this.promotePendingSyncedGrowth();
+      if (promotion !== "promoted") return false;
     }
 
     const root = clinicalRootFolder();
@@ -2257,7 +2494,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       ENTITY_FOLDER_NAMES.every(
         ([entity]) => finalInventory?.counts[entity] === expectedCounts[entity]
       );
-    if (!finalMatches) {
+    if (!finalMatches || !finalInventory) {
       this.setMissingRootRecoveryBlocked(requiresRecords);
       try {
         await this.persistPluginData();
@@ -2267,6 +2504,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       return false;
     }
 
+    // Exact validation safely upgrades a clean pre-witness journal. Without
+    // this assignment an existing installation would keep requiring ADOPT for
+    // ordinary additive Sync until it happened to perform a local write.
+    this.expectedRecordIdentityDigests = [...finalInventory.identityDigests];
     this.requestMarkerFreeRecoveryRelease();
     // Do not await UI work after the final inventory check: a Sync event in
     // that gap could otherwise dirty the accepted snapshot before the queue
@@ -2534,6 +2775,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.expectedManagedRecordCount = currentRecordCount;
     this.expectedEntityCounts = { ...currentInventory.counts };
     this.expectedRecordDigest = currentInventory.digest;
+    this.expectedRecordIdentityDigests = [...currentInventory.identityDigests];
+    this.pendingSyncedInventory = null;
     this.activeRootFingerprint = currentRootFingerprint;
     this.missingRootRecoveryBlocked = false;
     this.missingRootRequiresRecords = false;
@@ -3081,6 +3324,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         }
         this.expectedEntityCounts = { ...winningInventory.counts };
         this.expectedRecordDigest = winningInventory.digest;
+        this.expectedRecordIdentityDigests = [...winningInventory.identityDigests];
+        this.pendingSyncedInventory = null;
         this.expectedManagedRecordCount = winningInventory.total;
         this.managedRecordsExpected ||= winningInventory.total > 0;
         // The marker remains the live in-memory barrier. Save the complete
@@ -3288,6 +3533,18 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       return false;
     }
 
+    // A user pressing Retry after the final record file arrives must use the
+    // same membership proof as automatic recovery. Comparing the higher disk
+    // tuple directly with the older trusted tuple would turn safe additive
+    // Sync into a permanent ADOPT conflict.
+    if (this.pendingSyncedInventory) {
+      const promotion = await this.promotePendingSyncedGrowth();
+      if (promotion !== "promoted") {
+        if (promotion === "waiting") this.showMigrationRecoveryNotice();
+        return false;
+      }
+    }
+
     const requiresRecords = this.missingRootRequiresRecords;
     const expectedCount = this.expectedManagedRecordCount;
     const expectedDigest = this.expectedRecordDigest;
@@ -3380,6 +3637,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
     this.expectedEntityCounts = { ...acceptedInventory.counts };
     this.expectedRecordDigest = acceptedInventory.digest;
+    this.expectedRecordIdentityDigests = [...acceptedInventory.identityDigests];
+    this.pendingSyncedInventory = null;
     this.expectedManagedRecordCount = acceptedRawCount;
     this.managedRecordsExpected ||= acceptedInventory.total > 0;
     this.recoveryValidationRequired = true;
@@ -3597,7 +3856,11 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.pendingMigrationMarker = { migrationInProgress: inferred };
       this.pendingMigrationConfiguredRoot = activeRoot;
       this.setMigrationRecoveryBlocked(true);
-      void this.persistPluginData();
+      // Event callbacks cannot await persistence, but recovery-state writes
+      // still need the same fail-closed error handling as every other safety
+      // save. `persistWorkspaceSafety` absorbs the rejection, keeps the
+      // in-memory barrier armed, and tells the user that durability failed.
+      void this.persistWorkspaceSafety();
       return;
     }
     // An existing recovery owns its retry path, but the new journal generation
@@ -4032,6 +4295,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       inventory: {
         counts: { ...inventory.counts },
         digest: inventory.digest,
+        identityDigests: [...inventory.identityDigests],
         total: inventory.total
       }
     };
@@ -4202,6 +4466,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
     this.expectedEntityCounts = { ...acceptedInventory.counts };
     this.expectedRecordDigest = acceptedInventory.digest;
+    this.expectedRecordIdentityDigests = [...acceptedInventory.identityDigests];
+    this.pendingSyncedInventory = null;
     this.expectedManagedRecordCount = acceptedRawCount;
     this.managedRecordsExpected = acceptedInventory.total > 0;
     this.recoveryValidationRequired = true;

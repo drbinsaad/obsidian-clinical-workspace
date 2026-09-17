@@ -223,10 +223,13 @@ test("loose notes land in their folder, never overwrite, and respect the barrier
   );
 
   repository.setWriteBlock("Synthetic barrier message");
+  assert.equal(repository.getWriteBlockReason(), "Synthetic barrier message");
   await assert.rejects(
     () => repository.createLooseNote(folder, "Handover 2026-08-14", "three"),
     /Synthetic barrier message/
   );
+  repository.setWriteBlock(null);
+  assert.equal(repository.getWriteBlockReason(), null);
 });
 
 test("a closed record with a trail but no closure event is reported", async () => {

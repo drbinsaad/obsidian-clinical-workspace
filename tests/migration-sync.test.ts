@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { App, TFile, TFolder } from "obsidian";
-import ClinicalWorkspacePlugin from "../src/main";
+import ClinicalWorkspacePlugin, {
+  MAX_JOURNALED_RECORD_IDENTITIES,
+  RECORD_IDENTITY_HASH_BATCH_SIZE,
+  journaledRecordIdentityDigests
+} from "../src/main";
 import { clinicalRootFolder, setClinicalRoot } from "../src/data/paths";
 import {
   CLINICAL_WRITES_BLOCKED_MESSAGE,
@@ -35,6 +39,7 @@ type TestTrustedInventoryJournal = {
     expectedManagedRecordCount: number;
     expectedEntityCounts: TestRecordInventory["counts"];
     expectedRecordDigest: string;
+    expectedRecordIdentityDigests?: string[];
   };
 };
 
@@ -44,6 +49,36 @@ type TestBaselineAdoptionCandidate = {
   recoveryRevision: number;
   inventory: TestRecordInventory;
 };
+
+test("identity witnesses cap storage and bound concurrent WebCrypto work", async () => {
+  let active = 0;
+  let maximumActive = 0;
+  let calls = 0;
+  const hasher = async (identity: string): Promise<string> => {
+    calls += 1;
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    await Promise.resolve();
+    active -= 1;
+    return identity.padStart(64, "0").slice(-64);
+  };
+  const boundedInput = Array.from(
+    { length: RECORD_IDENTITY_HASH_BATCH_SIZE + 5 },
+    (_, index) => String(index)
+  );
+  const digests = await journaledRecordIdentityDigests(boundedInput, hasher);
+  assert.equal(digests.length, boundedInput.length);
+  assert.equal(calls, boundedInput.length);
+  assert.ok(maximumActive <= RECORD_IDENTITY_HASH_BATCH_SIZE);
+
+  calls = 0;
+  const overLimit = Array.from(
+    { length: MAX_JOURNALED_RECORD_IDENTITIES + 1 },
+    (_, index) => String(index)
+  );
+  assert.deepEqual(await journaledRecordIdentityDigests(overLimit, hasher), []);
+  assert.equal(calls, 0, "over-limit inventories must not start per-record hashing");
+});
 
 type TestPlugin = {
   app: StubApp;
@@ -239,7 +274,6 @@ async function assertInvalidTrustedJournalFailsClosed(journal: unknown): Promise
     restartedRepository.setWriteBlock(
       restarted.migrationRecoveryBlocked ? restarted.recoveryBlockMessage : null
     );
-
     assert.equal(restarted.firstUseInitializationPending, false);
     assert.equal(restarted.recoveryValidationRequired, true);
     assert.equal(restarted.baselineReviewRequired, true);
@@ -3338,6 +3372,12 @@ test("a device-local trusted inventory survives interruption before conflict rev
       restarted.migrationRecoveryBlocked ? restarted.recoveryBlockMessage : null
     );
 
+    assert.equal(
+      await restarted.retryExactRestoredRootRecovery(),
+      false,
+      "startup verification must classify replacement growth as review, not additive Sync"
+    );
+
     const journalAtRestart = app.loadLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY) as {
       version?: unknown;
       generation?: unknown;
@@ -3620,7 +3660,118 @@ test("a benign external callback clears its journal only after canonical save an
   }
 });
 
-test("a higher complete same-root commitment requires durable typed baseline review", async () => {
+test("files-first additive same-root Sync reopens automatically after the matching data snapshot", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
+    const { app, repository, service } = await harness();
+    await service.createEpisode(episodeInput());
+    let stored: unknown = { ...DEFAULT_SETTINGS };
+    const plugin = makePlugin(app, repository, () => stored, (data) => {
+      stored = data;
+    });
+    await plugin.noteManagedRecordWrite();
+    const localSafety = (stored as { workspaceSafety?: Record<string, unknown> })
+      .workspaceSafety;
+    assert.ok(localSafety);
+
+    addDistinctManagedRecord(app, DEFAULT_SETTINGS.rootFolder, "files-first-additive");
+    const additive = await plugin.parsedRecordInventory(DEFAULT_SETTINGS.rootFolder);
+    stored = {
+      ...(stored as Record<string, unknown>),
+      workspaceSafety: {
+        ...localSafety,
+        expectedManagedRecordCount: additive.total,
+        expectedEntityCounts: { ...additive.counts },
+        expectedRecordDigest: additive.digest,
+        rootRecoveryRequired: false,
+        recoveryRequiresRecords: true,
+        recoveryValidationRequired: false,
+        baselineReviewRequired: false
+      }
+    };
+
+    await plugin.onExternalSettingsChange();
+    assert.equal(plugin.baselineReviewRequired, false);
+    assert.equal(plugin.migrationRecoveryBlocked, false);
+    assert.deepEqual(plugin.expectedEntityCounts, additive.counts);
+    assert.equal(plugin.expectedRecordDigest, additive.digest);
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("exact startup upgrades a clean pre-witness journal before the first additive Sync", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
+    const { app, repository, service } = await harness();
+    await service.createEpisode(episodeInput());
+    let stored: unknown = { ...DEFAULT_SETTINGS };
+    const seeded = makePlugin(app, repository, () => stored, (data) => {
+      stored = data;
+    });
+    await seeded.noteManagedRecordWrite();
+    const originalInventory = await seeded.parsedRecordInventory(DEFAULT_SETTINGS.rootFolder);
+    const legacyJournal = app.loadLocalStorage(
+      TRUSTED_INVENTORY_JOURNAL_KEY
+    ) as TestTrustedInventoryJournal | null;
+    assert.ok(legacyJournal?.trustedInventory);
+    delete legacyJournal.trustedInventory.expectedRecordIdentityDigests;
+    app.saveLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY, legacyJournal);
+
+    const restartedRepository = new ClinicalRepository(app as unknown as App);
+    const restarted = makePlugin(app, restartedRepository, () => stored, (data) => {
+      stored = data;
+    });
+    await restarted.loadSettings();
+    restartedRepository.setWriteBlock(restarted.recoveryBlockMessage);
+    assert.equal(await restarted.retryExactRestoredRootRecovery(), true);
+    const upgradedJournal = app.loadLocalStorage(
+      TRUSTED_INVENTORY_JOURNAL_KEY
+    ) as TestTrustedInventoryJournal | null;
+    assert.equal(
+      upgradedJournal?.trustedInventory?.expectedRecordIdentityDigests?.length,
+      originalInventory.total,
+      "the exact startup scan must install the missing local membership witness"
+    );
+
+    addDistinctManagedRecord(app, DEFAULT_SETTINGS.rootFolder, "first-growth-after-witness-upgrade");
+    const additive = await restarted.parsedRecordInventory(DEFAULT_SETTINGS.rootFolder);
+    const currentSafety = (stored as { workspaceSafety?: Record<string, unknown> })
+      .workspaceSafety;
+    assert.ok(currentSafety);
+    stored = {
+      ...(stored as Record<string, unknown>),
+      workspaceSafety: {
+        ...currentSafety,
+        expectedManagedRecordCount: additive.total,
+        expectedEntityCounts: { ...additive.counts },
+        expectedRecordDigest: additive.digest,
+        rootRecoveryRequired: false,
+        recoveryRequiresRecords: true,
+        recoveryValidationRequired: false,
+        baselineReviewRequired: false
+      }
+    };
+
+    await restarted.onExternalSettingsChange();
+    assert.equal(restarted.baselineReviewRequired, false);
+    assert.equal(restarted.migrationRecoveryBlocked, false);
+    assert.equal(restarted.expectedManagedRecordCount, additive.total);
+    const additiveJournal = app.loadLocalStorage(
+      TRUSTED_INVENTORY_JOURNAL_KEY
+    ) as TestTrustedInventoryJournal | null;
+    assert.equal(
+      additiveJournal?.trustedInventory?.expectedRecordIdentityDigests?.length,
+      additive.total
+    );
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("additive same-root Sync survives duplicate data-first callbacks and restart without ADOPT", async () => {
   const originalRoot = clinicalRootFolder();
   try {
     setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
@@ -3675,12 +3826,12 @@ test("a higher complete same-root commitment requires durable typed baseline rev
     assert.equal(plugin.expectedRecordDigest, localInventory.digest);
     assert.equal(plugin.migrationRecoveryBlocked, true);
     assert.equal(plugin.missingRootRecoveryBlocked, true);
-    assert.equal(plugin.baselineReviewRequired, true);
+    assert.equal(plugin.baselineReviewRequired, false);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
         episodeInput({ mrn: "5203", caseName: "Record has not synced yet" })
       ),
-      /synchronized recovery information conflicts/
+      /newly synchronized records are verified/
     );
 
     const persistedSafety = (stored as {
@@ -3694,27 +3845,139 @@ test("a higher complete same-root commitment requires durable typed baseline rev
       };
     }).workspaceSafety;
     assert.equal(persistedSafety?.expectedManagedRecordCount, localCount + 1);
-    assert.deepEqual(persistedSafety?.expectedEntityCounts, localInventory.counts);
-    assert.equal(persistedSafety?.expectedRecordDigest, localInventory.digest);
+    assert.deepEqual(persistedSafety?.expectedEntityCounts, healthierInventory.counts);
+    assert.equal(persistedSafety?.expectedRecordDigest, healthierInventory.digest);
     assert.equal(persistedSafety?.rootRecoveryRequired, true);
     assert.equal(persistedSafety?.recoveryValidationRequired, true);
-    assert.equal(persistedSafety?.baselineReviewRequired, true);
+    assert.equal(persistedSafety?.baselineReviewRequired, false);
+
+    // Obsidian may emit the same data.json callback more than once before the
+    // record file is delivered. It must remain a staged candidate, not become
+    // an equal-count/incomplete-local conflict on the second callback.
+    await plugin.onExternalSettingsChange();
+    assert.equal(plugin.baselineReviewRequired, false);
+    assert.equal(plugin.migrationRecoveryBlocked, true);
 
     const restartedRepository = new ClinicalRepository(app as unknown as App);
-    const restarted = makePlugin(app, restartedRepository, () => stored);
+    const restarted = makePlugin(app, restartedRepository, () => stored, (data) => {
+      stored = data;
+    });
     await restarted.loadSettings();
     restartedRepository.setWriteBlock(restarted.recoveryBlockMessage);
     assert.equal(restarted.migrationRecoveryBlocked, true);
     assert.equal(restarted.missingRootRecoveryBlocked, true);
-    assert.equal(restarted.baselineReviewRequired, true);
+    assert.equal(restarted.baselineReviewRequired, false);
     assert.deepEqual(restarted.expectedEntityCounts, localInventory.counts);
     assert.equal(restarted.expectedRecordDigest, localInventory.digest);
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "5204", caseName: "Durable healthier safety barrier" })
+        episodeInput({ mrn: "5204", caseName: "Durable additive Sync barrier" })
       ),
-      /synchronized recovery information conflicts/
+      /newly synchronized records are verified/
     );
+
+    // Once the file side of Sync catches up, the device-local identity
+    // membership proves this is strict additive growth and reopens safely.
+    app.vault.writeRaw(healthierPath, healthierContent);
+    assert.equal(
+      await restarted.retryPendingMigrationRecovery(),
+      true,
+      "explicit Retry must promote the same proven additive candidate as automatic recovery"
+    );
+    assert.equal(restarted.baselineReviewRequired, false);
+    assert.equal(restarted.migrationRecoveryBlocked, false);
+    assert.deepEqual(restarted.expectedEntityCounts, healthierInventory.counts);
+    assert.equal(restarted.expectedRecordDigest, healthierInventory.digest);
+    const cleanJournal = app.loadLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY) as
+      TestTrustedInventoryJournal | null;
+    assert.equal(cleanJournal?.pending, false);
+    assert.equal(
+      cleanJournal?.trustedInventory?.expectedRecordIdentityDigests?.length,
+      healthierInventory.total
+    );
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("an incomplete commitment above a staged additive candidate preserves the strongest floor", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
+    const { app, repository, service } = await harness();
+    await service.createEpisode(episodeInput());
+    let stored: unknown = { ...DEFAULT_SETTINGS };
+    const plugin = makePlugin(app, repository, () => stored, (data) => {
+      stored = data;
+    });
+    await plugin.noteManagedRecordWrite();
+    const trusted = await plugin.parsedRecordInventory(DEFAULT_SETTINGS.rootFolder);
+    const localSafety = (stored as { workspaceSafety?: Record<string, unknown> })
+      .workspaceSafety;
+    assert.ok(localSafety);
+
+    const growthPath = addDistinctManagedRecord(
+      app,
+      DEFAULT_SETTINGS.rootFolder,
+      "pending-before-incomplete"
+    );
+    const completeCandidate = await plugin.parsedRecordInventory(
+      DEFAULT_SETTINGS.rootFolder
+    );
+    app.vault.deleteRaw(growthPath);
+    stored = {
+      ...(stored as Record<string, unknown>),
+      workspaceSafety: {
+        ...localSafety,
+        expectedManagedRecordCount: completeCandidate.total,
+        expectedEntityCounts: { ...completeCandidate.counts },
+        expectedRecordDigest: completeCandidate.digest,
+        rootRecoveryRequired: false,
+        recoveryRequiresRecords: true,
+        recoveryValidationRequired: false,
+        baselineReviewRequired: false
+      }
+    };
+    await plugin.onExternalSettingsChange();
+    assert.equal(plugin.baselineReviewRequired, false);
+
+    const strongestFloor = completeCandidate.total + 3;
+    stored = {
+      ...(stored as Record<string, unknown>),
+      workspaceSafety: {
+        ...localSafety,
+        expectedManagedRecordCount: strongestFloor,
+        expectedEntityCounts: undefined,
+        expectedRecordDigest: undefined,
+        rootRecoveryRequired: false,
+        recoveryRequiresRecords: true,
+        recoveryValidationRequired: false,
+        baselineReviewRequired: false
+      }
+    };
+    await plugin.onExternalSettingsChange();
+    assert.equal(plugin.expectedManagedRecordCount, strongestFloor);
+    assert.equal(plugin.baselineReviewRequired, true);
+
+    const persisted = (stored as {
+      workspaceSafety?: {
+        expectedManagedRecordCount?: number;
+        expectedEntityCounts?: TestRecordInventory["counts"];
+        expectedRecordDigest?: string;
+        baselineReviewRequired?: boolean;
+      };
+    }).workspaceSafety;
+    assert.equal(persisted?.expectedManagedRecordCount, strongestFloor);
+    assert.deepEqual(persisted?.expectedEntityCounts, trusted.counts);
+    assert.equal(persisted?.expectedRecordDigest, trusted.digest);
+    assert.equal(persisted?.baselineReviewRequired, true);
+
+    const restartedRepository = new ClinicalRepository(app as unknown as App);
+    const restarted = makePlugin(app, restartedRepository, () => stored);
+    await restarted.loadSettings();
+    assert.equal(restarted.expectedManagedRecordCount, strongestFloor);
+    assert.equal(restarted.baselineReviewRequired, true);
+    assert.equal(restarted.migrationRecoveryBlocked, true);
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -6156,6 +6419,57 @@ test("a retired root remains watched after restart for a late managed delivery",
     );
     assert.ok(app.vault.getAbstractFileByPath(lateSourcePath));
     assert.ok(app.vault.getAbstractFileByPath(destinationEpisodePath));
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("a rejected late retired-root safety save stays blocked without an unhandled rejection", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
+    const { app, repository, service } = await harness();
+    await service.createEpisode(episodeInput());
+    let stored: unknown = { ...DEFAULT_SETTINGS };
+    const plugin = makePlugin(app, repository, () => stored, (data) => {
+      stored = data;
+    });
+    await plugin.noteManagedRecordWrite();
+    await plugin.migrateRootFolder("Ward Records");
+
+    let signalSaveAttempted: () => void = () => undefined;
+    const saveAttempted = new Promise<void>((resolve) => {
+      signalSaveAttempted = resolve;
+    });
+    plugin.saveData = async () => {
+      signalSaveAttempted();
+      throw new Error("simulated inferred-marker persistence failure");
+    };
+
+    plugin.observeManagedRecordDelivery(
+      `${DEFAULT_SETTINGS.rootFolder}/Episodes/late-sync.md`
+    );
+    await saveAttempted;
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    assert.equal(plugin.migrationRecoveryBlocked, true);
+    assert.equal(plugin.workspaceSafetyNeedsPersistence, true);
+    assert.deepEqual(plugin.pendingMigrationMarker, {
+      migrationInProgress: {
+        from: DEFAULT_SETTINGS.rootFolder,
+        to: "Ward Records"
+      }
+    });
+    const journal = app.loadLocalStorage(
+      TRUSTED_INVENTORY_JOURNAL_KEY
+    ) as TestTrustedInventoryJournal | null;
+    assert.equal(journal?.pending, true, "the device-local recovery barrier remains durable");
+    await assert.rejects(
+      () => new ClinicalService(repository).createEpisode(
+        episodeInput({ mrn: "7015", caseName: "Blocked after rejected safety save" })
+      ),
+      /read-only|recovery information conflicts/i
+    );
   } finally {
     setClinicalRoot(originalRoot);
   }

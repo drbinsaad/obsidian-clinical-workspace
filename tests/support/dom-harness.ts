@@ -20,6 +20,7 @@ export class TestElement {
   scrollTop = 0;
   disabled = false;
   focused = false;
+  hidden = false;
   value = "";
   text = "";
   textWriteCount = 0;
@@ -128,6 +129,14 @@ export class TestElement {
 
   focus(): void {
     this.focused = true;
+  }
+
+  hide(): void {
+    this.hidden = true;
+  }
+
+  show(): void {
+    this.hidden = false;
   }
 
   /** Mirrors Obsidian's cross-realm Element.instanceOf helper. */

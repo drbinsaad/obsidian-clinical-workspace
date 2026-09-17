@@ -92,6 +92,57 @@ test("re-saving an unchanged episode still creates nothing", async () => {
   assert.equal((await repository.list<TaskRecord>("task")).length, 1);
 });
 
+test("discharge-ready cannot hide an existing open task", async () => {
+  const { service, repository } = await harness();
+  const created = await service.createEpisode(
+    episodeInput({ pathway: "assessment", nextAction: "Review imaging", dueDate: "2026-08-20" })
+  );
+
+  const result = await service.updateEpisode(created.episode.record.id, {
+    careSetting: "outpatient",
+    pathway: "discharge-ready",
+    priority: "routine",
+    nextAction: "",
+    dueDate: ""
+  });
+
+  const persisted = await repository.findById<EpisodeRecord>(
+    "episode",
+    created.episode.record.id
+  );
+  assert.equal(result.task.kind, "unchanged");
+  assert.equal(result.episode.record.status, "active");
+  assert.equal(persisted?.record.status, "active");
+  assert.equal(persisted?.record.next_action, "Review imaging");
+});
+
+test("discharge-ready returns the active episode when it creates open work", async () => {
+  const { service, repository } = await harness();
+  const created = await service.createEpisode(episodeInput());
+
+  const result = await service.updateEpisode(created.episode.record.id, {
+    careSetting: "outpatient",
+    pathway: "discharge-ready",
+    priority: "routine",
+    nextAction: "Call family before discharge",
+    dueDate: "2026-08-21"
+  });
+
+  const persisted = await repository.findById<EpisodeRecord>(
+    "episode",
+    created.episode.record.id
+  );
+  assert.equal(result.task.kind, "created");
+  assert.equal(result.episode.record.status, "active");
+  assert.equal(persisted?.record.status, "active");
+  assert.equal(
+    (await repository.list<TaskRecord>("task"))
+      .filter(({ record }) => record.episode_id === created.episode.record.id && record.status === "open")
+      .length,
+    1
+  );
+});
+
 // --- Archive guards ----------------------------------------------------------
 
 test("archiving an already-archived episode does not destroy the restore data", async () => {

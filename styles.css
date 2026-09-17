@@ -579,6 +579,7 @@
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
+  touch-action: pan-y pinch-zoom;
   scroll-padding-block: 12px 88px;
   -webkit-overflow-scrolling: touch;
 }
@@ -1031,7 +1032,7 @@
 }
 
 .clinical-chip {
-  min-height: 32px;
+  min-height: 44px;
   padding: 4px 12px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 999px;

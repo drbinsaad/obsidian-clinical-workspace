@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-09-17
+
+### Fixed
+
+- Task forms on iPad no longer snap back to the focused field while the user
+  scrolls. Delayed keyboard-animation reveals are cancelled by touch, pointer,
+  wheel, or visual-viewport scrolling; genuine keyboard, rotation, and Split
+  View resizing still reveals a control only when the form actually clips it.
+- Long Sync/recovery errors now live inside the form's scroll area. A rejected
+  submission keeps every entered value, restores Submit and Cancel, announces
+  the error accessibly, and scrolls the message into view once.
+- Legitimate same-folder additions from another device no longer become a
+  permanent typed-`ADOPT` conflict. A higher synced inventory stays read-only
+  until an exact full scan proves that every locally trusted record identity is
+  still present. Explicit Retry and clean legacy-journal upgrades use the same
+  proof; replacement, deletion, malformed, incomplete, and legacy-ambiguous
+  states remain fail-closed.
+- Task and procedure entry points now show the existing recovery notice before
+  opening a form that the repository already knows cannot save.
+- `discharge-ready` can no longer conceal existing or newly created open work;
+  the final reconciled Episode remains active until every task is closed.
+- A failed late retired-root safety save now keeps its journal and write barrier
+  armed, marks persistence for retry, and avoids an unhandled rejection.
+
+### Accessibility
+
+- Split Clinical Workspace panes now use unique tab and panel IDs. Filter and
+  date chips meet the 44 px touch target, pinch zoom remains available inside
+  forms, and redraws restore keyboard focus without stealing it from a newer
+  modal or control.
+
+### Security
+
+- Device-local membership witnesses are one-way SHA-256 values, capped at
+  20,000 records and hashed in batches of 256. Larger inventories stay on the
+  conservative review path instead of creating unbounded work or storage.
+- The threat model now calls out generated ward-handover notes as high-density
+  identifier summaries and documents their handling expectations.
+
 ## [0.6.3] - 2026-09-10
 
 ### Fixed
