@@ -60,7 +60,29 @@ type TestPlugin = {
   markerFreeRecoveryOperations: number;
   externalSettingsApplyOperations: number;
   pluginDataWriteQueue: Promise<unknown>;
+  markerFreeRecoveryReleaseRequested: boolean;
+  markerFreeRecoveryRevision: number;
+  pendingSyncedInventory: Inventory | null;
+  expectedRecordIdentityDigests: string[] | null;
 };
+
+/** Diagnostic snapshot for assertion messages. */
+function state(plugin: TestPlugin): string {
+  return JSON.stringify({
+    blocked: plugin.migrationRecoveryBlocked,
+    missingRoot: plugin.missingRootRecoveryBlocked,
+    review: plugin.baselineReviewRequired,
+    message: plugin.recoveryBlockMessage.slice(0, 60),
+    ops: plugin.markerFreeRecoveryOperations,
+    releaseRequested: plugin.markerFreeRecoveryReleaseRequested,
+    revision: plugin.markerFreeRecoveryRevision,
+    expectedCount: plugin.expectedManagedRecordCount,
+    pending: plugin.pendingSyncedInventory?.total ?? null,
+    witness: plugin.expectedRecordIdentityDigests?.length ?? null,
+    disk: managedRecordPaths(plugin.app).length,
+    journal: plugin.app.loadLocalStorage("clinical-workspace:trusted-inventory-journal:v1")
+  });
+}
 
 const ROOT = DEFAULT_SETTINGS.rootFolder;
 const MANAGED_FOLDERS = ["Patients", "Episodes", "Tasks", "Procedures"];
@@ -170,17 +192,24 @@ async function deliverFile(
   await settle(plugin);
 }
 
-/** Waits until every queued recovery scan, settings apply, and save has finished. */
+/**
+ * Waits until every queued recovery scan, settings apply, and save has
+ * finished. Time-based rather than turn-based: the scans hash records on the
+ * WebCrypto thread pool, which can take a while on a loaded CI machine.
+ */
 async function settle(plugin: TestPlugin): Promise<void> {
-  for (let round = 0; round < 200; round += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
+  const deadline = Date.now() + 20_000;
+  let quietPolls = 0;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
     await plugin.pluginDataWriteQueue.catch(() => undefined);
-    if (
+    const idle =
       plugin.markerFreeRecoveryOperations === 0 &&
-      plugin.externalSettingsApplyOperations === 0 &&
-      round > 5
-    ) return;
+      plugin.externalSettingsApplyOperations === 0;
+    quietPolls = idle ? quietPolls + 1 : 0;
+    if (quietPolls >= 3) return;
   }
+  assert.fail(`plugin did not settle: ${state(plugin)}`);
 }
 
 async function assertWritable(repository: ClinicalRepository, mrn: string): Promise<void> {
@@ -325,7 +354,7 @@ test("a higher synced baseline that disk then exceeds still reopens", async () =
     await deliverFile(local.plugin, local.app, remoteB);
 
     assert.equal(local.plugin.baselineReviewRequired, false);
-    assert.equal(local.plugin.migrationRecoveryBlocked, false);
+    assert.equal(local.plugin.migrationRecoveryBlocked, false, state(local.plugin));
     const converged = await local.plugin.parsedRecordInventory(ROOT);
     assert.equal(local.plugin.expectedManagedRecordCount, converged.total);
     await assertWritable(local.repository, "5303");
@@ -372,7 +401,7 @@ test("record files arriving before their data.json reopen once the files are com
     // The other device's data.json is still in transit. Nothing this device
     // trusted is missing, so the workspace stays usable.
     assert.equal(local.plugin.baselineReviewRequired, false);
-    assert.equal(local.plugin.migrationRecoveryBlocked, false);
+    assert.equal(local.plugin.migrationRecoveryBlocked, false, state(local.plugin));
     await assertWritable(local.repository, "5305");
   } finally {
     setClinicalRoot(originalRoot);
