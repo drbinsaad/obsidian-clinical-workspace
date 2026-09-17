@@ -407,7 +407,8 @@ async function retiredRootFingerprint(root: string): Promise<string> {
 
 /** Static, identifier-free highlights shown once after an update. */
 const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
-  "Unchanged settings no longer trigger repeated Sync updates, while records are still checked against the exact trusted baseline."
+  "Records added on two devices no longer need a typed ADOPT: writes reopen automatically once every previously trusted record has synced back.",
+  "Every record form now says up front when the workspace is temporarily read-only, instead of failing after it is filled in."
 ];
 
 /**
@@ -897,18 +898,20 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.managedRecordsExpected ||= journalInventory.total > 0;
       this.recoveryValidationRequired = true;
       if (
-        higherSyncedCommitment &&
+        (higherSyncedCommitment || equalSyncedConflict) &&
         syncedInventory !== null &&
         this.expectedRecordIdentityDigests !== null
       ) {
-        // Keep the synced tuple as an untrusted candidate. A later exact scan
-        // may prove it is a strict superset of the local membership anchor;
-        // until then writes remain closed without forcing a false ADOPT.
+        // Keep the synced tuple as an untrusted candidate: another device
+        // added records on top of the shared set. A later exact scan may
+        // prove that the on-disk set still holds every locally trusted
+        // record identity; until then writes remain closed without forcing
+        // a false ADOPT.
         this.pendingSyncedInventory = syncedInventory;
       }
       this.baselineReviewRequired ||=
-        equalSyncedConflict ||
-        (higherSyncedCommitment && this.pendingSyncedInventory === null);
+        (equalSyncedConflict || higherSyncedCommitment) &&
+        this.pendingSyncedInventory === null;
     } else if (
       journalRead.status === "invalid" ||
       (
@@ -1263,26 +1266,26 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       deliveredInventory !== null;
     const adoptDeliveredInventory =
       seedTrustedFirstUseInventory;
-    const deliveredIsHigherThanTrusted =
+    // Another device's complete tuple that is at least as large as this
+    // device's trusted tuple is ordinary two-device use: each device added
+    // its own records on top of the shared set. A larger (or equal-count but
+    // different) aggregate digest alone cannot prove inclusion, so devices
+    // with a complete local membership witness stage the delivered tuple as
+    // an untrusted floor and prove, against the finished on-disk record set,
+    // that every locally trusted record identity is still present. Legacy
+    // anchors without a witness stay on the typed-review path.
+    const localWitnessComplete =
       localTrustedInventory !== null &&
-      deliveredExpectedCount > localTrustedInventory.total;
+      this.expectedRecordIdentityDigests?.length === localTrustedInventory.total;
     const canStageAdditiveGrowth =
       deliveredInventory !== null &&
-      deliveredIsHigherThanTrusted &&
-      !marker &&
-      !drainedManagedMutation &&
-      incoming.rootFolder === previousRoot &&
-      deliveredExpectedCount >=
-        (this.pendingSyncedInventory?.total ?? localTrustedInventory?.total ?? 0) &&
-      this.expectedRecordIdentityDigests?.length === localTrustedInventory?.total &&
       localTrustedInventory !== null &&
-      ENTITY_FOLDER_NAMES.every(
-        ([entity]) => deliveredInventory.counts[entity] >= localTrustedInventory.counts[entity]
-      );
-    // A larger aggregate digest alone still cannot prove inclusion. Devices
-    // with a complete local membership anchor may stage the delivered tuple
-    // and prove it against the finished on-disk Sync set; legacy anchors stay
-    // on the typed-review path.
+      localWitnessComplete &&
+      deliveredExpectedCount >= localTrustedInventory.total &&
+      !sameRecordInventory(localTrustedInventory, deliveredInventory) &&
+      !marker &&
+      incoming.rootFolder === previousRoot &&
+      deliveredExpectedCount >= (this.pendingSyncedInventory?.total ?? 0);
     const higherCommitmentNeedsReview =
       deliveredIsHigher &&
       localCommitmentEstablished &&
@@ -1292,16 +1295,17 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       deliveredIsEqual &&
       localInventory !== null &&
       deliveredInventory !== null &&
-      !sameRecordInventory(localInventory, deliveredInventory);
+      !sameRecordInventory(localInventory, deliveredInventory) &&
+      !canStageAdditiveGrowth;
     const equalCompleteUpgradesIncompleteLocal =
       deliveredIsEqual &&
       localCommitmentEstablished &&
       localInventory === null &&
       deliveredInventory !== null &&
       !canStageAdditiveGrowth;
-    const pendingCommitmentRegressed =
-      this.pendingSyncedInventory !== null &&
-      deliveredExpectedCount < this.pendingSyncedInventory.total;
+    // A delivered tuple below an already staged candidate is an older
+    // snapshot (Sync catching a device up in several steps, or a device that
+    // was behind). The higher floor is kept; nothing about it needs review.
     const drainedRootRebind =
       drainedManagedMutation && incoming.rootFolder !== previousRoot;
 
@@ -1337,8 +1341,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       deliveredSafety?.baselineReviewRequired === true ||
       higherCommitmentNeedsReview ||
       equalCommitmentConflicts ||
-      equalCompleteUpgradesIncompleteLocal ||
-      pendingCommitmentRegressed;
+      equalCompleteUpgradesIncompleteLocal;
     // A versioned safety state supersedes the one-time legacy adoption prompt.
     // A safetyless file remains ambiguous and is handled below without saving.
     if (this.firstUseInitializationPending && deliveredTrustedSafety) {
@@ -2110,6 +2113,72 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       );
   }
 
+  /**
+   * True when every record identity this device trusts is still on disk and
+   * no entity class shrank. This is the property that matters for writes:
+   * growth from another device is additive and harmless, whereas a trusted
+   * record that vanished or was replaced may be a partial Sync delivery.
+   * Requires the device-local membership witness; legacy anchors cannot
+   * prove inclusion and stay on the exact-match path.
+   */
+  private inventoryPreservesTrustedRecords(current: RecordInventory): boolean {
+    const witness = this.expectedRecordIdentityDigests;
+    const expected = this.expectedEntityCounts;
+    if (!witness || !expected || !this.expectedRecordDigest) return false;
+    const trustedTotal = expected.patient + expected.episode +
+      expected.task + expected.procedure;
+    if (witness.length !== trustedTotal) return false;
+    // Above the journal cap the current witness is deliberately empty.
+    if (current.identityDigests.length !== current.total) return false;
+    if (ENTITY_FOLDER_NAMES.some(([entity]) => current.counts[entity] < expected[entity])) {
+      return false;
+    }
+    return containsEveryTrustedIdentity(current.identityDigests, witness);
+  }
+
+  /**
+   * Decides whether the records under `root` may reopen writes.
+   * - "exact": the trusted tuple is on disk unchanged.
+   * - "growth": every trusted record is present and more records arrived
+   *   (ordinary additive Sync from another device), and the disk has reached
+   *   the highest record count any synced commitment announced.
+   * - null: records are missing, replaced, malformed, or still arriving.
+   */
+  private classifyInventoryForWrites(
+    root: string,
+    current: RecordInventory
+  ): "exact" | "growth" | null {
+    if (this.inventoryExactlyMatchesExpected(root, current)) return "exact";
+    const rawCount = this.rootManagedRecordCount(root);
+    if (current.total !== rawCount) return null;
+    if (rawCount < this.expectedManagedRecordCount) return null;
+    return this.inventoryPreservesTrustedRecords(current) ? "growth" : null;
+  }
+
+  /**
+   * True when a staged synced tuple has fully arrived on disk and yet omits a
+   * record this device trusted: the other device confirmed a set without it.
+   * That is a genuine conflict for a human, not records still in transit.
+   */
+  private stagedSyncedInventoryConflicts(root: string, current: RecordInventory): boolean {
+    const candidate = this.pendingSyncedInventory;
+    if (!candidate || !this.expectedRecordIdentityDigests) return false;
+    return this.rootManagedRecordCount(root) === candidate.total &&
+      current.total === candidate.total &&
+      sameRecordInventory(current, candidate) &&
+      !this.inventoryPreservesTrustedRecords(current);
+  }
+
+  /** Advances the trusted tuple to a verified on-disk set that kept every trusted record. */
+  private acceptInventoryAsTrusted(current: RecordInventory, rawCount: number): void {
+    this.expectedEntityCounts = { ...current.counts };
+    this.expectedRecordDigest = current.digest;
+    this.expectedRecordIdentityDigests = [...current.identityDigests];
+    this.expectedManagedRecordCount = rawCount;
+    this.managedRecordsExpected ||= current.total > 0;
+    this.pendingSyncedInventory = null;
+  }
+
   /** Ratchets the parsed-record commitment forward from the current root. */
   private async ratchetRecordInventory(root: string): Promise<boolean> {
     const current = await this.parsedRecordInventory(root);
@@ -2356,68 +2425,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   }
 
   /**
-   * Turns a complete higher Sync tuple into trust only after the current disk
-   * proves strict multiset inclusion of every device-local trusted identity.
-   * An exact candidate that omits even one prior identity is a real conflict;
-   * an incomplete candidate is simply still syncing and remains retryable.
+   * Clears a marker-free missing-root barrier once the on-disk record set is
+   * safe to write into: either the exact trusted set has returned, or every
+   * record this device trusted is still present and the extra records are
+   * ordinary additive Sync from another device. A staged synced tuple acts as
+   * a floor, so writes wait until its record files have finished arriving.
+   * Loss, replacement, malformed Markdown, and legacy count-only safety data
+   * never reopen automatically: those need a human decision.
    */
-  private async promotePendingSyncedGrowth(): Promise<"promoted" | "waiting" | "conflict"> {
-    const candidate = this.pendingSyncedInventory;
-    const trustedIdentities = this.expectedRecordIdentityDigests;
-    if (!candidate || !trustedIdentities) return "waiting";
-    const root = clinicalRootFolder();
-    const recoveryRevision = this.markerFreeRecoveryRevision;
-    let current: RecordInventory;
-    try {
-      current = await this.parsedRecordInventory(root);
-    } catch {
-      return "waiting";
-    }
-    if (
-      this.pendingSyncedInventory !== candidate ||
-      this.markerFreeRecoveryRevision !== recoveryRevision ||
-      clinicalRootFolder() !== root ||
-      this.externalSettingsApplyOperations > 0 ||
-      this.firstUseInitializationPending ||
-      this.currentMigrationMarker()
-    ) return "waiting";
-
-    const currentExactlyMatchesCandidate =
-      this.rootManagedRecordCount(root) === candidate.total &&
-      sameRecordInventory(current, candidate);
-    if (!currentExactlyMatchesCandidate) return "waiting";
-
-    const trustedTotal = trustedIdentities.length;
-    const preservesTrustedTuple =
-      candidate.total > trustedTotal &&
-      containsEveryTrustedIdentity(current.identityDigests, trustedIdentities) &&
-      this.expectedEntityCounts !== null &&
-      ENTITY_FOLDER_NAMES.every(
-        ([entity]) => current.counts[entity] >= (this.expectedEntityCounts?.[entity] ?? 0)
-      );
-    if (!preservesTrustedTuple) {
-      this.pendingSyncedInventory = null;
-      this.setBaselineReviewBlocked(this.managedRecordsExpected || candidate.total > 0);
-      try {
-        await this.persistWorkspaceSafety();
-      } catch {
-        this.workspaceSafetyNeedsPersistence = true;
-      }
-      this.showMigrationRecoveryNotice(
-        12000,
-        CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
-      );
-      return "conflict";
-    }
-
-    this.expectedManagedRecordCount = candidate.total;
-    this.expectedEntityCounts = { ...candidate.counts };
-    this.expectedRecordDigest = candidate.digest;
-    this.expectedRecordIdentityDigests = [...current.identityDigests];
-    this.pendingSyncedInventory = null;
-    return "promoted";
-  }
-
   private async tryExactRestoredRootRecovery(): Promise<boolean> {
     if (
       !this.missingRootRecoveryBlocked ||
@@ -2427,11 +2442,6 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.currentMigrationMarker()
     ) {
       return !this.migrationRecoveryBlocked;
-    }
-
-    if (this.pendingSyncedInventory) {
-      const promotion = await this.promotePendingSyncedGrowth();
-      if (promotion !== "promoted") return false;
     }
 
     const root = clinicalRootFolder();
@@ -2445,21 +2455,18 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.currentMigrationMarker()
     ) return false;
     this.activeRootFingerprint = fingerprint;
+    const recoveryRevision = this.markerFreeRecoveryRevision;
     const expectedCount = this.expectedManagedRecordCount;
     const expectedCounts = this.expectedEntityCounts
       ? { ...this.expectedEntityCounts }
       : null;
     const expectedDigest = this.expectedRecordDigest;
     const requiresRecords = this.missingRootRequiresRecords;
-    const expectedParsedTotal = expectedCounts
-      ? expectedCounts.patient + expectedCounts.episode + expectedCounts.task + expectedCounts.procedure
-      : -1;
     if (
       !this.rootExists(root) ||
       !expectedCounts ||
       !expectedDigest ||
-      expectedParsedTotal !== expectedCount ||
-      this.rootManagedRecordCount(root) !== expectedCount
+      this.rootManagedRecordCount(root) < expectedCount
     ) {
       return false;
     }
@@ -2472,24 +2479,49 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
 
     // Every awaited read is a race boundary. Recheck both the barrier and the
-    // exact snapshot before changing any state.
+    // trusted tuple before changing any state.
     if (
       !this.missingRootRecoveryBlocked ||
+      this.baselineReviewRequired ||
       this.firstUseInitializationPending ||
       this.currentMigrationMarker() ||
       clinicalRootFolder() !== root ||
+      this.markerFreeRecoveryRevision !== recoveryRevision ||
       this.expectedManagedRecordCount !== expectedCount ||
       this.expectedRecordDigest !== expectedDigest ||
       !this.expectedEntityCounts ||
       ENTITY_FOLDER_NAMES.some(
         ([entity]) => this.expectedEntityCounts?.[entity] !== expectedCounts[entity]
-      ) ||
-      this.rootManagedRecordCount(root) !== expectedCount ||
-      current.total !== expectedCount ||
-      current.digest !== expectedDigest ||
-      ENTITY_FOLDER_NAMES.some(([entity]) => current.counts[entity] !== expectedCounts[entity])
+      )
     ) {
       return false;
+    }
+    const acceptedRawCount = this.rootManagedRecordCount(root);
+    const classification = this.classifyInventoryForWrites(root, current);
+    if (!classification) {
+      if (this.stagedSyncedInventoryConflicts(root, current)) {
+        // The other device's confirmed set has fully arrived and omits a
+        // record this device trusted. Only typed ADOPT can resolve that.
+        this.pendingSyncedInventory = null;
+        this.setBaselineReviewBlocked(this.managedRecordsExpected || current.total > 0);
+        try {
+          await this.persistWorkspaceSafety();
+        } catch {
+          this.workspaceSafetyNeedsPersistence = true;
+        }
+        this.showMigrationRecoveryNotice(12000, CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE);
+      }
+      return false;
+    }
+    const acceptedInventory = current;
+    if (classification === "growth") {
+      this.acceptInventoryAsTrusted(acceptedInventory, acceptedRawCount);
+    } else {
+      // Exact validation safely upgrades a clean pre-witness journal. Without
+      // this assignment an existing installation would keep requiring ADOPT
+      // for ordinary additive Sync until it happened to perform a local write.
+      this.expectedRecordIdentityDigests = [...acceptedInventory.identityDigests];
+      this.pendingSyncedInventory = null;
     }
 
     // Keep both global and repository barriers armed while serializing the
@@ -2523,19 +2555,20 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       !this.exactRootRecoveryRetryRequested &&
       finalInventory !== null &&
       !this.firstUseInitializationPending &&
+      !this.baselineReviewRequired &&
       !this.currentMigrationMarker() &&
       clinicalRootFolder() === root &&
-      this.expectedManagedRecordCount === expectedCount &&
-      this.expectedRecordDigest === expectedDigest &&
+      this.expectedManagedRecordCount === acceptedRawCount &&
+      this.expectedRecordDigest === acceptedInventory.digest &&
       this.expectedEntityCounts !== null &&
       ENTITY_FOLDER_NAMES.every(
-        ([entity]) => this.expectedEntityCounts?.[entity] === expectedCounts[entity]
+        ([entity]) => this.expectedEntityCounts?.[entity] === acceptedInventory.counts[entity]
       ) &&
-      this.rootManagedRecordCount(root) === expectedCount &&
-      finalInventory.total === expectedCount &&
-      finalInventory.digest === expectedDigest &&
+      this.rootManagedRecordCount(root) === acceptedRawCount &&
+      finalInventory.total === acceptedInventory.total &&
+      finalInventory.digest === acceptedInventory.digest &&
       ENTITY_FOLDER_NAMES.every(
-        ([entity]) => finalInventory?.counts[entity] === expectedCounts[entity]
+        ([entity]) => finalInventory?.counts[entity] === acceptedInventory.counts[entity]
       );
     if (!finalMatches || !finalInventory) {
       this.setMissingRootRecoveryBlocked(requiresRecords);
@@ -2547,9 +2580,6 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       return false;
     }
 
-    // Exact validation safely upgrades a clean pre-witness journal. Without
-    // this assignment an existing installation would keep requiring ADOPT for
-    // ordinary additive Sync until it happened to perform a local write.
     this.expectedRecordIdentityDigests = [...finalInventory.identityDigests];
     this.requestMarkerFreeRecoveryRelease();
     // Do not await UI work after the final inventory check: a Sync event in
@@ -3534,7 +3564,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     return settled && !this.baselineReviewRequired;
   }
 
-  /** User retry accepts only the exact trusted set; changed/grown sets need typed ADOPT. */
+  /** User retry accepts the exact trusted set or growth that kept it; loss/replacement needs typed ADOPT. */
   private async retryMissingRootRecoveryExplicitly(): Promise<boolean> {
     if (this.baselineReviewRequired) {
       this.showMigrationRecoveryNotice(
@@ -3574,18 +3604,6 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     if (this.firstUseInitializationPending || this.currentMigrationMarker()) {
       this.showMigrationRecoveryNotice();
       return false;
-    }
-
-    // A user pressing Retry after the final record file arrives must use the
-    // same membership proof as automatic recovery. Comparing the higher disk
-    // tuple directly with the older trusted tuple would turn safe additive
-    // Sync into a permanent ADOPT conflict.
-    if (this.pendingSyncedInventory) {
-      const promotion = await this.promotePendingSyncedGrowth();
-      if (promotion !== "promoted") {
-        if (promotion === "waiting") this.showMigrationRecoveryNotice();
-        return false;
-      }
     }
 
     const requiresRecords = this.missingRootRequiresRecords;
@@ -3656,7 +3674,13 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       );
       return false;
     }
-    if (!this.inventoryExactlyMatchesExpected(root, verified.inventory)) {
+    // A user pressing Retry after the final record file arrives uses the same
+    // membership proof as automatic recovery: growth that keeps every trusted
+    // record is ordinary two-device Sync. Comparing the higher disk tuple
+    // directly with the older trusted tuple would turn it into a permanent
+    // ADOPT conflict. Replacement, loss, and legacy count-only anchors still
+    // require typed review.
+    if (!this.classifyInventoryForWrites(root, verified.inventory)) {
       this.setBaselineReviewBlocked(requiresRecords || verified.inventory.total > 0);
       await this.persistWorkspaceSafety();
       this.showMigrationRecoveryNotice(
@@ -3666,7 +3690,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       return false;
     }
 
-    // Commit the exact user-accepted snapshot. The durable validation flag is
+    // Commit the user-accepted snapshot. The durable validation flag is
     // deliberately retained: if a dirty-pass re-arm cannot be saved, restart
     // still compares this commitment before enabling writes.
     const acceptedInventory = verified.inventory;
@@ -3912,7 +3936,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     if (this.migrationRecoveryBlocked) return;
     // A vault event does not reveal whether it came from Sync or another
     // plugin. Preserve the local tuple, persist a barrier, and let an exact
-    // rescan clear benign edits. Growth/replacement requires typed ADOPT.
+    // rescan clear benign edits and additive growth. Loss or replacement requires typed ADOPT.
     this.setMissingRootRecoveryBlocked(this.managedRecordsExpected);
     void this.persistWorkspaceSafety();
   }

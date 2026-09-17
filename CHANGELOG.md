@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-09-17
+
+### Fixed
+
+- Adding records on two devices no longer locks the workspace behind typed
+  `ADOPT`. A synced baseline that differs from this device's trusted baseline
+  (equal counts with different digests, a higher count, or an older lower
+  snapshot arriving late) is now staged as evidence and verified against the
+  finished on-disk record set. Writes reopen automatically, on every device,
+  once every record this device previously trusted is still present and the
+  disk holds at least the highest synced record count; the grown set becomes
+  the new trusted baseline. Loss, replacement, malformed Markdown in the
+  record folders, and legacy count-only safety data still fail closed, and a
+  synced set that omits a locally trusted record still requires `ADOPT`.
+- Record files that arrive before their `data.json`, a Sync callback landing
+  while a local write is in flight, and explicit **Retry pending folder move
+  recovery** all use the same rule, so ordinary two-device use no longer ends
+  in a permanent "verifying newly synced records" barrier.
+- **Update**, **Reschedule**, **Cancel**, **Discharge**, **Template**, **Edit
+  identity**, and **Merge** now show the recovery notice before opening a form
+  the repository already knows cannot save, matching the task and procedure
+  entry points.
+- The "verifying newly synced records" notice now says what to do if Sync has
+  finished and the workspace is still read-only.
+
 ## [0.6.5] - 2026-09-17
 
 ### Fixed

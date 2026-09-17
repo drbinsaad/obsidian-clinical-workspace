@@ -71,6 +71,31 @@ manufacturing a second workspace.
 After a successful move, wait for both `data.json` and the moved folder to reach
 every other device before resuming work there.
 
+## Two devices adding records
+
+Ordinary use on a phone and a desktop means both devices add Patient, Episode,
+Task, and Procedure notes on top of the same shared set, often before Sync has
+caught up. Each device keeps a device-local, one-way witness of the record
+identities it has trusted. When Sync delivers another device's `data.json`
+whose baseline differs from this device's (a higher count, an equal count with
+a different digest, or an older lower snapshot arriving late), the delivered
+baseline is staged as evidence rather than adopted or rejected:
+
+- Writes pause with the "verifying newly synced records" notice.
+- Once the record files have finished arriving, the plugin checks that every
+  record this device trusted is still on disk, that no entity class shrank,
+  that every note in the record folders parses, and that the disk holds at
+  least the highest record count any synced baseline announced.
+- If so, the grown set becomes the trusted baseline and writes reopen
+  automatically. No `ADOPT` is needed on either device.
+
+Only a record that vanished or was replaced keeps the workspace read-only. A
+synced baseline that has fully arrived and omits a record this device trusted
+is a genuine conflict and requires **Confirm current records as the recovery
+baseline** (typed `ADOPT`). If Sync has finished and the workspace is still
+read-only, run **Retry pending folder move recovery**; it applies the same rule
+and reports why the current records cannot be accepted.
+
 ## First open after upgrading from before 0.3.6
 
 Older workspaces do not have a trusted aggregate record-count baseline. Their
