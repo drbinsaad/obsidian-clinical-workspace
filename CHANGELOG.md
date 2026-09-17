@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A "needs review" lock no longer outlives the condition that raised it. A
+  review flag saved by an earlier version, or delivered in another device's
+  `data.json` while that device was still locked, now clears itself through the
+  same membership proof that reopens ordinary two-device growth: on startup,
+  on the next Sync delivery, when the workspace is opened, and on explicit
+  **Retry pending folder move recovery**. The cleared flag is what Sync then
+  carries to the other device, so a stale lock no longer bounces between
+  devices after both have updated. Typed `ADOPT` is still required when a
+  trusted record vanished or was replaced, when the review was raised by
+  unreadable safety metadata, or when the device-local journal predates
+  membership witnesses.
+- The review notice now says that the workspace reopens on its own once every
+  trusted record is present, and to try **Retry pending folder move recovery**
+  before confirming a new baseline.
+
 ## [0.6.6] - 2026-09-17
 
 ### Fixed

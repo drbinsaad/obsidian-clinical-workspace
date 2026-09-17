@@ -96,6 +96,19 @@ baseline** (typed `ADOPT`). If Sync has finished and the workspace is still
 read-only, run **Retry pending folder move recovery**; it applies the same rule
 and reports why the current records cannot be accepted.
 
+The "needs review" state itself follows the same rule. A review flag saved by
+an earlier version, or delivered in another device's `data.json` while that
+device was still locked, is a comparison this device can redo: the next
+startup, Sync delivery, workspace open, or explicit Retry re-runs the membership
+proof and clears the flag when every record this device trusted is still on
+disk and every note parses. The cleared flag is then what Sync carries to the
+other device, so a stale lock does not bounce between devices. Typed `ADOPT`
+remains the only exit when the review was raised by something a scan cannot
+verify: an unreadable or unmergeable retired-root list, a device-local journal
+that could not be armed or committed, a displaced folder-move edge, an
+interrupted initialization, or a legacy anchor that never recorded a
+membership witness.
+
 ## First open after upgrading from before 0.3.6
 
 Older workspaces do not have a trusted aggregate record-count baseline. Their

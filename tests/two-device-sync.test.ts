@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { App } from "obsidian";
-import ClinicalWorkspacePlugin from "../src/main";
+import ClinicalWorkspacePlugin, { TRUSTED_INVENTORY_JOURNAL_KEY } from "../src/main";
 import { clinicalRootFolder, setClinicalRoot } from "../src/data/paths";
 import { ClinicalRepository } from "../src/data/repository";
 import { DEFAULT_SETTINGS, type ClinicalSettings } from "../src/domain/settings";
@@ -458,6 +458,171 @@ test("a trusted record that vanished still fails closed", async () => {
       () => assertWritable(local.repository, "5307"),
       /read-only/
     );
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+/** data.json as an older version (or a still-locked peer) would have saved it. */
+function lockedSafety(stored: unknown): Record<string, unknown> {
+  const current = (stored as { workspaceSafety?: Record<string, unknown> }).workspaceSafety ?? {};
+  return {
+    ...(stored as Record<string, unknown>),
+    workspaceSafety: { ...current, baselineReviewRequired: true }
+  };
+}
+
+async function restart(local: Device): Promise<{ plugin: TestPlugin; repository: ClinicalRepository }> {
+  const repository = new ClinicalRepository(local.app as unknown as App);
+  const plugin = makePlugin(local.app, repository, local.stored, local.setStored);
+  await plugin.loadSettings();
+  repository.setWriteBlock(plugin.migrationRecoveryBlocked ? plugin.recoveryBlockMessage : null);
+  return { plugin, repository };
+}
+
+function persistedReviewFlag(local: Device): boolean | undefined {
+  return (local.stored() as { workspaceSafety?: { baselineReviewRequired?: boolean } })
+    .workspaceSafety?.baselineReviewRequired;
+}
+
+test("a review flag saved by an older version clears itself on restart when every trusted record is present", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(ROOT);
+    const local = await device();
+    await localTask(local, "Review discharge letter");
+    // The previous version locked this device and saved the lock in data.json.
+    local.setStored(lockedSafety(local.stored()));
+
+    const restarted = await restart(local);
+    assert.equal(restarted.plugin.baselineReviewRequired, true, "the saved lock holds until the records are proven");
+    assert.ok(restarted.plugin.expectedRecordIdentityDigests, "the device-local witness survives the restart");
+
+    assert.equal(await restarted.plugin.retryExactRestoredRootRecovery(), true, state(restarted.plugin));
+    assert.equal(restarted.plugin.baselineReviewRequired, false, "nothing was lost, so no ADOPT");
+    assert.equal(restarted.plugin.migrationRecoveryBlocked, false, state(restarted.plugin));
+    assert.equal(persistedReviewFlag(local), false, "the cleared flag is what Sync carries to the other device");
+    await assertWritable(restarted.repository, "5308");
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("a review flag delivered by a still-locked device clears itself once its records are on disk", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(ROOT);
+    const local = await device();
+    const remote = foreignRecord(local.app, "locked-peer");
+    const remoteInventory = await foreignInventory(local.plugin, local.app, [remote]);
+    await localTask(local, "Chase histology");
+    await deliverFile(local.plugin, local.app, remote);
+
+    // The other device had not yet cleared its own review when it saved.
+    local.setStored(lockedSafety(syncedSafety(local.stored(), remoteInventory)));
+    await local.plugin.onExternalSettingsChange();
+    await settle(local.plugin);
+
+    assert.equal(local.plugin.baselineReviewRequired, false, `a peer's stale lock is not a local conflict: ${state(local.plugin)}`);
+    assert.equal(local.plugin.migrationRecoveryBlocked, false, state(local.plugin));
+    assert.equal(persistedReviewFlag(local), false);
+    const converged = await local.plugin.parsedRecordInventory(ROOT);
+    assert.equal(local.plugin.expectedManagedRecordCount, converged.total);
+    await assertWritable(local.repository, "5309");
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("explicit Retry clears a saved review flag through the same membership proof", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(ROOT);
+    const local = await device();
+    const remote = foreignRecord(local.app, "retry-after-lock");
+    local.app.vault.writeRaw(remote.path, remote.content);
+    local.setStored(lockedSafety(local.stored()));
+
+    const restarted = await restart(local);
+    assert.equal(restarted.plugin.baselineReviewRequired, true);
+    assert.equal(await restarted.plugin.retryPendingMigrationRecovery(), true, state(restarted.plugin));
+    assert.equal(restarted.plugin.baselineReviewRequired, false);
+    assert.equal(restarted.plugin.migrationRecoveryBlocked, false);
+    await assertWritable(restarted.repository, "5310");
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("a delivered review flag still needs ADOPT when a trusted record vanished", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(ROOT);
+    const local = await device();
+    const remote = foreignRecord(local.app, "lock-with-loss");
+    const victim = managedRecordPaths(local.app).find((path) => path.includes("/Tasks/"));
+    assert.ok(victim);
+    const replacement = await foreignInventory(local.plugin, local.app, [remote], [victim]);
+
+    local.app.vault.deleteRaw(victim);
+    local.plugin.repository.invalidatePath(victim);
+    local.plugin.observeManagedRecordDelivery(victim);
+    await deliverFile(local.plugin, local.app, remote);
+    local.setStored(lockedSafety(syncedSafety(local.stored(), replacement)));
+    await local.plugin.onExternalSettingsChange();
+    await settle(local.plugin);
+
+    assert.equal(local.plugin.baselineReviewRequired, true, "a lost trusted record needs a human");
+    assert.equal(await local.plugin.retryPendingMigrationRecovery(), false);
+    assert.equal(local.plugin.baselineReviewRequired, true);
+    assert.equal(local.plugin.migrationRecoveryBlocked, true);
+    await assert.rejects(() => assertWritable(local.repository, "5311"), /read-only/);
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("a review raised by unreadable safety metadata still needs typed ADOPT", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(ROOT);
+    const local = await device();
+    local.setStored({ ...lockedSafety(local.stored()), retiredRootFolders: "not a list" });
+
+    const restarted = await restart(local);
+    assert.equal(restarted.plugin.baselineReviewRequired, true);
+    assert.equal(await restarted.plugin.retryExactRestoredRootRecovery(), false);
+    assert.equal(await restarted.plugin.retryPendingMigrationRecovery(), false);
+    assert.equal(restarted.plugin.baselineReviewRequired, true, "metadata a scan cannot verify stays with ADOPT");
+    assert.equal(restarted.plugin.migrationRecoveryBlocked, true);
+    await assert.rejects(() => assertWritable(restarted.repository, "5312"), /read-only/);
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("a legacy journal without a membership witness stays on ADOPT once the disk has grown", async () => {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(ROOT);
+    const local = await device();
+    await localTask(local, "Order audiogram");
+    // A journal written before witnesses existed: digest only, no per-record proof.
+    const journal = local.app.loadLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY) as {
+      trustedInventory?: { expectedRecordIdentityDigests?: unknown };
+    };
+    assert.ok(journal?.trustedInventory?.expectedRecordIdentityDigests);
+    delete journal.trustedInventory.expectedRecordIdentityDigests;
+    local.app.saveLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY, journal);
+    const remote = foreignRecord(local.app, "legacy-growth");
+    local.app.vault.writeRaw(remote.path, remote.content);
+    local.setStored(lockedSafety(local.stored()));
+
+    const restarted = await restart(local);
+    assert.equal(restarted.plugin.expectedRecordIdentityDigests, null, "no witness to prove inclusion with");
+    assert.equal(await restarted.plugin.retryExactRestoredRootRecovery(), false);
+    assert.equal(restarted.plugin.baselineReviewRequired, true, "a digest alone cannot prove which ids it covered");
+    await assert.rejects(() => assertWritable(restarted.repository, "5313"), /read-only/);
   } finally {
     setClinicalRoot(originalRoot);
   }
