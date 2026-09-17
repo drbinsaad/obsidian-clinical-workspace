@@ -115,8 +115,10 @@ matches the released plugin.
   text; only synced settings contain the configured and retired folder names.
 - Notes are plain text. Confidentiality depends on device encryption, screen
   lock, vault access, the chosen sync route, and organizational controls.
-- Duplicate prevention is per device. After a Sync conflict or concurrent edits
-  on different devices, run the integrity check.
+- Records added on different devices merge automatically once Sync delivers
+  them: writes reopen when every record this device trusted is still present.
+  Duplicate prevention is per device, so after a Sync conflict or concurrent
+  edits on different devices, run the integrity check.
 - Audit notes are best-effort and multi-file operations are not transactional.
   A reported failure may leave earlier writes in place.
 - Optional Quick Entry Obsidian links contain a fixed action only. Any query

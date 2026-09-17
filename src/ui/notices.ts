@@ -12,7 +12,7 @@ export const CLINICAL_INITIALIZATION_CHANGED_MESSAGE =
 export const CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE =
   "Clinical Workspace is read-only because synchronized recovery information conflicts with the previously trusted baseline. After Sync finishes, run “Confirm current records as the recovery baseline” and review the exact record counts before typing ADOPT.";
 export const CLINICAL_SYNC_GROWTH_PENDING_MESSAGE =
-  "Clinical Workspace is temporarily read-only while newly synchronized records are verified against this device’s trusted baseline. Keep Obsidian open until Sync finishes; writes resume automatically only if every previously trusted record is still present.";
+  "Clinical Workspace is temporarily read-only while newly synchronized records are verified against this device’s trusted baseline. Keep Obsidian open until Sync finishes; writes resume automatically once every previously trusted record is present. If Sync has finished and the workspace is still read-only, run “Retry pending folder move recovery” from the Command Palette.";
 
 export const CLINICAL_RECOVERY_NOTICE_CLASS = "clinical-workspace-recovery-notice";
 
@@ -39,7 +39,7 @@ export function compactClinicalRecoveryNotice(message: string): string {
     return "Clinical Workspace is read-only because synced recovery data needs review. After Sync, confirm the current records as a new baseline.";
   }
   if (message === CLINICAL_SYNC_GROWTH_PENDING_MESSAGE) {
-    return "Clinical Workspace is verifying newly synced records. Keep Obsidian open until Sync finishes; it will resume automatically if no trusted records are missing.";
+    return "Clinical Workspace is verifying newly synced records. Keep Obsidian open until Sync finishes; it resumes automatically. If it stays read-only, run “Retry pending folder move recovery”.";
   }
   return message;
 }

@@ -1210,27 +1210,35 @@ test("automatic and explicit recovery serialize while Sync changes a pending sav
     );
     releaseSave();
 
-    assert.equal(await recovery, false);
-    assert.equal(restarted.migrationRecoveryBlocked, true);
-    assert.equal(restarted.missingRootRecoveryBlocked, true);
+    // The pass whose save was in flight is dirty and re-arms the barrier. The
+    // drain then reruns once more: the delivered record is additive growth on
+    // top of the exact trusted set, so that follow-up pass accepts it.
+    assert.equal(await recovery, true);
+    assert.equal(restarted.missingRootRecoveryBlocked, false);
     assert.equal(
-      (stored as { workspaceSafety?: { rootRecoveryRequired?: boolean } })
-        .workspaceSafety?.rootRecoveryRequired,
+      restarted.migrationRecoveryBlocked,
       true,
-      "a dirty recovery pass restores the durable barrier before stopping"
+      "the barrier opens only after the queued explicit command has also settled"
     );
     assert.equal(
       await explicitRecovery,
-      false,
-      "ordinary Retry must not adopt growth that could conceal replacement"
-    );
-    assert.equal(restarted.baselineReviewRequired, true);
-    assert.equal(restarted.migrationRecoveryBlocked, true);
-    assert.equal(
-      (stored as { workspaceSafety?: { baselineReviewRequired?: boolean } })
-        .workspaceSafety?.baselineReviewRequired,
       true,
-      "growth transitions durably to typed baseline review"
+      "the queued Retry finds the grown set already trusted"
+    );
+    assert.equal(restarted.baselineReviewRequired, false);
+    assert.equal(restarted.migrationRecoveryBlocked, false);
+    assert.equal(
+      (stored as { workspaceSafety?: { rootRecoveryRequired?: boolean } })
+        .workspaceSafety?.rootRecoveryRequired,
+      false
+    );
+    const grownInventory = await restarted.parsedRecordInventory(DEFAULT_SETTINGS.rootFolder);
+    assert.equal(restarted.expectedManagedRecordCount, grownInventory.total);
+    assert.equal(
+      (stored as { workspaceSafety?: { expectedRecordDigest?: string } })
+        .workspaceSafety?.expectedRecordDigest,
+      grownInventory.digest,
+      "the grown set becomes the durable baseline without typed review"
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -1283,14 +1291,21 @@ test("a failed dirty-pass re-arm remains blocked after restart", async () => {
 
     const recovery = recovering.retryExactRestoredRootRecovery();
     await saveStarted;
-    const beforeGrowth = new Set(managedRecordPaths(app, DEFAULT_SETTINGS.rootFolder));
-    const syncRepository = new ClinicalRepository(app as unknown as App);
-    await new ClinicalService(syncRepository).createEpisode(
-      episodeInput({ mrn: "5101", caseName: "Late synced growth" })
+    // A late replacement: one trusted record is swapped for a different id,
+    // so the count matches but the trusted set does not survive.
+    const replacedPath = managedRecordPaths(app, DEFAULT_SETTINGS.rootFolder).at(-1);
+    assert.ok(replacedPath);
+    const replacedContent = app.vault.files.get(replacedPath);
+    assert.ok(replacedContent);
+    app.vault.deleteRaw(replacedPath);
+    const deliveredPath = `${replacedPath.slice(0, replacedPath.lastIndexOf("/") + 1)}late-replacement.md`;
+    app.vault.writeRaw(
+      deliveredPath,
+      replacedContent.replace(
+        /^id:\s*(.+)$/m,
+        (_line, id: string) => `id: ${id.trim()}-late-replacement`
+      )
     );
-    const deliveredPath = managedRecordPaths(app, DEFAULT_SETTINGS.rootFolder)
-      .find((path) => !beforeGrowth.has(path));
-    assert.ok(deliveredPath);
     recovering.retryMigrationForPath(deliveredPath);
     releaseSave();
 
@@ -1854,6 +1869,10 @@ test("typed ADOPT stays in review when its shared save succeeds but the local jo
     await restarted.loadSettings();
     restartedRepository.setWriteBlock(restarted.recoveryBlockMessage);
     assert.equal(restarted.expectedRecordDigest, trustedInventory.digest);
+    assert.equal(restarted.migrationRecoveryBlocked, true);
+    // The shared tuple is staged until the exact scan proves the disk holds
+    // exactly B and B omits a trusted A record: a genuine typed-review gate.
+    assert.equal(await restarted.retryExactRestoredRootRecovery(), false);
     assert.equal(restarted.baselineReviewRequired, true);
     assert.equal(restarted.migrationRecoveryBlocked, true);
     await assert.rejects(
@@ -2118,42 +2137,36 @@ test("late valid growth invalidates baseline-adoption success and stays fail-clo
       false,
       "the false adoption result cannot drive the caller's success Notice"
     );
-    assert.ok(automaticRecoveries.length > 0, "the late create queues a conservative exact pass");
-    assert.equal(
-      await automaticRecoveries.at(-1),
-      false,
-      "valid growth is not exact and therefore cannot auto-confirm a new baseline"
-    );
+    assert.ok(automaticRecoveries.length > 0, "the late create queues a fresh exact pass");
+    // The late records are ordinary additive growth on top of the set the
+    // user just adopted: every adopted identity is still present, so the
+    // follow-up pass accepts them instead of demanding a second ADOPT.
+    assert.equal(await automaticRecoveries.at(-1), true);
 
     const deliveredInventory = await plugin.parsedRecordInventory(DEFAULT_SETTINGS.rootFolder);
     assert.equal(deliveredInventory.total, acceptedInventory.total + growthFiles.length);
-    assert.equal(plugin.migrationRecoveryBlocked, true);
-    assert.equal(plugin.missingRootRecoveryBlocked, true);
-    const guidance = StubNotice.history.at(-1);
-    assert.ok(guidance);
-    assert.match(guidance.message, /read-only/);
-    assert.equal(guidance.hidden, false, "state-changed guidance survives queue finalization");
-    await assert.rejects(
-      () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5106", caseName: "Must remain blocked after late growth" })
-      ),
-      /configured folder is unavailable/
+    assert.equal(plugin.migrationRecoveryBlocked, false);
+    assert.equal(plugin.missingRootRecoveryBlocked, false);
+    assert.equal(plugin.baselineReviewRequired, false);
+    assert.equal(plugin.expectedManagedRecordCount, deliveredInventory.total);
+    assert.equal(plugin.expectedRecordDigest, deliveredInventory.digest);
+    await new ClinicalService(repository).createEpisode(
+      episodeInput({ mrn: "5106", caseName: "Writable after late additive growth" })
     );
 
-    // The failed final handoff must survive a restart before any command can
-    // reinterpret the grown root. Ordinary Retry only moves the durable state
-    // into typed review; a fresh preview plus ADOPT is the sole release path.
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    const rearmedSafety = (stored as {
+    const grownSafety = (stored as {
       workspaceSafety?: {
+        expectedManagedRecordCount?: number;
         rootRecoveryRequired?: boolean;
         recoveryValidationRequired?: boolean;
         baselineReviewRequired?: boolean;
       };
     }).workspaceSafety;
-    assert.equal(rearmedSafety?.rootRecoveryRequired, true);
-    assert.equal(rearmedSafety?.recoveryValidationRequired, true);
-    assert.equal(rearmedSafety?.baselineReviewRequired, false);
+    assert.ok((grownSafety?.expectedManagedRecordCount ?? 0) >= deliveredInventory.total);
+    assert.equal(grownSafety?.rootRecoveryRequired, false);
+    assert.equal(grownSafety?.recoveryValidationRequired, true);
+    assert.equal(grownSafety?.baselineReviewRequired, false);
 
     const restartedRepository = new ClinicalRepository(app as unknown as App);
     const restarted = makePlugin(app, restartedRepository, () => stored, (data) => {
@@ -2161,54 +2174,11 @@ test("late valid growth invalidates baseline-adoption success and stays fail-clo
     });
     await restarted.loadSettings();
     restartedRepository.setWriteBlock(restarted.recoveryBlockMessage);
-    assert.equal(restarted.migrationRecoveryBlocked, true);
     assert.equal(restarted.baselineReviewRequired, false);
-    assert.equal(
-      await restarted.retryPendingMigrationRecovery(),
-      false,
-      "ordinary Retry cannot accept the late grown record set"
-    );
-    assert.equal(restarted.baselineReviewRequired, true);
-    assert.equal(restarted.migrationRecoveryBlocked, true);
-    assert.equal(
-      (stored as { workspaceSafety?: { baselineReviewRequired?: boolean } })
-        .workspaceSafety?.baselineReviewRequired,
-      true,
-      "the typed-review requirement is durable before the user sees a new preview"
-    );
-
-    const freshCandidate = await restarted.captureBaselineAdoptionCandidate(
-      DEFAULT_SETTINGS.rootFolder
-    );
-    assert.ok(freshCandidate);
-    assert.equal(freshCandidate.inventory.total, deliveredInventory.total);
-    assert.equal(
-      await restarted.confirmCurrentBaselineAdoption(
-        DEFAULT_SETTINGS.rootFolder,
-        freshCandidate
-      ),
-      true,
-      "only a fresh typed confirmation adopts the late growth"
-    );
-    assert.equal(restarted.baselineReviewRequired, false);
-    assert.equal(restarted.missingRootRecoveryBlocked, false);
+    assert.equal(await restarted.retryExactRestoredRootRecovery(), true);
     assert.equal(restarted.migrationRecoveryBlocked, false);
-    const adoptedSafety = (stored as {
-      workspaceSafety?: {
-        expectedManagedRecordCount?: number;
-        expectedRecordDigest?: string;
-        rootRecoveryRequired?: boolean;
-        recoveryValidationRequired?: boolean;
-        baselineReviewRequired?: boolean;
-      };
-    }).workspaceSafety;
-    assert.equal(adoptedSafety?.expectedManagedRecordCount, deliveredInventory.total);
-    assert.equal(adoptedSafety?.expectedRecordDigest, deliveredInventory.digest);
-    assert.equal(adoptedSafety?.rootRecoveryRequired, false);
-    assert.equal(adoptedSafety?.recoveryValidationRequired, true);
-    assert.equal(adoptedSafety?.baselineReviewRequired, false);
     await new ClinicalService(restartedRepository).createEpisode(
-      episodeInput({ mrn: "5212", caseName: "Writable after fresh typed adoption" })
+      episodeInput({ mrn: "5212", caseName: "Writable after restart" })
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -5439,7 +5409,9 @@ test("a queued lower external snapshot cannot weaken a captured higher commitmen
     assert.equal(plugin.expectedManagedRecordCount, higherInventory.total);
     assert.deepEqual(plugin.expectedEntityCounts, localInventory.counts);
     assert.equal(plugin.expectedRecordDigest, localInventory.digest);
-    assert.equal(plugin.baselineReviewRequired, true);
+    // The stale snapshot is simply older evidence: the staged higher floor is
+    // kept and writes wait for its records, without demanding typed review.
+    assert.equal(plugin.baselineReviewRequired, false);
     assert.equal(plugin.missingRootRecoveryBlocked, true);
     assert.equal(plugin.migrationRecoveryBlocked, true);
     const persistedSafety = (stored as {
@@ -5453,16 +5425,16 @@ test("a queued lower external snapshot cannot weaken a captured higher commitmen
       };
     }).workspaceSafety;
     assert.equal(persistedSafety?.expectedManagedRecordCount, higherInventory.total);
-    assert.deepEqual(persistedSafety?.expectedEntityCounts, localInventory.counts);
-    assert.equal(persistedSafety?.expectedRecordDigest, localInventory.digest);
+    assert.deepEqual(persistedSafety?.expectedEntityCounts, higherInventory.counts);
+    assert.equal(persistedSafety?.expectedRecordDigest, higherInventory.digest);
     assert.equal(persistedSafety?.rootRecoveryRequired, true);
     assert.equal(persistedSafety?.recoveryValidationRequired, true);
-    assert.equal(persistedSafety?.baselineReviewRequired, true);
+    assert.equal(persistedSafety?.baselineReviewRequired, false);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5207", caseName: "Stale callback cannot weaken review" })
+        episodeInput({ mrn: "5207", caseName: "Stale callback cannot weaken the floor" })
       ),
-      /synchronized recovery information conflicts/
+      /newly synchronized records are verified/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -6120,9 +6092,21 @@ test("managed delivery provenance ignores plugin-owned creates but journals exte
       beforeExternalGrowth?.trustedInventory,
       "an external create cannot advance the clean local trust anchor"
     );
-    assert.equal(await plugin.retryPendingMigrationRecovery(), false);
-    assert.equal(plugin.baselineReviewRequired, true);
-    assert.equal(plugin.migrationRecoveryBlocked, true);
+    assert.equal(
+      await plugin.retryPendingMigrationRecovery(),
+      true,
+      "growth that keeps every trusted record is accepted after an exact rescan"
+    );
+    assert.equal(plugin.baselineReviewRequired, false);
+    assert.equal(plugin.migrationRecoveryBlocked, false);
+    const grownJournal = app.loadLocalStorage(
+      TRUSTED_INVENTORY_JOURNAL_KEY
+    ) as TestTrustedInventoryJournal | null;
+    assert.equal(grownJournal?.pending, false);
+    assert.equal(
+      grownJournal?.trustedInventory?.expectedManagedRecordCount,
+      (beforeExternalGrowth?.trustedInventory?.expectedManagedRecordCount ?? 0) + 1
+    );
   } finally {
     setClinicalRoot(originalRoot);
   }

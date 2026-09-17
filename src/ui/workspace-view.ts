@@ -1150,6 +1150,7 @@ export class ClinicalWorkspaceView extends ItemView {
     this.actionButton(actions, "View", () => void this.openPatientDetail(patient), false, false, patientContext);
     this.actionButton(actions, "Open", () => this.openRecord("patient", patient.id), false, false, patientContext);
     this.actionButton(actions, "Edit identity", () => {
+      if (!this.canOpenWriteForm()) return;
       new PatientIdentityModal(this.app, patient, async (input) => {
         await this.service.updatePatientIdentity(patient.id, input);
         new Notice("Patient identity updated.");
@@ -1159,6 +1160,7 @@ export class ClinicalWorkspaceView extends ItemView {
     const others = this.identifiablePatients(snapshot).filter((item) => item.id !== patient.id);
     if (others.length) {
       this.actionButton(actions, "Merge", () => {
+        if (!this.canOpenWriteForm()) return;
         new MergePatientsModal(
           this.app,
           patient,
@@ -1205,6 +1207,7 @@ export class ClinicalWorkspaceView extends ItemView {
         }).open();
       }, false, false, context);
       this.actionButton(actions, "Update", () => {
+        if (!this.canOpenWriteForm()) return;
         new UpdateEpisodeModal(this.app, episode, async (input) => {
           const result = await this.service.updateEpisode(episode.id, input);
           // Say what happened to the task. A next action that produced no task
@@ -1229,6 +1232,7 @@ export class ClinicalWorkspaceView extends ItemView {
         actions,
         "Discharge",
         () => {
+          if (!this.canOpenWriteForm()) return;
           new ArchiveEpisodeModal(
             this.app,
             episode,
@@ -1250,6 +1254,7 @@ export class ClinicalWorkspaceView extends ItemView {
 
   /** Explicit, previewed application of a user-authored task bundle. */
   private async openApplyTemplate(episode: EpisodeRecord): Promise<void> {
+    if (!this.canOpenWriteForm()) return;
     try {
       const bundles = (await listTaskBundles(this.app.vault)).filter(
         (bundle) => bundle.pathway === null || bundle.pathway === episode.pathway
@@ -1354,6 +1359,7 @@ export class ClinicalWorkspaceView extends ItemView {
         context
       );
       this.actionButton(actions, "Reschedule", () => {
+        if (!this.canOpenWriteForm()) return;
         new RescheduleTaskModal(this.app, task, async (dueDate) => {
           await this.service.rescheduleTask(task.id, dueDate);
           new Notice(`Task moved to ${dueDate}.`);
@@ -1361,6 +1367,7 @@ export class ClinicalWorkspaceView extends ItemView {
         }).open();
       }, false, false, context);
       this.actionButton(actions, "Cancel", () => {
+        if (!this.canOpenWriteForm()) return;
         new CancelTaskModal(this.app, task, async (reason) => {
           await this.service.cancelTask(task.id, reason);
           new Notice("Task cancelled.");
