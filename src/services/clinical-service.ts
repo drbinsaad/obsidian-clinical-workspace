@@ -801,7 +801,7 @@ export class ClinicalService {
           ? "active"
           : episode.record.status;
 
-    const updated = await this.repository.update<EpisodeRecord>(episode.path, {
+    await this.repository.update<EpisodeRecord>(episode.path, {
       care_setting: input.careSetting,
       pathway: input.pathway,
       priority: input.priority,
@@ -821,6 +821,21 @@ export class ClinicalService {
       input.pathway,
       input.priority
     );
+    // `discharge-ready` is only a proposed pathway. Reconciliation can keep
+    // an existing task open (including one that was not raised by this form)
+    // or create a new one. In either case the episode is still active work,
+    // so it must not remain ready-to-close. Re-read after reconciliation both
+    // to enforce that invariant and to return the record that actually won the
+    // nested task update rather than the stale pre-reconcile snapshot.
+    const openTaskRemains = (await this.repository.list<TaskRecord>("task"))
+      .some(({ record }) => record.episode_id === episodeId && taskIsOpen(record));
+    let finalEpisode = await this.repository.findById<EpisodeRecord>("episode", episodeId);
+    if (!finalEpisode) throw new Error("Episode was not found after updating its tasks.");
+    if (finalEpisode.record.status === "ready-to-close" && openTaskRemains) {
+      finalEpisode = await this.repository.update<EpisodeRecord>(finalEpisode.path, {
+        status: "active"
+      });
+    }
     await this.repository.createEvent({
       action: "episode-updated",
       patientId: episode.record.patient_id,
@@ -831,7 +846,7 @@ export class ClinicalService {
       previousState: `${episode.record.care_setting}/${episode.record.pathway}/${episode.record.priority}`,
       newState: `${input.careSetting}/${input.pathway}/${input.priority}`
     });
-    return { episode: updated, task: outcome };
+    return { episode: finalEpisode, task: outcome };
   }
 
   /**

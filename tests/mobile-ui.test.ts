@@ -8,11 +8,17 @@ import type { ClinicalService } from "../src/services/clinical-service";
 import type { IntegrityService } from "../src/services/integrity";
 import {
   calculateClinicalModalViewportLayout,
+  ClinicalModal,
+  clinicalModalControlNeedsReveal,
+  clinicalModalErrorContainer,
   ClinicalSearchModal,
   InitializeWorkspaceModal,
   QuickEntryModal
 } from "../src/ui/modals";
-import { ClinicalWorkspaceView } from "../src/ui/workspace-view";
+import {
+  ClinicalWorkspaceView,
+  clinicalActionFocusMayReturn
+} from "../src/ui/workspace-view";
 import {
   computedDeclarations,
   gridTrackCount,
@@ -45,6 +51,45 @@ type RenderableModal = {
   modalEl: HTMLElement;
   onOpen: () => void;
 };
+
+type ActionFocusableWorkspace = {
+  contentEl: HTMLElement;
+  renderGeneration: number;
+  actionButton: (
+    container: HTMLElement,
+    label: string,
+    action: () => void | Promise<void>,
+    primary?: boolean,
+    danger?: boolean,
+    accessibleContext?: string
+  ) => void;
+};
+
+class RejectingTaskFormModal extends ClinicalModal<string> {
+  readonly draft = "Synthetic follow-up remains in the form";
+  closed = false;
+
+  constructor() {
+    super(new App(), "Add task", async () => {
+      throw new Error("Synthetic recovery block");
+    });
+  }
+
+  onOpen(): void {
+    const form = this.prepare("Add patient task", "Synthetic episode");
+    const input = form.createEl("input") as unknown as HTMLInputElement;
+    input.value = this.draft;
+    this.addActions(this.contentEl);
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+
+  protected value(): string {
+    return this.draft;
+  }
+}
 
 const stylesPromise = readFile(new URL("../styles.css", import.meta.url), "utf8");
 
@@ -209,6 +254,22 @@ test("all five workspace tabs use content-aware tracks without clipping enlarged
   assert.equal(tabStyle.get("white-space"), "nowrap");
 });
 
+test("split workspace panes expose unique tab and panel relationships", () => {
+  const first = renderWorkspace("today");
+  const second = renderWorkspace("today");
+  const firstPanel = first.find(".clinical-workspace-panel");
+  const secondPanel = second.find(".clinical-workspace-panel");
+  const firstActiveTab = first.find(".clinical-workspace-tab.is-active");
+  const secondActiveTab = second.find(".clinical-workspace-tab.is-active");
+  assert.ok(firstPanel && secondPanel && firstActiveTab && secondActiveTab);
+  assert.notEqual(firstPanel.getAttribute("id"), secondPanel.getAttribute("id"));
+  assert.notEqual(firstActiveTab.getAttribute("id"), secondActiveTab.getAttribute("id"));
+  assert.equal(firstActiveTab.getAttribute("aria-controls"), firstPanel.getAttribute("id"));
+  assert.equal(firstPanel.getAttribute("aria-labelledby"), firstActiveTab.getAttribute("id"));
+  assert.equal(secondActiveTab.getAttribute("aria-controls"), secondPanel.getAttribute("id"));
+  assert.equal(secondPanel.getAttribute("aria-labelledby"), secondActiveTab.getAttribute("id"));
+});
+
 test("render and refresh reveal the active tab in LTR and RTL without losing vertical position", async () => {
   for (const direction of ["ltr", "rtl"] as const) {
     const { root, view } = createWorkspace("surgery");
@@ -341,6 +402,92 @@ test("mobile card actions use two touch-safe columns instead of a full-width sta
   ]) {
     assert.equal(styleFor(rules, selector).get("grid-column"), "1 / -1");
   }
+});
+
+test("filter and date chips meet the mobile touch-target floor", async () => {
+  const rules = parseCssRules(await stylesPromise);
+  const chip = styleFor(rules, ".clinical-chip");
+  assert.ok(numericPx(required(chip, "min-height")) >= 44);
+});
+
+test("card-action redraws restore focus or move it to the workspace heading", async () => {
+  const root = new TestElement();
+  const workspace = new ClinicalWorkspaceView(
+    {} as never,
+    { snapshot: async () => EMPTY_SNAPSHOT } as unknown as ClinicalRepository,
+    {} as ClinicalService,
+    {} as IntegrityService
+  ) as unknown as ActionFocusableWorkspace;
+  workspace.contentEl = root as unknown as HTMLElement;
+  workspace.renderGeneration = 1;
+  workspace.actionButton(
+    root as unknown as HTMLElement,
+    "Complete",
+    () => {
+      workspace.renderGeneration += 1;
+      root.empty();
+      root.createEl("button", { attr: { "aria-label": "Complete — Synthetic task" } });
+    },
+    true,
+    false,
+    "Synthetic task"
+  );
+  const original = root.find("button");
+  assert.ok(original);
+  original.dispatch("click");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(root.find("button")?.focused, true);
+
+  root.empty();
+  workspace.renderGeneration += 1;
+  const replacement: { heading: TestElement | null } = { heading: null };
+  workspace.actionButton(
+    root as unknown as HTMLElement,
+    "Cancel",
+    () => {
+      workspace.renderGeneration += 1;
+      root.empty();
+      replacement.heading = root.createEl("h2", {
+        cls: "clinical-workspace-title",
+        attr: { tabindex: "-1" }
+      });
+    },
+    false,
+    true,
+    "Synthetic task that closes"
+  );
+  const cancel = root.find("button");
+  assert.ok(cancel);
+  cancel.dispatch("click");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(
+    replacement.heading?.focused,
+    true,
+    "removed actions must not drop focus to the document body"
+  );
+});
+
+test("a slow card action never steals focus from a newer modal or control", async () => {
+  const action = new TestElement("button");
+  const newerControl = new TestElement("input");
+  const body = new TestElement("body");
+  const documentElement = new TestElement("html");
+  const mutableOwnerDocument = {
+    activeElement: newerControl as unknown as HTMLElement,
+    body: body as unknown as HTMLElement,
+    documentElement: documentElement as unknown as HTMLElement
+  };
+  const ownerDocument = mutableOwnerDocument as unknown as Document;
+  assert.equal(
+    clinicalActionFocusMayReturn(action as unknown as HTMLElement, ownerDocument),
+    false
+  );
+  mutableOwnerDocument.activeElement = body as unknown as HTMLElement;
+  assert.equal(
+    clinicalActionFocusMayReturn(action as unknown as HTMLElement, ownerDocument),
+    true,
+    "focus may return only after the removed action leaves focus on the document body"
+  );
 });
 
 test("mobile Add patient is explicit and cannot float over clinical content", async () => {
@@ -567,6 +714,9 @@ test("Search announces threshold, no-match, and capped match transitions without
   const bodyStyle = styleFor(rules, ".clinical-modal-body");
   const footerStyle = styleFor(rules, ".clinical-modal-actions", ".is-mobile .clinical-modal-actions");
   assert.equal(bodyStyle.get("overflow-y"), "auto");
+  assert.equal(bodyStyle.get("touch-action"), "pan-y pinch-zoom");
+  assert.equal(bodyStyle.get("-webkit-overflow-scrolling"), "touch");
+  assert.equal(bodyStyle.get("min-height"), "0");
   assert.match(required(footerStyle, "flex"), /^0 0 /);
   assert.equal(required(footerStyle, "padding-bottom").includes("safe-area-inset-bottom"), true);
 
@@ -575,4 +725,79 @@ test("Search announces threshold, no-match, and capped match transitions without
     keyboardOpen: true,
     shift: -197
   });
+});
+
+test("task-form errors stay inside the scrollable body instead of consuming the iPad sheet", async () => {
+  const content = new TestElement();
+  const body = content.createDiv({ cls: "clinical-modal-body" });
+  assert.equal(
+    clinicalModalErrorContainer(content as unknown as HTMLElement),
+    body,
+    "the long recovery message must share the form's existing scroll surface"
+  );
+  const fallback = new TestElement();
+  assert.equal(
+    clinicalModalErrorContainer(fallback as unknown as HTMLElement),
+    fallback,
+    "non-form confirmation sheets still retain a safe error container"
+  );
+
+  const modalSource = await readFile(new URL("../src/ui/modals.ts", import.meta.url), "utf8");
+  assert.match(
+    modalSource,
+    /this\.errorEl\.show\(\);\s*this\.errorEl\.scrollIntoView\(\{ block: "nearest", inline: "nearest" \}\);/
+  );
+});
+
+test("focused controls move only when clipped by the task form scrollport", () => {
+  const scrollport = { top: 100, bottom: 600 };
+  assert.equal(
+    clinicalModalControlNeedsReveal({ top: 140, bottom: 184 }, scrollport),
+    false,
+    "a visible control must not snap the user's manual scroll position"
+  );
+  assert.equal(
+    clinicalModalControlNeedsReveal({ top: 80, bottom: 124 }, scrollport),
+    true,
+    "rotation or keyboard changes must recover a control clipped above the form"
+  );
+  assert.equal(
+    clinicalModalControlNeedsReveal({ top: 570, bottom: 614 }, scrollport),
+    true,
+    "late keyboard resizing must recover a control clipped below the form"
+  );
+});
+
+test("a rejected task submit keeps the draft recoverable and every exit usable", async () => {
+  const content = new TestElement();
+  const modalElement = new TestElement();
+  const modal = new RejectingTaskFormModal() as unknown as RejectingTaskFormModal & RenderableModal;
+  modal.contentEl = content as unknown as HTMLElement;
+  modal.modalEl = modalElement as unknown as HTMLElement;
+  modal.onOpen();
+
+  const body = content.find(".clinical-modal-body");
+  const error = content.find(".clinical-modal-error");
+  const input = content.find("input");
+  const [cancel, submit] = content.findAll("button");
+  assert.ok(body && error && input && cancel && submit);
+  assert.equal(error.parent, body);
+  assert.equal(error.getAttribute("role"), "alert");
+  assert.equal(error.getAttribute("aria-live"), "assertive");
+
+  submit.dispatch("click");
+  assert.equal(submit.disabled, true);
+  assert.equal(cancel.disabled, true);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(error.hidden, false);
+  assert.equal(error.textContent, "Synthetic recovery block");
+  assert.equal(error.scrollIntoViewCalls.length, 1);
+  assert.equal(input.value, modal.draft, "the clinician's unsaved task text must remain available");
+  assert.equal(submit.disabled, false);
+  assert.equal(cancel.disabled, false);
+  assert.equal(modal.closed, false);
+
+  cancel.dispatch("click");
+  assert.equal(modal.closed, true, "Cancel must close normally after the rejected write settles");
 });

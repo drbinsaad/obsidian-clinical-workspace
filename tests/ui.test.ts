@@ -48,6 +48,26 @@ test("workspace view exposes stable Obsidian identity", () => {
   assert.equal(view.getIcon(), "stethoscope");
 });
 
+test("write forms preflight the repository barrier before collecting input", () => {
+  const blockedView = new ClinicalWorkspaceView(
+    {} as never,
+    {
+      getWriteBlockReason: () => "Synthetic recovery barrier"
+    } as unknown as ClinicalRepository,
+    {} as ClinicalService,
+    {} as IntegrityService
+  ) as unknown as { canOpenWriteForm: () => boolean };
+  assert.equal(blockedView.canOpenWriteForm(), false);
+
+  const writableView = new ClinicalWorkspaceView(
+    {} as never,
+    { getWriteBlockReason: () => null } as unknown as ClinicalRepository,
+    {} as ClinicalService,
+    {} as IntegrityService
+  ) as unknown as { canOpenWriteForm: () => boolean };
+  assert.equal(writableView.canOpenWriteForm(), true);
+});
+
 test("stacked-tab pane layout uses stable wide, compact, and narrow boundaries", () => {
   assert.equal(CLINICAL_WORKSPACE_WIDE_MIN_WIDTH, 1050);
   assert.equal(CLINICAL_WORKSPACE_COMPACT_MIN_WIDTH, 680);
@@ -268,12 +288,13 @@ test("clinical modal sheets follow the iPhone visual viewport when the keyboard 
 });
 
 test("clinical viewport lifecycle follows the complete iOS keyboard animation and cleans up", () => {
-  type ListenerName = "viewportResize" | "viewportScroll" | "windowResize" | "focusIn";
+  type ListenerName = "viewportResize" | "viewportScroll" | "windowResize" | "focusIn" | "userScrollIntent";
   const listeners: Record<ListenerName, Set<() => void>> = {
     viewportResize: new Set(),
     viewportScroll: new Set(),
     windowResize: new Set(),
-    focusIn: new Set()
+    focusIn: new Set(),
+    userScrollIntent: new Set()
   };
   let metrics = {
     innerHeight: 844,
@@ -300,6 +321,7 @@ test("clinical viewport lifecycle follows the complete iOS keyboard animation an
     onViewportScroll: register("viewportScroll"),
     onWindowResize: register("windowResize"),
     onFocusIn: register("focusIn"),
+    onUserScrollIntent: register("userScrollIntent"),
     setTimer: (listener, delay) => {
       nextTimer += 1;
       timers.set(nextTimer, { delay, listener });
@@ -338,12 +360,83 @@ test("clinical viewport lifecycle follows the complete iOS keyboard animation an
   const resize = [...listeners.viewportResize][0];
   assert.ok(resize);
   resize();
-  assert.equal(reveals, 5);
+  assert.equal(reveals, 5, "a late keyboard resize must recheck focused-control visibility");
+  assert.equal(layouts.length, 5);
+
+  const viewportScroll = [...listeners.viewportScroll][0];
+  assert.ok(viewportScroll);
+  viewportScroll();
+  assert.equal(reveals, 5, "dragging an iPad sheet must not snap back to the focused input");
+  assert.equal(layouts.length, 6, "a visual viewport scroll still refreshes the modal geometry");
+
+  const windowResize = [...listeners.windowResize][0];
+  assert.ok(windowResize);
+  windowResize();
+  assert.equal(reveals, 6);
+  assert.equal(layouts.length, 7);
   controller.stop();
   assert.equal(Object.values(listeners).every((set) => set.size === 0), true);
   assert.equal(resets, 1);
   resize();
-  assert.equal(reveals, 5);
+  assert.equal(reveals, 6);
+  assert.equal(layouts.length, 7);
+});
+
+test("manual scrolling cancels delayed focus reveals before they can snap the iPad form back", () => {
+  type ListenerName = "viewportResize" | "viewportScroll" | "windowResize" | "focusIn" | "userScrollIntent";
+  const listeners: Record<ListenerName, Set<() => void>> = {
+    viewportResize: new Set(),
+    viewportScroll: new Set(),
+    windowResize: new Set(),
+    focusIn: new Set(),
+    userScrollIntent: new Set()
+  };
+  let nextTimer = 0;
+  const timers = new Map<number, () => void>();
+  let reveals = 0;
+  let layouts = 0;
+  const register = (name: ListenerName) => (listener: () => void) => {
+    listeners[name].add(listener);
+    return () => listeners[name].delete(listener);
+  };
+  const controller = new ClinicalModalViewportController({
+    readMetrics: () => ({
+      innerHeight: 844,
+      viewportHeight: 430,
+      viewportOffsetTop: 20,
+      keyboardHeight: 414
+    }),
+    applyLayout: () => { layouts += 1; },
+    resetLayout: () => undefined,
+    revealFocusedControl: () => { reveals += 1; },
+    onViewportResize: register("viewportResize"),
+    onViewportScroll: register("viewportScroll"),
+    onWindowResize: register("windowResize"),
+    onFocusIn: register("focusIn"),
+    onUserScrollIntent: register("userScrollIntent"),
+    setTimer: (listener) => {
+      nextTimer += 1;
+      timers.set(nextTimer, listener);
+      return nextTimer;
+    },
+    clearTimer: (timer) => { timers.delete(timer); }
+  });
+
+  controller.start();
+  const focus = [...listeners.focusIn][0];
+  const userScrollIntent = [...listeners.userScrollIntent][0];
+  const viewportScroll = [...listeners.viewportScroll][0];
+  assert.ok(focus && userScrollIntent && viewportScroll);
+  focus();
+  assert.equal(timers.size, CLINICAL_MODAL_VIEWPORT_SYNC_DELAYS.length);
+
+  userScrollIntent();
+  assert.equal(timers.size, 0, "a touch/pointer/wheel gesture cancels every queued reveal");
+  viewportScroll();
+  assert.equal(layouts, 1, "viewport geometry still follows the manual drag");
+  assert.equal(reveals, 0, "manual scrolling never reveals the stale focused field");
+
+  controller.stop();
 });
 
 test("Episode picker controls have context-specific accessible names", () => {

@@ -74,7 +74,7 @@ const TAB_LABELS: Record<WorkspaceTab, string> = {
   more: "More"
 };
 
-const PANEL_ID = "clinical-workspace-panel";
+let workspaceViewInstanceSequence = 0;
 export const CLINICAL_PAGE_SIZE = 40;
 
 export type ClinicalWorkspacePaneMode = "wide" | "compact" | "narrow";
@@ -92,6 +92,22 @@ export interface ClinicalWorkspacePaneHost {
   observeWidth: (listener: (width: number) => void) => () => void;
   applyMode: (mode: ClinicalWorkspacePaneMode) => void;
   resetMode: () => void;
+}
+
+/** A redraw may return focus only when no newer interaction now owns it. */
+export function clinicalActionFocusMayReturn(
+  action: HTMLElement,
+  ownerDocument: Document | undefined = (
+    action as HTMLElement & { ownerDocument?: Document }
+  ).ownerDocument
+): boolean {
+  if (!ownerDocument) return true;
+  const active = ownerDocument.activeElement as HTMLElement | null;
+  return !active ||
+    active === action ||
+    active === ownerDocument.body ||
+    active === ownerDocument.documentElement ||
+    active.isConnected === false;
 }
 
 /**
@@ -269,6 +285,7 @@ export function quickEntryEpisodeChoices(
 }
 
 export class ClinicalWorkspaceView extends ItemView {
+  private readonly instanceId = ++workspaceViewInstanceSequence;
   private activeTab: WorkspaceTab = "today";
   private refreshing = false;
   private refreshQueued = false;
@@ -283,6 +300,15 @@ export class ClinicalWorkspaceView extends ItemView {
     action: "previous" | "next";
     scrollTop: number;
   } | null = null;
+  private renderGeneration = 0;
+
+  private tabId(tab: WorkspaceTab): string {
+    return `clinical-workspace-${this.instanceId}-tab-${tab}`;
+  }
+
+  private panelId(): string {
+    return `clinical-workspace-${this.instanceId}-panel`;
+  }
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -304,6 +330,14 @@ export class ClinicalWorkspaceView extends ItemView {
 
   getIcon(): string {
     return "stethoscope";
+  }
+
+  /** Do not invite data entry when the repository already knows it cannot save. */
+  private canOpenWriteForm(): boolean {
+    const reason = this.repository.getWriteBlockReason();
+    if (!reason) return true;
+    showClinicalNotice(reason, 9000);
+    return false;
   }
 
   async onOpen(): Promise<void> {
@@ -417,6 +451,7 @@ export class ClinicalWorkspaceView extends ItemView {
 
   /** Always shows an unselected Episode picker before opening the task form. */
   async openAddTaskQuickEntry(activeEpisodePath = ""): Promise<void> {
+    if (!this.canOpenWriteForm()) return;
     try {
       const choices = await this.quickEntryChoices(activeEpisodePath, "task");
       if (!choices.length) {
@@ -424,6 +459,7 @@ export class ClinicalWorkspaceView extends ItemView {
         return;
       }
       new QuickEntryEpisodeModal(this.app, "a task / follow-up", choices, (choice) => {
+        if (!this.canOpenWriteForm()) return;
         new NewTaskModal(this.app, choice.episode, choice.patientLabel, async (input) => {
           const created = await this.service.createTask(input);
           new Notice(
@@ -442,6 +478,7 @@ export class ClinicalWorkspaceView extends ItemView {
 
   /** Always shows an unselected Episode picker before opening the procedure form. */
   async openProcedureQuickEntry(activeEpisodePath = ""): Promise<void> {
+    if (!this.canOpenWriteForm()) return;
     try {
       const choices = await this.quickEntryChoices(activeEpisodePath, "procedure");
       if (!choices.length) {
@@ -451,6 +488,7 @@ export class ClinicalWorkspaceView extends ItemView {
         return;
       }
       new QuickEntryEpisodeModal(this.app, "a procedure", choices, (choice) => {
+        if (!this.canOpenWriteForm()) return;
         new ProcedureModal(this.app, choice.episode, choice.patientLabel, async (input) => {
           await this.service.completeProcedure(input);
           new Notice("Procedure logged and workflow updated.");
@@ -517,6 +555,7 @@ export class ClinicalWorkspaceView extends ItemView {
   private lastRenderedTab: WorkspaceTab | null = null;
 
   private render(snapshot: ClinicalSnapshot): void {
+    this.renderGeneration += 1;
     this.indexSnapshot(snapshot);
     const root = this.contentEl;
     // A background refresh — a sync burst, another device's write — redraws
@@ -539,7 +578,7 @@ export class ClinicalWorkspaceView extends ItemView {
     const activeTab = this.renderTabs(shell);
     const panel = shell.createDiv({
       cls: "clinical-workspace-panel",
-      attr: { id: PANEL_ID, role: "tabpanel", "aria-labelledby": `clinical-tab-${this.activeTab}` }
+      attr: { id: this.panelId(), role: "tabpanel", "aria-labelledby": this.tabId(this.activeTab) }
     });
     switch (this.activeTab) {
       case "today":
@@ -574,7 +613,11 @@ export class ClinicalWorkspaceView extends ItemView {
   private renderHeader(container: HTMLElement): void {
     const header = container.createDiv({ cls: "clinical-workspace-header" });
     const titles = header.createDiv({ cls: "clinical-workspace-heading" });
-    titles.createEl("h2", { text: "Clinical Workspace", cls: "clinical-workspace-title" });
+    titles.createEl("h2", {
+      text: "Clinical Workspace",
+      cls: "clinical-workspace-title",
+      attr: { tabindex: "-1" }
+    });
     titles.createDiv({ text: "Local-first patient workflow", cls: "clinical-workspace-subtitle" });
     const actions = header.createDiv({ cls: "clinical-workspace-header-actions" });
     const search = actions.createEl("button", {
@@ -614,10 +657,10 @@ export class ClinicalWorkspaceView extends ItemView {
         text: label,
         cls: `clinical-workspace-tab${selected ? " is-active" : ""}`,
         attr: {
-          id: `clinical-tab-${tab}`,
+          id: this.tabId(tab),
           role: "tab",
           "aria-selected": String(selected),
-          "aria-controls": PANEL_ID,
+          "aria-controls": this.panelId(),
           // Roving tabindex: only the selected tab is in the tab order.
           tabindex: selected ? "0" : "-1"
         }
@@ -665,7 +708,7 @@ export class ClinicalWorkspaceView extends ItemView {
     // focus the old tab button, which the redraw then destroyed — dropping
     // keyboard focus to the body on every arrow press.
     void this.selectTab(next).then(() => {
-      const target = this.contentEl.querySelector(`#clinical-tab-${next}`);
+      const target = this.contentEl.querySelector(`#${this.tabId(next)}`);
       if (target?.instanceOf(HTMLElement)) target.focus();
     });
   }
@@ -785,10 +828,19 @@ export class ClinicalWorkspaceView extends ItemView {
         attr: { type: "button", "aria-pressed": String(active), "aria-label": accessible }
       });
       button.addEventListener("click", () => {
+        const ownerDocument = (
+          button as HTMLButtonElement & { ownerDocument?: Document }
+        ).ownerDocument;
+        const ownedFocusAtStart = !ownerDocument || ownerDocument.activeElement === button;
         apply();
         // A filter change re-reads nothing it does not need; refresh() serves
         // the redraw and keeps the scroll position like any other re-render.
-        void this.refresh();
+        void this.refresh().then(() => {
+          if (
+            ownedFocusAtStart &&
+            clinicalActionFocusMayReturn(button, ownerDocument)
+          ) this.restoreActionFocus(accessible);
+        });
       });
     };
 
@@ -854,6 +906,7 @@ export class ClinicalWorkspaceView extends ItemView {
         actions,
         "Complete surgery",
         () => {
+          if (!this.canOpenWriteForm()) return;
           new ProcedureModal(this.app, episode, this.patientLabel(patient), async (input) => {
             await this.service.completeProcedure(input);
             new Notice("Surgery logged and workflow updated.");
@@ -1140,6 +1193,7 @@ export class ClinicalWorkspaceView extends ItemView {
       const actions = card.createDiv({ cls: "clinical-card-actions" });
       this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
       this.actionButton(actions, "+ Task", () => {
+        if (!this.canOpenWriteForm()) return;
         new NewTaskModal(this.app, episode, this.patientLabel(patient), async (input) => {
           const created = await this.service.createTask(input);
           new Notice(
@@ -1315,6 +1369,7 @@ export class ClinicalWorkspaceView extends ItemView {
       }, false, true, context);
       if (episode) {
         this.actionButton(actions, "+ Task", () => {
+          if (!this.canOpenWriteForm()) return;
           new NewTaskModal(this.app, episode, this.patientLabel(patient), async (input) => {
             const created = await this.service.createTask(input);
             new Notice(
@@ -1622,14 +1677,42 @@ export class ClinicalWorkspaceView extends ItemView {
     });
     button.addEventListener("click", () => {
       if (button.disabled) return;
+      const generation = this.renderGeneration;
+      const accessibleName = accessibleContext ? `${label} — ${accessibleContext}` : label;
+      const ownerDocument = (
+        button as HTMLButtonElement & { ownerDocument?: Document }
+      ).ownerDocument;
+      const ownedFocusAtStart = !ownerDocument || ownerDocument.activeElement === button;
       button.disabled = true;
       void (async () => {
         try {
           await action();
         } finally {
           button.disabled = false;
+          if (
+            this.renderGeneration !== generation &&
+            ownedFocusAtStart &&
+            clinicalActionFocusMayReturn(button, ownerDocument)
+          ) {
+            this.restoreActionFocus(accessibleName);
+          }
         }
       })();
     });
+  }
+
+  /** Keep keyboard users in the workspace after a redraw-triggering action. */
+  private restoreActionFocus(accessibleName: string): void {
+    const controls = Array.from(this.contentEl.querySelectorAll("button"));
+    const target = controls.find((control) => {
+      const aria = control.getAttribute("aria-label");
+      return (aria ?? (control.textContent ?? "").trim()) === accessibleName;
+    });
+    if (target?.instanceOf(HTMLElement)) {
+      target.focus({ preventScroll: true });
+      return;
+    }
+    const heading = this.contentEl.querySelector(".clinical-workspace-title");
+    if (heading?.instanceOf(HTMLElement)) heading.focus({ preventScroll: true });
   }
 }

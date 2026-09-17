@@ -75,7 +75,9 @@ Patient ──< Episode ──< Task
 | `pathway_before_archive` / `status_before_archive` | What archiving overwrote, so restore can put it back. |
 
 An episode cannot be archived while it has an open task, or while any task
-note in the vault is unreadable (unreadable work cannot be proven closed).
+note inside the configured `Tasks/` record folder is unreadable (unreadable
+managed work cannot be proven closed). Records moved outside their managed
+entity folder are outside workflow scope and must be returned before use.
 
 ## Task
 
