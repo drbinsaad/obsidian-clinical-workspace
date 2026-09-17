@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-09-18
+
 ### Fixed
 
 - A "needs review" lock no longer outlives the condition that raised it. A
