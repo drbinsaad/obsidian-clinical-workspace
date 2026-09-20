@@ -113,6 +113,9 @@ matches the released plugin.
   fingerprints of the retired-folder list. Neither store contains a raw MRN,
   patient name, phone number, raw record ID, clinical-note path, or clinical
   text; only synced settings contain the configured and retired folder names.
+  The local journal also preserves a device-specific manual-review latch for
+  integrity failures. If it cannot be saved reliably, shared settings retain
+  a conservative confirmation requirement rather than silently dropping it.
 - Notes are plain text. Confidentiality depends on device encryption, screen
   lock, vault access, the chosen sync route, and organizational controls.
 - Records added on different devices merge automatically once Sync delivers
@@ -199,6 +202,19 @@ delivery into an old root re-arms recovery on another Mac. Perform a move on
 one fully synced device at a time and read
 [Moving the clinical folder safely](docs/folder-migration.md) before changing
 the setting.
+
+Normal Sync recovery is automatic once the required record evidence is
+verified. A stale shared manual-review flag also clears automatically when a
+previously clean, complete device-local journal exactly matches the synced
+commitment and both record scans pass. Update Clinical Workspace on each
+device; repeating **Confirm current records as the recovery baseline** should
+not be part of normal Sync use.
+
+Manual confirmation is still reserved for a real unresolved recovery problem,
+such as missing/replaced records, an interrupted or damaged journal, or
+unverifiable safety metadata. The legacy-flag upgrade uses independently
+committed evidence; it cannot reconstruct the origin of a flag older versions
+stored without provenance. See the [0.6.9 recovery compatibility notes](CHANGELOG.md#069---2026-09-20).
 
 ## Surgery logbook exports
 

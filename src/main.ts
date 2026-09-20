@@ -89,6 +89,8 @@ interface PersistedWorkspaceSafety {
    * this field existed; such a review is treated as a comparison.
    */
   baselineReviewNeedsTypedAdoption?: boolean | undefined;
+  /** Fallback when this device could not durably journal its local failure. */
+  baselineReviewRequiresSharedConfirmation?: boolean | undefined;
   /**
    * Parsed-record commitment: per-entity counts of records that actually
    * parse, plus a SHA-256 over the sorted opaque record ids. A raw file
@@ -129,6 +131,8 @@ interface TrustedInventoryJournal {
   generation: number;
   /** True from external callback receipt until its final exact verification. */
   pending: boolean;
+  /** Device-local unverifiable failure; only a verified typed ADOPT may clear it. */
+  localTypedReviewRequired?: boolean | undefined;
   /**
    * Canonical, path-free commitment to every retired root known when this
    * journal generation was written. A later synced snapshot may add entries,
@@ -211,7 +215,9 @@ function parseTrustedInventoryJournal(value: unknown): TrustedInventoryJournal |
     typeof journal.generation !== "number" ||
     !Number.isSafeInteger(journal.generation) ||
     journal.generation < 0 ||
-    typeof journal.pending !== "boolean"
+    typeof journal.pending !== "boolean" ||
+    (journal.localTypedReviewRequired !== undefined &&
+      typeof journal.localTypedReviewRequired !== "boolean")
   ) return null;
 
   const rawRetiredRootFingerprints = journal.retiredRootFingerprints;
@@ -241,6 +247,8 @@ function parseTrustedInventoryJournal(value: unknown): TrustedInventoryJournal |
           version: 1,
           generation: journal.generation,
           pending: true,
+          ...(journal.localTypedReviewRequired !== undefined
+            ? { localTypedReviewRequired: journal.localTypedReviewRequired } : {}),
           ...(retiredRootFingerprints !== undefined ? { retiredRootFingerprints } : {})
         }
       : null;
@@ -298,6 +306,8 @@ function parseTrustedInventoryJournal(value: unknown): TrustedInventoryJournal |
     version: 1,
     generation: journal.generation,
     pending: journal.pending,
+    ...(journal.localTypedReviewRequired !== undefined
+      ? { localTypedReviewRequired: journal.localTypedReviewRequired } : {}),
     ...(retiredRootFingerprints !== undefined ? { retiredRootFingerprints } : {}),
     trustedInventory: {
       rootFingerprint: entry.rootFingerprint,
@@ -317,6 +327,7 @@ function sameTrustedInventoryJournal(
     left.version !== right.version ||
     left.generation !== right.generation ||
     left.pending !== right.pending ||
+    left.localTypedReviewRequired !== right.localTypedReviewRequired ||
     left.retiredRootFingerprints?.length !== right.retiredRootFingerprints?.length ||
     left.retiredRootFingerprints?.some(
       (fingerprint, index) => fingerprint !== right.retiredRootFingerprints?.[index]
@@ -414,8 +425,8 @@ async function retiredRootFingerprint(root: string): Promise<string> {
 
 /** Static, identifier-free highlights shown once after an update. */
 const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
-  "Recovery guidance now distinguishes verification from manual baseline confirmation; finishing Sync alone does not clear a manual review.",
-  "Background recovery popups are shorter and no longer restart repeatedly. Record safety checks and confirmation requirements are unchanged."
+  "Complete workspaces can automatically recheck a stale synced manual-review flag using this device’s clean recovery journal; no ADOPT for this verified case.",
+  "Local integrity failures stay protected across restart; missing or replaced records and interrupted or unverifiable recovery still need review."
 ];
 
 /**
@@ -502,12 +513,17 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   private markerFreeRecoveryReleaseAllowsJournalReplacement = false;
   /** Keeps writes closed while a synced data.json read is awaiting filesystem I/O. */
   private externalSettingsApplyOperations = 0;
+  /** Includes callbacks awaiting final recovery after their apply operation ends. */
+  private externalSettingsCallbacksInFlight = 0;
   /** Applies external data.json snapshots in callback order. */
   private externalSettingsApplyQueue: Promise<void> = Promise.resolve();
   /** Monotonic receipt order used to reject stale async reconciliation work. */
   private externalSettingsEpoch = 0;
   /** Marker that existed before the current overlapping callback batch began. */
   private externalSettingsBatchInitialMarker: MigrationMarker | null = null;
+  /** Immutable pre-first-callback anchor; any non-exact delivery invalidates this batch. */
+  private externalSettingsBatchReviewJournal: TrustedInventoryJournalRead | null = null;
+  private externalSettingsBatchReviewEligible = false;
   /** Any admitted vault mutation makes a marker-free root rebind ambiguous. */
   private externalSettingsDrainedManagedMutation = false;
   /** Persists across successful recovery so every restart verifies the commitment. */
@@ -526,6 +542,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
    * the same membership proof that reopens ordinary two-device growth.
    */
   private baselineReviewNeedsTypedAdoption = false;
+  /** Never inferred from a peer's shared flag or cleared by a peer's false flag. */
+  private localTypedReviewRequired = false;
+  private baselineReviewRequiresSharedConfirmation = false;
   /** Precomputed so an external callback can arm its journal before any await. */
   private activeRootFingerprint: string | null = null;
   /** Serializes data.json writes so a delayed older snapshot cannot win. */
@@ -812,6 +831,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // flight; reading only after every startup fingerprint avoids trusting a
     // stale pre-callback snapshot.
     const journalRead = this.readTrustedInventoryJournal();
+    this.localTypedReviewRequired ||=
+      journalRead.status === "valid" && journalRead.journal.localTypedReviewRequired === true;
     this.retiredRootFolders.clear();
     this.retiredRootFingerprintByFolder.clear();
     if (retiredRootsRead.valid) {
@@ -827,6 +848,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     const retiredRootConflictDetected =
       !marker && this.armRetiredRootConflictIfPresent();
     const safety = this.workspaceSafetyFrom(stored);
+    this.baselineReviewRequiresSharedConfirmation ||=
+      safety?.baselineReviewRequiresSharedConfirmation === true;
     const rootRecordCount = this.rootManagedRecordCount(this.settings.rootFolder);
     const rootHasRecords = rootRecordCount > 0;
     const rootExists = this.rootExists(this.settings.rootFolder);
@@ -890,13 +913,20 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.recoveryValidationRequired =
       safety?.recoveryValidationRequired === true || exactStartupValidationRequired;
     this.baselineReviewRequired =
-      safety?.baselineReviewRequired === true || !retiredRootsRead.valid;
+      safety?.baselineReviewRequired === true || !retiredRootsRead.valid ||
+      this.localTypedReviewRequired || this.baselineReviewRequiresSharedConfirmation;
     // A persisted or synced flag alone is a comparison this device can redo
     // against its own journal; unreadable safety metadata, or a review the
     // previous session recorded as unverifiable, is not.
     this.baselineReviewNeedsTypedAdoption =
-      safety?.baselineReviewNeedsTypedAdoption === true || !retiredRootsRead.valid;
-    if (!retiredRootsRead.valid) this.firstUseInitializationPending = false;
+      this.localTypedReviewRequired || this.baselineReviewRequiresSharedConfirmation ||
+      !retiredRootsRead.valid ||
+      (safety?.baselineReviewNeedsTypedAdoption === true &&
+        !this.canRevalidateSharedTypedReview(stored, journalRead));
+    if (!retiredRootsRead.valid) {
+      this.firstUseInitializationPending = false;
+      this.requireLocalTypedAdoption();
+    }
     if (journalEntry && journalRootMatches && journalRetiredRootsCompatible) {
       const journalInventory = recordInventoryFromJournalEntry(journalEntry);
       const syncedInventory = completeSafetyInventory(safety);
@@ -947,7 +977,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       // bound to another root is not equivalent to a genuinely absent journal.
       this.recoveryValidationRequired = true;
       this.baselineReviewRequired = true;
-      this.baselineReviewNeedsTypedAdoption = true;
+      this.requireLocalTypedAdoption();
       this.firstUseInitializationPending = false;
     }
     if (
@@ -956,7 +986,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     ) {
       this.recoveryValidationRequired = true;
       this.baselineReviewRequired = true;
-      this.baselineReviewNeedsTypedAdoption = true;
+      this.requireLocalTypedAdoption();
       this.firstUseInitializationPending = false;
     }
     if (
@@ -1016,18 +1046,30 @@ export default class ClinicalWorkspacePlugin extends Plugin {
           ? CLINICAL_ROOT_UNAVAILABLE_MESSAGE
           : CLINICAL_WRITES_BLOCKED_MESSAGE;
     this.workspaceSafetyNeedsPersistence =
+      this.workspaceSafetyNeedsPersistence ||
       (inferredRootLoss && !storedDurableRecoveryBarrier) ||
       this.baselineReviewRequired !== (safety?.baselineReviewRequired === true) ||
+      this.baselineReviewRequiresSharedConfirmation !==
+        (safety?.baselineReviewRequiresSharedConfirmation === true) ||
       !retiredRootsRead.valid ||
       retiredRootConflictDetected;
   }
 
   /** Applies data.json changes delivered by Obsidian Sync without a restart. */
   async onExternalSettingsChange(): Promise<void> {
-    if (this.externalSettingsApplyOperations === 0) {
+    if (this.externalSettingsCallbacksInFlight === 0) {
       this.externalSettingsBatchInitialMarker = this.currentMigrationMarker();
       this.externalSettingsDrainedManagedMutation = false;
+      this.externalSettingsBatchReviewJournal = this.readTrustedInventoryJournal();
+      this.externalSettingsBatchReviewEligible =
+        !this.baselineReviewNeedsTypedAdoption &&
+        !this.localTypedReviewRequired &&
+        !this.baselineReviewRequiresSharedConfirmation &&
+        !this.workspaceSafetyNeedsPersistence &&
+        !this.firstUseInitializationPending &&
+        !this.currentMigrationMarker();
     }
+    this.externalSettingsCallbacksInFlight += 1;
     this.externalSettingsApplyOperations += 1;
     // Close repository admission in this synchronous stack. Existing writes
     // are allowed to finish against the root they captured, but a root rebind
@@ -1040,6 +1082,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // shared marker/root state until the local transition has left that state.
     const localMigrationCompletion = this.localMigrationCompletion;
     const externalEpoch = ++this.externalSettingsEpoch;
+    const preCallbackJournal = this.externalSettingsBatchReviewJournal ?? undefined;
+    const mayRevalidatePeerReview = this.externalSettingsBatchReviewEligible;
     const journalGeneration = this.armTrustedInventoryJournal();
     try {
       if (journalGeneration === null) {
@@ -1070,7 +1114,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
           stored,
           externalEpoch,
           this.externalSettingsBatchInitialMarker,
-          this.externalSettingsDrainedManagedMutation
+          this.externalSettingsDrainedManagedMutation,
+          mayRevalidatePeerReview ? preCallbackJournal : undefined,
+          journalGeneration
         );
       };
       const run = this.externalSettingsApplyQueue.then(apply, apply);
@@ -1129,9 +1175,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       }
       mutationPause ??= await mutationPausePromise;
       mutationPause.release();
-      if (this.externalSettingsApplyOperations === 0) {
+      this.externalSettingsCallbacksInFlight -= 1;
+      if (this.externalSettingsCallbacksInFlight === 0) {
         this.externalSettingsBatchInitialMarker = null;
         this.externalSettingsDrainedManagedMutation = false;
+        this.externalSettingsBatchReviewJournal = null;
+        this.externalSettingsBatchReviewEligible = false;
       }
     }
   }
@@ -1141,8 +1190,17 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     stored: unknown,
     externalEpoch: number,
     batchInitialMarker: MigrationMarker | null,
-    drainedManagedMutation: boolean
+    drainedManagedMutation: boolean,
+    preCallbackJournal?: TrustedInventoryJournalRead,
+    callbackJournalGeneration?: number
   ): Promise<void> {
+    // Overlapping exact echoes share the clean anchor from before the first
+    // callback armed it. A conflicting/malformed delivery poisons eligibility
+    // for the whole batch, so a later exact echo cannot erase its evidence.
+    this.externalSettingsBatchReviewEligible &&=
+      !drainedManagedMutation && preCallbackJournal !== undefined &&
+      preCallbackJournal === this.externalSettingsBatchReviewJournal &&
+      this.canRevalidateSharedTypedReview(stored, preCallbackJournal);
     if (await this.acceptUnchangedExternalSettings(stored, externalEpoch, drainedManagedMutation)) {
       return;
     }
@@ -1158,13 +1216,13 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         // Each input may be valid on its own while their monotonic union is
         // not. Never truncate the local history or persist a partial merge.
         this.baselineReviewRequired = true;
-        this.baselineReviewNeedsTypedAdoption = true;
+        this.requireLocalTypedAdoption();
       }
     } else {
       // This list is safety metadata: silently dropping a malformed or
       // over-limit value could make a late old-root delivery invisible.
       this.baselineReviewRequired = true;
-      this.baselineReviewNeedsTypedAdoption = true;
+      this.requireLocalTypedAdoption();
     }
     const retiredRootFingerprintsAfterMerge = this.currentRetiredRootFingerprints();
     const retiredRootCommitmentChanged =
@@ -1184,7 +1242,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       // The names remain in memory, but without a verified local commitment a
       // crash could let a newer synced snapshot erase this just-delivered root.
       this.baselineReviewRequired = true;
-      this.baselineReviewNeedsTypedAdoption = true;
+      this.requireLocalTypedAdoption();
     }
     const previousRoot = clinicalRootFolder();
     const previousSettingsRoot = this.settings.rootFolder;
@@ -1256,6 +1314,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
     if (marker) this.watchMigrationRoots(marker);
     const deliveredSafety = this.workspaceSafetyFrom(stored);
+    this.baselineReviewRequiresSharedConfirmation ||=
+      deliveredSafety?.baselineReviewRequiresSharedConfirmation === true;
+    if (this.baselineReviewRequiresSharedConfirmation) {
+      this.baselineReviewRequired = true;
+      this.baselineReviewNeedsTypedAdoption = true;
+    }
     const deliveredInitializationApproved =
       deliveredSafety?.initializationApproved === true &&
       deliveredSafety.initialized !== true;
@@ -1376,12 +1440,33 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // a membership proof. A delivered flag or a comparison this device can
     // redo against its own journal stays on the self-clearing path.
     if (equalCompleteUpgradesIncompleteLocal) {
-      this.baselineReviewNeedsTypedAdoption = true;
+      this.requireLocalTypedAdoption();
     }
-    // A peer that recorded its review as unverifiable had a reason this
-    // device cannot see; keep that human decision shared, as ADOPT is.
+    const currentJournal = this.readTrustedInventoryJournal();
+    const canRevalidatePeerReview =
+      this.externalSettingsBatchReviewEligible &&
+      preCallbackJournal !== undefined &&
+      preCallbackJournal.status === "valid" &&
+      preCallbackJournal === this.externalSettingsBatchReviewJournal &&
+      callbackJournalGeneration !== undefined &&
+      currentJournal.status === "valid" &&
+      currentJournal.journal.generation >= callbackJournalGeneration &&
+      currentJournal.journal.localTypedReviewRequired !== true &&
+      sameTrustedInventoryJournal(
+        {
+          ...preCallbackJournal.journal,
+          generation: currentJournal.journal.generation,
+          pending: currentJournal.journal.pending,
+          localTypedReviewRequired: false
+        },
+        { ...currentJournal.journal, localTypedReviewRequired: false }
+      ) &&
+      !drainedManagedMutation &&
+      this.canRevalidateSharedTypedReview(stored, preCallbackJournal);
+    // Only an independent, clean, exact local anchor can turn the peer's
+    // shared manual flag into a comparison. Local failures always stay typed.
     this.baselineReviewNeedsTypedAdoption ||=
-      deliveredSafety?.baselineReviewNeedsTypedAdoption === true;
+      deliveredSafety?.baselineReviewNeedsTypedAdoption === true && !canRevalidatePeerReview;
     // A versioned safety state supersedes the one-time legacy adoption prompt.
     // A safetyless file remains ambiguous and is handled below without saving.
     if (this.firstUseInitializationPending && deliveredTrustedSafety) {
@@ -1923,6 +2008,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       version: 1,
       generation,
       pending: true,
+      ...((this.localTypedReviewRequired || read.journal?.localTypedReviewRequired)
+        ? { localTypedReviewRequired: true } : {}),
       retiredRootFingerprints,
       ...(trustedInventory ? { trustedInventory } : {})
     };
@@ -1943,17 +2030,24 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     if (!retiredRootFingerprints) return false;
     const read = this.readTrustedInventoryJournal();
     if (read.status === "invalid" && !allowInvalidReplacement) return false;
+    if (
+      !allowInvalidReplacement &&
+      (this.localTypedReviewRequired || read.journal?.localTypedReviewRequired === true ||
+        this.baselineReviewRequiresSharedConfirmation)
+    ) return false;
     const generation = read.journal?.generation ?? 0;
     if (expectedGeneration !== undefined && generation !== expectedGeneration) return false;
     const trustedInventory = this.journalEntryForCurrentInventory();
     if (!trustedInventory || this.baselineReviewRequired) return false;
-    return this.writeTrustedInventoryJournal({
+    const committed = this.writeTrustedInventoryJournal({
       version: 1,
       generation,
       pending: false,
       retiredRootFingerprints,
       trustedInventory
     });
+    if (committed && allowInvalidReplacement) this.localTypedReviewRequired = false;
+    return committed;
   }
 
   private failClosedForTrustedInventoryJournal(): void {
@@ -2019,6 +2113,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       baselineReviewNeedsTypedAdoption:
         state.baselineReviewRequired === true &&
         state.baselineReviewNeedsTypedAdoption === true,
+      baselineReviewRequiresSharedConfirmation:
+        state.baselineReviewRequiresSharedConfirmation !== undefined &&
+        state.baselineReviewRequiresSharedConfirmation !== false,
       expectedEntityCounts,
       expectedRecordDigest:
         typeof state.expectedRecordDigest === "string" && /^[0-9a-f]{64}$/.test(state.expectedRecordDigest)
@@ -2058,6 +2155,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       baselineReviewRequired: this.baselineReviewRequired,
       baselineReviewNeedsTypedAdoption:
         this.baselineReviewRequired && this.baselineReviewNeedsTypedAdoption,
+      ...(this.baselineReviewRequiresSharedConfirmation
+        ? { baselineReviewRequiresSharedConfirmation: true } : {}),
       expectedEntityCounts: persistedInventory?.counts ?? this.expectedEntityCounts ?? undefined,
       expectedRecordDigest: persistedInventory?.digest ?? this.expectedRecordDigest ?? undefined
     };
@@ -2273,7 +2372,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     message = CLINICAL_WRITES_BLOCKED_MESSAGE
   ): void {
     const initializationBlocked = !blocked && this.firstUseInitializationPending;
-    const reviewBlocked = !blocked && this.baselineReviewRequired;
+    const reviewBlocked = !blocked && (this.baselineReviewRequired ||
+      this.localTypedReviewRequired || this.baselineReviewRequiresSharedConfirmation);
     const missingRootBlocked = !blocked && this.missingRootRecoveryBlocked;
     const markerBlocked = !blocked && Boolean(this.currentMigrationMarker());
     const externalSettingsBlocked = !blocked && this.externalSettingsApplyOperations > 0;
@@ -2319,7 +2419,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   }
 
   private baselineReviewMessage(): string {
-    return this.baselineReviewNeedsTypedAdoption
+    return this.baselineReviewNeedsTypedAdoption || this.localTypedReviewRequired ||
+      this.baselineReviewRequiresSharedConfirmation
       ? CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE
       : CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE;
   }
@@ -2357,9 +2458,82 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     typedAdoptionOnly = false
   ): void {
     this.baselineReviewRequired = true;
-    this.baselineReviewNeedsTypedAdoption ||= typedAdoptionOnly;
+    if (typedAdoptionOnly) this.requireLocalTypedAdoption();
     this.setMissingRootRecoveryBlocked(requiresRecords);
     this.setMigrationRecoveryBlocked(true, CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE);
+  }
+
+  /** Record local uncertainty before any synced save can lose its provenance. */
+  private requireLocalTypedAdoption(): void {
+    this.externalSettingsBatchReviewEligible = false;
+    this.baselineReviewRequired = true;
+    this.baselineReviewNeedsTypedAdoption = true;
+    this.localTypedReviewRequired = true;
+    const read = this.readTrustedInventoryJournal();
+    const generation = (read.journal?.generation ?? 0) + 1;
+    const recorded = read.status !== "invalid" && Number.isSafeInteger(generation) &&
+      this.writeTrustedInventoryJournal({
+        // Preserve the prior root and retired-root evidence verbatim. A local
+        // metadata failure is not permission to replace it with current data.
+        ...(read.journal ?? { version: 1 as const }),
+        generation,
+        pending: true,
+        localTypedReviewRequired: true
+      });
+    if (!recorded) {
+      // A failed local write must not leave a clean old journal looking like
+      // independent evidence on restart. The shared fallback is deliberately
+      // conservative on every device until a verified explicit adoption.
+      this.baselineReviewRequiresSharedConfirmation = true;
+      this.workspaceSafetyNeedsPersistence = true;
+    }
+  }
+
+  /**
+   * Narrow legacy/peer exception: a previously clean independent commitment
+   * agrees exactly with the delivered tuple. This authorizes comparison only;
+   * the existing two scans and durable commit still decide whether to reopen.
+   */
+  private canRevalidateSharedTypedReview(
+    stored: unknown,
+    journalRead: TrustedInventoryJournalRead
+  ): boolean {
+    if (
+      this.localTypedReviewRequired || this.baselineReviewRequiresSharedConfirmation ||
+      this.workspaceSafetyNeedsPersistence || this.firstUseInitializationPending ||
+      this.initializationScaffoldApproved || this.currentMigrationMarker() ||
+      this.markerFrom(stored) || this.retiredRootConflict() ||
+      journalRead.status !== "valid" || journalRead.journal.pending ||
+      journalRead.journal.localTypedReviewRequired === true
+    ) return false;
+    const entry = journalRead.journal.trustedInventory;
+    const retired = journalRead.journal.retiredRootFingerprints;
+    const currentRetired = this.currentRetiredRootFingerprints();
+    const deliveredRetired = parseRetiredRootFolders(stored);
+    const safety = this.workspaceSafetyFrom(stored);
+    const incoming = normalizeSettings(stored, {
+      careSettings: CARE_SETTINGS,
+      pathways: PATHWAYS,
+      priorities: PRIORITIES
+    });
+    const delivered = completeSafetyInventory(safety);
+    if (
+      !entry || entry.rootFingerprint !== this.activeRootFingerprint ||
+      incoming.rootFolder !== clinicalRootFolder() ||
+      safety?.initialized !== true || safety.baselineReviewRequiresSharedConfirmation === true ||
+      !delivered || !retired || !currentRetired ||
+      retired.length !== currentRetired.length ||
+      retired.some((fingerprint, index) => fingerprint !== currentRetired[index]) ||
+      !deliveredRetired.valid || deliveredRetired.roots.length !== this.retiredRootFolders.size ||
+      deliveredRetired.roots.some((root) => !this.retiredRootFolders.has(root)) ||
+      entry.expectedRecordIdentityDigests?.length !== entry.expectedManagedRecordCount ||
+      this.expectedManagedRecordCount !== entry.expectedManagedRecordCount ||
+      this.expectedRecordDigest !== entry.expectedRecordDigest ||
+      !this.expectedEntityCounts ||
+      ENTITY_FOLDER_NAMES.some(([entity]) =>
+        this.expectedEntityCounts?.[entity] !== entry.expectedEntityCounts[entity])
+    ) return false;
+    return sameRecordInventory(recordInventoryFromJournalEntry(entry), delivered);
   }
 
   /**
@@ -2369,7 +2543,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
    * not something a scan can settle, so those scans leave it for typed ADOPT.
    */
   private baselineReviewBlocksAutomaticRecovery(): boolean {
-    return this.baselineReviewRequired && this.baselineReviewNeedsTypedAdoption;
+    return this.localTypedReviewRequired || this.baselineReviewRequiresSharedConfirmation ||
+      (this.baselineReviewRequired && this.baselineReviewNeedsTypedAdoption);
   }
 
   /** Leaves a review in place after a scan that could not prove the record set. */
@@ -4569,6 +4744,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
 
     const wasMissingRootBlocked = this.missingRootRecoveryBlocked;
     const wasBaselineReviewRequired = this.baselineReviewRequired;
+    const wasTypedReviewRequired = this.baselineReviewNeedsTypedAdoption;
+    const wasSharedConfirmationRequired = this.baselineReviewRequiresSharedConfirmation;
     const requiresRecords = this.missingRootRequiresRecords || this.managedRecordsExpected;
     // Baseline adoption itself changes the trusted safety state. Block all
     // record writes for its scan/save/rescan window, even when it began from a
@@ -4647,6 +4824,33 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       }
       return false;
     }
+    if (this.baselineReviewRequiresSharedConfirmation) {
+      // Moving the shared fallback back to a device-local barrier is allowed
+      // only inside explicit ADOPT, after the preview's exact record scan.
+      // Keep a typed quarantine journal through the save/rescan window. If it
+      // cannot be verified, never publish a cleared shared fallback.
+      const previousJournal = this.readTrustedInventoryJournal();
+      const retiredRootFingerprints = this.currentRetiredRootFingerprints();
+      const generation = (previousJournal.journal?.generation ?? 0) + 1;
+      if (
+        !retiredRootFingerprints || !Number.isSafeInteger(generation) ||
+        !this.writeTrustedInventoryJournal({
+          version: 1,
+          generation,
+          pending: true,
+          localTypedReviewRequired: true,
+          retiredRootFingerprints,
+          ...(previousJournal.journal?.trustedInventory
+            ? { trustedInventory: previousJournal.journal.trustedInventory } : {})
+        })
+      ) {
+        this.requireLocalTypedAdoption();
+        this.setMissingRootRecoveryBlocked(requiresRecords);
+        this.showMigrationRecoveryNotice(12000, this.baselineReviewMessage(), false);
+        return false;
+      }
+      this.localTypedReviewRequired = true;
+    }
     this.expectedEntityCounts = { ...acceptedInventory.counts };
     this.expectedRecordDigest = acceptedInventory.digest;
     this.expectedRecordIdentityDigests = [...acceptedInventory.identityDigests];
@@ -4660,6 +4864,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // snapshot as the newly accepted tuple.
     this.baselineReviewRequired = false;
     this.baselineReviewNeedsTypedAdoption = false;
+    this.baselineReviewRequiresSharedConfirmation = false;
     this.missingRootRecoveryBlocked = false;
     this.missingRootRequiresRecords = false;
     this.structureReady = false;
@@ -4669,6 +4874,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     } catch {
       this.workspaceSafetyNeedsPersistence = true;
       this.baselineReviewRequired ||= wasBaselineReviewRequired;
+      this.baselineReviewNeedsTypedAdoption ||= wasTypedReviewRequired;
+      this.baselineReviewRequiresSharedConfirmation ||= wasSharedConfirmationRequired;
       this.setMissingRootRecoveryBlocked(requiresRecords || acceptedInventory.total > 0);
       this.showMigrationRecoveryNotice(12000, this.recoveryBlockMessage, false);
       return false;
@@ -4697,6 +4904,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     if (!finalMatches) {
       if (!this.firstUseInitializationPending && !this.currentMigrationMarker()) {
         this.baselineReviewRequired ||= wasBaselineReviewRequired;
+        this.baselineReviewNeedsTypedAdoption ||= wasTypedReviewRequired;
+        this.baselineReviewRequiresSharedConfirmation ||= wasSharedConfirmationRequired;
         this.setMissingRootRecoveryBlocked(requiresRecords || acceptedInventory.total > 0);
         try {
           await this.persistPluginData();

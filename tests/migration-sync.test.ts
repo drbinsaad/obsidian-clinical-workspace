@@ -41,6 +41,7 @@ type TestTrustedInventoryJournal = {
   version: 1;
   generation: number;
   pending: boolean;
+  localTypedReviewRequired?: boolean;
   retiredRootFingerprints?: string[];
   trustedInventory?: {
     rootFingerprint: string;
@@ -118,6 +119,9 @@ type TestPlugin = {
   workspaceSafetyNeedsPersistence: boolean;
   recoveryValidationRequired: boolean;
   baselineReviewRequired: boolean;
+  baselineReviewNeedsTypedAdoption: boolean;
+  baselineReviewRequiresSharedConfirmation: boolean;
+  setBaselineReviewBlocked: (requiresRecords?: boolean, typedAdoptionOnly?: boolean) => void;
   recoveryBlockMessage: string;
   structureReady: boolean;
   externalSettingsApplyQueue: Promise<void>;
@@ -206,6 +210,267 @@ function copyRoot(app: StubApp, from: string, to: string): void {
       app.vault.writeRaw(`${to}${path.slice(from.length)}`, content);
     }
   }
+}
+
+/** Synthetic records only: exercise inherited review without a manual ADOPT. */
+async function automaticReviewFixture() {
+  const { app, repository, service } = await harness();
+  await service.createEpisode(episodeInput());
+  let stored: Record<string, unknown> = { ...DEFAULT_SETTINGS };
+  const saves: unknown[] = [];
+  const save = (data: unknown): void => {
+    stored = data as Record<string, unknown>;
+    saves.push(structuredClone(data));
+  };
+  const plugin = makePlugin(app, repository, () => stored, save);
+  await plugin.noteManagedRecordWrite();
+  return {
+    app, repository, plugin, saves, save,
+    get stored() { return stored; },
+    set stored(value: Record<string, unknown>) { stored = value; },
+    inheritLegacyReview() {
+      stored = {
+        ...stored,
+        workspaceSafety: {
+          ...(stored.workspaceSafety as Record<string, unknown>),
+          rootRecoveryRequired: true,
+          recoveryValidationRequired: true,
+          baselineReviewRequired: true,
+          baselineReviewNeedsTypedAdoption: true
+        }
+      };
+    },
+    async restart(onSave: (data: unknown) => void | Promise<void> = save) {
+      const nextRepository = new ClinicalRepository(app as unknown as App);
+      const next = makePlugin(app, nextRepository, () => stored, onSave);
+      await next.loadSettings();
+      nextRepository.setWriteBlock(next.migrationRecoveryBlocked ? next.recoveryBlockMessage : null);
+      return next;
+    }
+  };
+}
+
+async function withAutomaticReviewFixture(
+  run: (fixture: Awaited<ReturnType<typeof automaticReviewFixture>>) => Promise<void>
+): Promise<void> {
+  const originalRoot = clinicalRootFolder();
+  try {
+    setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
+    await run(await automaticReviewFixture());
+  } finally {
+    setClinicalRoot(originalRoot);
+  }
+}
+
+test("a legacy typed flag with an independently clean exact journal recovers automatically across restarts", async () => {
+  await withAutomaticReviewFixture(async (fixture) => {
+    const recordsBefore = new Map(fixture.app.vault.files);
+    const journal = fixture.app.loadLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY) as TestTrustedInventoryJournal;
+    delete journal.localTypedReviewRequired;
+    fixture.app.saveLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY, journal);
+    fixture.inheritLegacyReview();
+    const restarted = await fixture.restart();
+    assert.equal(restarted.migrationRecoveryBlocked, true, "startup still requires verification");
+    assert.equal(await restarted.retryExactRestoredRootRecovery(), true);
+    assert.equal(restarted.baselineReviewRequired, false);
+    assert.equal(restarted.migrationRecoveryBlocked, false);
+    assert.deepEqual(fixture.app.vault.files, recordsBefore, "automatic recovery never rewrites notes");
+    assert.equal(await (await fixture.restart()).retryExactRestoredRootRecovery(), true);
+    assert.equal((fixture.stored.workspaceSafety as Record<string, unknown>).baselineReviewRequired, false);
+  });
+});
+
+test("repeated exact peer typed flags revalidate automatically and canonical echoes converge", async () => {
+  await withAutomaticReviewFixture(async (fixture) => {
+    for (let index = 0; index < 3; index += 1) {
+      fixture.inheritLegacyReview();
+      await fixture.plugin.onExternalSettingsChange();
+      assert.equal(fixture.plugin.migrationRecoveryBlocked, false);
+      assert.equal(fixture.plugin.baselineReviewRequired, false);
+      const savesBeforeEcho = fixture.saves.length;
+      await fixture.plugin.onExternalSettingsChange();
+      assert.equal(fixture.saves.length, savesBeforeEcho, "healthy echoes must not bounce data.json");
+    }
+  });
+});
+
+test("overlapping exact peer typed flags recover automatically after the full batch", async () => {
+  await withAutomaticReviewFixture(async (fixture) => {
+    fixture.inheritLegacyReview();
+    await Promise.all([
+      fixture.plugin.onExternalSettingsChange(),
+      fixture.plugin.onExternalSettingsChange(),
+      fixture.plugin.onExternalSettingsChange()
+    ]);
+    assert.equal(fixture.plugin.migrationRecoveryBlocked, false);
+    assert.equal(fixture.plugin.baselineReviewNeedsTypedAdoption, false);
+    assert.equal((fixture.stored.workspaceSafety as Record<string, unknown>).baselineReviewRequired, false);
+  });
+});
+
+for (const scanNumber of [1, 2]) {
+  test(`an exact peer flag arriving during recovery scan ${scanNumber} does not re-lock the batch`, { timeout: 5000 }, async () => {
+    await withAutomaticReviewFixture(async (fixture) => {
+      const scan = fixture.plugin.parsedRecordInventory.bind(fixture.plugin);
+      let calls = 0;
+      let delayed: Promise<void> | undefined;
+      fixture.plugin.parsedRecordInventory = async (root) => {
+        const result = await scan(root);
+        calls += 1;
+        if (calls === scanNumber) {
+          fixture.inheritLegacyReview();
+          delayed = fixture.plugin.onExternalSettingsChange();
+        }
+        return result;
+      };
+      fixture.inheritLegacyReview();
+      await fixture.plugin.onExternalSettingsChange();
+      assert.ok(delayed, "the extra delivery must overlap the selected scan");
+      await delayed;
+      assert.equal(fixture.plugin.migrationRecoveryBlocked, false);
+      assert.equal(fixture.plugin.baselineReviewNeedsTypedAdoption, false);
+      assert.equal(await (await fixture.restart()).retryExactRestoredRootRecovery(), true);
+    });
+  });
+}
+
+for (const scenario of [
+  "interrupted journal", "missing witness", "mismatched root", "missing retired-root commitment",
+  "conflicting synced digest", "higher synced floor", "invalid local marker", "shared fallback",
+  "malformed shared fallback"
+] as const) {
+  test(`legacy typed review stays blocked with ${scenario}`, async () => {
+    await withAutomaticReviewFixture(async (fixture) => {
+      fixture.inheritLegacyReview();
+      const journal = fixture.app.loadLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY) as TestTrustedInventoryJournal;
+      const safety = fixture.stored.workspaceSafety as Record<string, unknown>;
+      assert.ok(journal.trustedInventory);
+      switch (scenario) {
+        case "interrupted journal": journal.pending = true; break;
+        case "missing witness": delete journal.trustedInventory.expectedRecordIdentityDigests; break;
+        case "mismatched root": journal.trustedInventory.rootFingerprint = "f".repeat(64); break;
+        case "missing retired-root commitment": journal.retiredRootFingerprints = ["f".repeat(64)]; break;
+        case "conflicting synced digest": safety.expectedRecordDigest = "f".repeat(64); break;
+        case "higher synced floor": {
+          const counts = safety.expectedEntityCounts as TestRecordInventory["counts"];
+          safety.expectedEntityCounts = { ...counts, task: counts.task + 1 };
+          safety.expectedManagedRecordCount = Number(safety.expectedManagedRecordCount) + 1;
+          safety.expectedRecordDigest = "f".repeat(64);
+          break;
+        }
+        case "invalid local marker":
+          (journal as unknown as Record<string, unknown>).localTypedReviewRequired = "false";
+          break;
+        case "shared fallback": safety.baselineReviewRequiresSharedConfirmation = true; break;
+        case "malformed shared fallback": safety.baselineReviewRequiresSharedConfirmation = "false"; break;
+      }
+      fixture.app.saveLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY, journal);
+      const restarted = await fixture.restart();
+      assert.equal(await restarted.retryExactRestoredRootRecovery(), false);
+      assert.equal(restarted.migrationRecoveryBlocked, true);
+      assert.equal(restarted.baselineReviewRequired, true);
+    });
+  });
+}
+
+test("a local typed failure survives repaired shared settings and restart", async () => {
+  await withAutomaticReviewFixture(async (fixture) => {
+    const healthyShared = structuredClone(fixture.stored);
+    fixture.plugin.setBaselineReviewBlocked(true, true);
+    const blockedJournal = fixture.app.loadLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY) as TestTrustedInventoryJournal;
+    assert.equal(blockedJournal.localTypedReviewRequired, true);
+    fixture.stored = healthyShared;
+    await fixture.plugin.onExternalSettingsChange();
+    assert.equal(fixture.plugin.migrationRecoveryBlocked, true);
+    const restarted = await fixture.restart();
+    assert.equal(await restarted.retryExactRestoredRootRecovery(), false);
+    assert.equal(restarted.baselineReviewNeedsTypedAdoption, true);
+  });
+});
+
+test("failed automatic recovery persistence never opens record writes", async () => {
+  await withAutomaticReviewFixture(async (fixture) => {
+    fixture.inheritLegacyReview();
+    const restarted = await fixture.restart(async () => { throw new Error("Injected recovery save failure"); });
+    assert.equal(await restarted.retryExactRestoredRootRecovery(), false);
+    assert.equal(restarted.migrationRecoveryBlocked, true);
+    assert.equal(restarted.baselineReviewRequired, true);
+    await assert.rejects(() => restarted.repository.ensureStructure(), /read-only/);
+  });
+});
+
+test("a local integrity failure during inherited-review verification cannot be cleared by that scan", async () => {
+  await withAutomaticReviewFixture(async (fixture) => {
+    fixture.inheritLegacyReview();
+    const restarted = await fixture.restart();
+    const scan = restarted.parsedRecordInventory.bind(restarted);
+    restarted.parsedRecordInventory = async (root) => {
+      const inventory = await scan(root);
+      restarted.setBaselineReviewBlocked(true, true);
+      return inventory;
+    };
+    assert.equal(await restarted.retryExactRestoredRootRecovery(), false);
+    assert.equal(restarted.migrationRecoveryBlocked, true);
+    assert.equal(await (await fixture.restart()).retryExactRestoredRootRecovery(), false);
+  });
+});
+
+test("local review write failure retains a shared fallback even after journal storage recovers", async () => {
+  await withAutomaticReviewFixture(async (fixture) => {
+    const saveLocal = fixture.app.saveLocalStorage.bind(fixture.app);
+    fixture.app.saveLocalStorage = () => { throw new Error("Injected local storage failure"); };
+    fixture.plugin.setBaselineReviewBlocked(true, true);
+    await fixture.plugin.persistWorkspaceSafety();
+    assert.equal(
+      (fixture.stored.workspaceSafety as Record<string, unknown>).baselineReviewRequiresSharedConfirmation,
+      true
+    );
+    fixture.app.saveLocalStorage = saveLocal;
+    const restarted = await fixture.restart();
+    assert.equal(await restarted.retryExactRestoredRootRecovery(), false);
+    assert.equal(restarted.migrationRecoveryBlocked, true);
+  });
+});
+
+test("shared fallback cannot clear through ADOPT while local persistence is unavailable", async () => {
+  await withAutomaticReviewFixture(async (fixture) => {
+    const saveLocal = fixture.app.saveLocalStorage.bind(fixture.app);
+    fixture.app.saveLocalStorage = () => { throw new Error("Injected local storage failure"); };
+    fixture.plugin.setBaselineReviewBlocked(true, true);
+    await fixture.plugin.persistWorkspaceSafety();
+    const preview = await fixture.plugin.captureBaselineAdoptionCandidate(DEFAULT_SETTINGS.rootFolder);
+    assert.ok(preview);
+    assert.equal(await fixture.plugin.confirmCurrentBaselineAdoption(DEFAULT_SETTINGS.rootFolder, preview), false);
+    assert.equal((fixture.stored.workspaceSafety as Record<string, unknown>).baselineReviewRequiresSharedConfirmation, true);
+    fixture.app.saveLocalStorage = saveLocal;
+    const fresh = await fixture.plugin.captureBaselineAdoptionCandidate(DEFAULT_SETTINGS.rootFolder);
+    assert.ok(fresh);
+    assert.equal(await fixture.plugin.confirmCurrentBaselineAdoption(DEFAULT_SETTINGS.rootFolder, fresh), true);
+    const journal = fixture.app.loadLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY) as TestTrustedInventoryJournal;
+    assert.notEqual(journal.localTypedReviewRequired, true);
+    assert.equal(journal.pending, false);
+    assert.notEqual((fixture.stored.workspaceSafety as Record<string, unknown>).baselineReviewRequiresSharedConfirmation, true);
+    assert.equal(await (await fixture.restart()).retryExactRestoredRootRecovery(), true);
+  });
+});
+
+for (const scenario of ["missing record", "same-count replacement"] as const) {
+  test(`an exact shared flag never hides a ${scenario} during automatic verification`, async () => {
+    await withAutomaticReviewFixture(async (fixture) => {
+      fixture.inheritLegacyReview();
+      const path = managedRecordPaths(fixture.app, DEFAULT_SETTINGS.rootFolder).at(-1);
+      assert.ok(path);
+      if (scenario === "missing record") fixture.app.vault.deleteRaw(path);
+      else {
+        const content = fixture.app.vault.files.get(path);
+        assert.ok(content);
+        fixture.app.vault.writeRaw(path, content.replace(/^id:\s*(.+)$/m, "id: REPLACED-untrusted-record"));
+      }
+      const restarted = await fixture.restart();
+      assert.equal(await restarted.retryExactRestoredRootRecovery(), false);
+      assert.equal(restarted.migrationRecoveryBlocked, true);
+    });
+  });
 }
 
 function deleteRoot(app: StubApp, root: string): void {
@@ -1859,11 +2124,12 @@ test("typed ADOPT stays in review when its shared save succeeds but the local jo
         .workspaceSafety?.expectedRecordDigest,
       replacementInventory.digest
     );
-    assert.deepEqual(
-      app.loadLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY),
-      oldJournal,
-      "a failed update must leave the previous trusted A anchor untouched"
-    );
+    const failedAdoptionJournal = app.loadLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY) as TestTrustedInventoryJournal;
+    assert.deepEqual(failedAdoptionJournal.trustedInventory, oldJournal.trustedInventory,
+      "a failed update must leave the previous trusted A anchor untouched");
+    assert.deepEqual(failedAdoptionJournal.retiredRootFingerprints, oldJournal.retiredRootFingerprints);
+    assert.equal(failedAdoptionJournal.pending, true);
+    assert.equal(failedAdoptionJournal.localTypedReviewRequired, true);
     assert.equal(reviewing.baselineReviewRequired, true);
     assert.equal(reviewing.migrationRecoveryBlocked, true);
     await assert.rejects(
@@ -3019,6 +3285,8 @@ test("identical blocked settings deliveries retain review without writing anothe
       stored = data;
     });
     await plugin.noteManagedRecordWrite();
+    // A genuine local integrity failure, not a peer's inherited flag.
+    plugin.setBaselineReviewBlocked(true, true);
     stored = {
       ...(stored as Record<string, unknown>),
       workspaceSafety: {
@@ -3054,6 +3322,7 @@ test("manual review remains locked while duplicate background notices quiet down
       stored = data;
     });
     await plugin.noteManagedRecordWrite();
+    plugin.setBaselineReviewBlocked(true, true);
     stored = {
       ...(stored as Record<string, unknown>),
       workspaceSafety: {
@@ -7025,11 +7294,12 @@ test("legacy clean tombstone journals upgrade, but interrupted legacy journals f
     assert.equal(pendingRestart.baselineReviewRequired, true);
     assert.equal(pendingRestart.migrationRecoveryBlocked, true);
     assert.equal(await pendingRestart.retryExactRestoredRootRecovery(), false);
-    assert.deepEqual(
-      app.loadLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY),
-      legacyPending,
-      "an interrupted pre-extension journal cannot prove which tombstones existed"
-    );
+    const blockedLegacyJournal = app.loadLocalStorage(TRUSTED_INVENTORY_JOURNAL_KEY) as TestTrustedInventoryJournal;
+    assert.deepEqual(blockedLegacyJournal.trustedInventory, legacyPending.trustedInventory);
+    assert.equal(blockedLegacyJournal.retiredRootFingerprints, undefined,
+      "an interrupted pre-extension journal cannot invent proof of which tombstones existed");
+    assert.equal(blockedLegacyJournal.pending, true);
+    assert.equal(blockedLegacyJournal.localTypedReviewRequired, true);
     await assert.rejects(
       () => new ClinicalService(pendingRestartRepository).createEpisode(
         episodeInput({ mrn: "7017", caseName: "Legacy pending journal stays blocked" })
