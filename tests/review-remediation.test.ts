@@ -218,11 +218,12 @@ test("recovery notices are compact, accessible, responsive, and deduplicated", (
     "Clinical Workspace is temporarily read-only because the configured folder is unavailable. After Sync finishes or the folder is restored, run “Retry pending folder move recovery” from the Command Palette.";
   const plugin = new ClinicalWorkspacePlugin(new App(), {} as never) as unknown as {
     recoveryBlockMessage: string;
-    showMigrationRecoveryNotice: (duration?: number, message?: string) => void;
+    showMigrationRecoveryNotice: (duration?: number, message?: string, background?: boolean) => void;
     setMigrationRecoveryBlocked: (blocked: boolean) => void;
     onunload: () => void;
   };
   plugin.recoveryBlockMessage = fullMessage;
+  hideClinicalRecoveryNotice();
   StubNotice.history.length = 0;
 
   plugin.showMigrationRecoveryNotice();
@@ -235,6 +236,10 @@ test("recovery notices are compact, accessible, responsive, and deduplicated", (
   assert.equal(first.attributes.get("title"), fullMessage);
 
   plugin.showMigrationRecoveryNotice(7000);
+  assert.equal(StubNotice.history.length, 1, "a duplicate background event must not restart the notice");
+  assert.equal(first.duration, 5000);
+  assert.equal(first.hidden, false);
+  plugin.showMigrationRecoveryNotice(7000, fullMessage, false);
   const second = StubNotice.history[1];
   assert.ok(second);
   assert.equal(first.hidden, true, "a Sync event burst must not stack recovery notices");
@@ -674,4 +679,45 @@ test("a patient already merged away cannot be selected as a merge target", async
     () => service.mergePatients(source.patient.record.id, retiredTarget.patient.record.id),
     /already involved in another merge/
   );
+});
+
+test("explicit maintenance and adoption failures remain visible after a recovery popup is dismissed", async () => {
+  const { app } = await harness();
+  const plugin = new ClinicalWorkspacePlugin(app as unknown as App, {} as never) as unknown as {
+    migrationRecoveryBlocked: boolean;
+    recoveryBlockMessage: string;
+    showMigrationRecoveryNotice: () => void;
+    migrateGeneratedBodies: () => Promise<void>;
+    confirmCurrentBaselineAdoption: (root: string, preview: unknown) => Promise<boolean>;
+    enqueueMarkerFreeRecovery: (operation: () => Promise<boolean>) => Promise<boolean>;
+    commitCurrentBaselineAdoption: () => Promise<boolean>;
+  };
+  plugin.migrationRecoveryBlocked = true;
+  plugin.recoveryBlockMessage = CLINICAL_ROOT_UNAVAILABLE_MESSAGE;
+  hideClinicalRecoveryNotice();
+  StubNotice.history.length = 0;
+  const recordsBefore = new Map(app.vault.files);
+  try {
+    plugin.showMigrationRecoveryNotice();
+    StubNotice.history.at(-1)!.hide();
+    await plugin.migrateGeneratedBodies();
+    assert.equal(StubNotice.history.length, 2, "an explicit blocked maintenance command must explain its result");
+    assert.equal(StubNotice.history.at(-1)!.hidden, false);
+    StubNotice.history.at(-1)!.hide();
+
+    // Model the already-tested race in which the adoption scan succeeds but
+    // the queue finalizer rejects release after a concurrent Sync delivery.
+    plugin.commitCurrentBaselineAdoption = async () => true;
+    plugin.enqueueMarkerFreeRecovery = async (operation) => {
+      await operation();
+      return false;
+    };
+    assert.equal(await plugin.confirmCurrentBaselineAdoption("Test root", {}), false);
+    assert.equal(StubNotice.history.length, 3, "failed explicit ADOPT release must not inherit background dismissal");
+    assert.equal(StubNotice.history.at(-1)!.hidden, false);
+    assert.equal(plugin.migrationRecoveryBlocked, true);
+    assert.deepEqual(app.vault.files, recordsBefore);
+  } finally {
+    hideClinicalRecoveryNotice();
+  }
 });

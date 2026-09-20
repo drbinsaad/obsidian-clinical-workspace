@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { afterEach, beforeEach } from "node:test";
 import { App, TFile, TFolder } from "obsidian";
 import ClinicalWorkspacePlugin, {
   MAX_JOURNALED_RECORD_IDENTITIES,
@@ -20,8 +20,16 @@ import {
   type MigrationResult
 } from "../src/services/migration";
 import { ClinicalService } from "../src/services/clinical-service";
+import {
+  CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE,
+  compactClinicalRecoveryNotice,
+  hideClinicalRecoveryNotice
+} from "../src/ui/notices";
 import { Notice as StubNotice, type App as StubApp } from "./support/obsidian-stub";
 import { episodeInput, harness } from "./support/harness";
+
+beforeEach(() => hideClinicalRecoveryNotice());
+afterEach(() => hideClinicalRecoveryNotice());
 
 type TestRecordInventory = {
   counts: { patient: number; episode: number; task: number; procedure: number };
@@ -868,6 +876,8 @@ test("an exact trusted root restored before listeners register clears the stale 
     for (const folder of backedUpFolders) app.vault.folders.add(folder);
     for (const [path, content] of backedUpFiles) app.vault.writeRaw(path, content);
 
+    // The prior plugin's unload clears its module-scoped notice episode.
+    hideClinicalRecoveryNotice();
     StubNotice.history.length = 0;
     restarted.showMigrationRecoveryNotice();
     const recoveryNotice = StubNotice.history.at(-1);
@@ -3025,8 +3035,56 @@ test("identical blocked settings deliveries retain review without writing anothe
     assert.equal(saves, savesBeforeEcho, "a stable review barrier must not generate more Sync traffic");
     assert.equal(plugin.baselineReviewRequired, true);
     assert.equal(plugin.migrationRecoveryBlocked, true);
+    assert.equal(plugin.recoveryBlockMessage, CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE);
     await assert.rejects(() => repository.ensureStructure(), /recovery information conflicts/);
   } finally {
+    setClinicalRoot(originalRoot);
+  }
+});
+
+test("manual review remains locked while duplicate background notices quiet down and explicit retry explains it", async () => {
+  const originalRoot = clinicalRootFolder();
+  hideClinicalRecoveryNotice();
+  try {
+    setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
+    const { app, repository, service } = await harness();
+    await service.createEpisode(episodeInput());
+    let stored: unknown = { ...DEFAULT_SETTINGS };
+    const plugin = makePlugin(app, repository, () => stored, (data) => {
+      stored = data;
+    });
+    await plugin.noteManagedRecordWrite();
+    stored = {
+      ...(stored as Record<string, unknown>),
+      workspaceSafety: {
+        ...(stored as { workspaceSafety: Record<string, unknown> }).workspaceSafety,
+        baselineReviewRequired: true,
+        baselineReviewNeedsTypedAdoption: true
+      }
+    };
+    await plugin.onExternalSettingsChange();
+    const recordsBefore = new Map(app.vault.files);
+    hideClinicalRecoveryNotice();
+    StubNotice.history.length = 0;
+    plugin.showMigrationRecoveryNotice();
+    plugin.showMigrationRecoveryNotice();
+    plugin.showMigrationRecoveryNotice();
+    assert.equal(StubNotice.history.length, 1, "background events do not restart the popup");
+    StubNotice.history[0]!.hide();
+    plugin.showMigrationRecoveryNotice();
+    assert.equal(StubNotice.history.length, 1, "dismissal lasts throughout the blocked episode");
+    assert.equal(await plugin.retryPendingMigrationRecovery(), false);
+    assert.equal(StubNotice.history.length, 2, "explicit Retry still gives actionable guidance");
+    assert.equal(
+      StubNotice.history.at(-1)!.message,
+      compactClinicalRecoveryNotice(CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE)
+    );
+    assert.equal(plugin.baselineReviewRequired, true);
+    assert.equal(plugin.migrationRecoveryBlocked, true);
+    assert.deepEqual(app.vault.files, recordsBefore, "presentation does not change clinical records");
+    await assert.rejects(() => repository.ensureStructure(), /recovery information conflicts/);
+  } finally {
+    hideClinicalRecoveryNotice();
     setClinicalRoot(originalRoot);
   }
 });

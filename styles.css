@@ -31,8 +31,8 @@
   inline-size: min(360px, calc(100vw - 24px));
   min-inline-size: 0;
   max-inline-size: calc(100vw - 24px);
-  max-block-size: min(40vh, 240px);
-  max-block-size: min(40dvh, 240px);
+  max-block-size: min(30vh, 180px);
+  max-block-size: min(30dvh, 180px);
   overflow-y: auto;
   overscroll-behavior: contain;
   font-size: var(--font-ui-small);
@@ -55,8 +55,8 @@
   max-inline-size: calc(
     100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right)
   );
-  max-block-size: min(35vh, 220px);
-  max-block-size: min(35dvh, 220px);
+  max-block-size: min(25vh, 160px);
+  max-block-size: min(25dvh, 160px);
 }
 
 .clinical-workspace-shell {

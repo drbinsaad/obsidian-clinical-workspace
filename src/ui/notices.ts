@@ -10,13 +10,22 @@ export const CLINICAL_INITIALIZATION_SAVE_FAILED_MESSAGE =
 export const CLINICAL_INITIALIZATION_CHANGED_MESSAGE =
   "Clinical Workspace state changed while the confirmation was open. Initialization was cancelled; wait for Sync to finish, then open the workspace again.";
 export const CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE =
-  "Clinical Workspace is read-only because synchronized recovery information conflicts with the previously trusted baseline. It reopens automatically once every previously trusted record is present. If Sync has finished and the workspace is still read-only, run “Retry pending folder move recovery”; if the records still cannot be verified, run “Confirm current records as the recovery baseline” and review the exact record counts before typing ADOPT.";
+  "Clinical Workspace is read-only because synchronized recovery information conflicts with the previously trusted baseline. After Sync finishes, run “Retry pending folder move recovery”. Some conflicts require explicit review even when the records are present. If review is still required, run “Confirm current records as the recovery baseline” and inspect the exact record counts before typing ADOPT.";
+export const CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE =
+  "Clinical Workspace is read-only because synchronized recovery information conflicts with the previously trusted baseline. Manual baseline confirmation is required; waiting for Sync or retrying recovery does not clear this review. After Sync finishes, run “Confirm current records as the recovery baseline”, inspect the exact record counts, and type ADOPT only if the complete records match the baseline you intend to trust.";
 export const CLINICAL_SYNC_GROWTH_PENDING_MESSAGE =
-  "Clinical Workspace is temporarily read-only while newly synchronized records are verified against this device’s trusted baseline. Keep Obsidian open until Sync finishes; writes resume automatically once every previously trusted record is present. If Sync has finished and the workspace is still read-only, run “Retry pending folder move recovery” from the Command Palette.";
+  "Clinical Workspace is temporarily read-only while newly synchronized records are verified against this device’s trusted baseline. Keep Obsidian open until Sync finishes. Writes can resume after verification; if review is still required, the workspace remains read-only. After Sync, run “Retry pending folder move recovery” from the Command Palette if needed.";
 
 export const CLINICAL_RECOVERY_NOTICE_CLASS = "clinical-workspace-recovery-notice";
 
 let activeRecoveryNotice: Notice | null = null;
+const presentedRecoveryMessages = new Set<string>();
+const BACKGROUND_RECOVERY_NOTICE_DURATION = 5000;
+
+export interface ClinicalRecoveryNoticeOptions {
+  /** Automatic vault/Sync work should not repeatedly interrupt another note. */
+  background?: boolean;
+}
 
 /** Keep recovery Notices actionable without letting them obscure a phone viewport. */
 export function compactClinicalRecoveryNotice(message: string): string {
@@ -36,10 +45,13 @@ export function compactClinicalRecoveryNotice(message: string): string {
     return "Clinical Workspace changed during confirmation. Wait for Sync, then open the workspace again.";
   }
   if (message === CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE) {
-    return "Clinical Workspace is read-only because synced recovery data needs review. It reopens once every trusted record is present. If it stays read-only after Sync, run “Retry pending folder move recovery”, then confirm the current records as a new baseline.";
+    return "Clinical Workspace is read-only. After Sync, retry recovery; if review is still required, inspect the baseline before confirming.";
+  }
+  if (message === CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE) {
+    return "Clinical Workspace needs baseline confirmation. After Sync, inspect record counts before using “Confirm current records as the recovery baseline”.";
   }
   if (message === CLINICAL_SYNC_GROWTH_PENDING_MESSAGE) {
-    return "Clinical Workspace is verifying newly synced records. Keep Obsidian open until Sync finishes; it resumes automatically. If it stays read-only, run “Retry pending folder move recovery”.";
+    return "Clinical Workspace is verifying synced records. After Sync, run “Retry pending folder move recovery” if it stays read-only.";
   }
   return message;
 }
@@ -51,6 +63,7 @@ export function isClinicalRecoveryMessage(message: string): boolean {
     message === CLINICAL_INITIALIZATION_SAVE_FAILED_MESSAGE ||
     message === CLINICAL_INITIALIZATION_CHANGED_MESSAGE ||
     message === CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE ||
+    message === CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE ||
     message === CLINICAL_SYNC_GROWTH_PENDING_MESSAGE;
 }
 
@@ -59,15 +72,35 @@ export function isClinicalRecoveryMessage(message: string): boolean {
  * actions, and settings. Keeping it module-scoped prevents those surfaces from
  * stacking competing recovery notices during a burst of Sync events.
  */
-export function showClinicalRecoveryNotice(message: string, duration = 12000): Notice {
-  hideClinicalRecoveryNotice();
-  const notice = new Notice(compactClinicalRecoveryNotice(message), duration);
+export function showClinicalRecoveryNotice(message: string, duration?: number): Notice;
+export function showClinicalRecoveryNotice(
+  message: string,
+  duration: number | undefined,
+  options: ClinicalRecoveryNoticeOptions
+): Notice | null;
+export function showClinicalRecoveryNotice(
+  message: string,
+  duration = 12000,
+  options: ClinicalRecoveryNoticeOptions = {}
+): Notice | null {
+  if (options.background && presentedRecoveryMessages.has(message)) return null;
+  // Replacing a notice must not reset the recovery episode. Remember messages
+  // even after native tap dismissal or expiry, until recovery explicitly ends.
+  activeRecoveryNotice?.hide();
+  const visibleDuration = options.background
+    ? Math.min(
+      Number.isFinite(duration) && duration > 0 ? duration : BACKGROUND_RECOVERY_NOTICE_DURATION,
+      BACKGROUND_RECOVERY_NOTICE_DURATION
+    )
+    : duration;
+  const notice = new Notice(compactClinicalRecoveryNotice(message), visibleDuration);
   const noticeEl = notice.messageEl.closest<HTMLElement>(".notice") ?? notice.messageEl;
   noticeEl.addClass(CLINICAL_RECOVERY_NOTICE_CLASS);
   // Keep the complete safety explanation available to assistive technology
   // and desktop hover while the visible copy stays phone-sized.
   noticeEl.setAttribute("aria-label", message);
   noticeEl.setAttribute("title", message);
+  presentedRecoveryMessages.add(message);
   activeRecoveryNotice = notice;
   return notice;
 }
@@ -75,6 +108,7 @@ export function showClinicalRecoveryNotice(message: string, duration = 12000): N
 export function hideClinicalRecoveryNotice(): void {
   activeRecoveryNotice?.hide();
   activeRecoveryNotice = null;
+  presentedRecoveryMessages.clear();
 }
 
 /** Route arbitrary action errors through recovery styling when applicable. */

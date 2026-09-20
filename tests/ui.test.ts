@@ -213,7 +213,7 @@ test("recovery notices stay inside phone and narrow desktop viewports", async ()
   );
   assert.match(
     styles,
-    /\.is-mobile \.notice\.clinical-workspace-recovery-notice\s*\{[^}]*inline-size:\s*min\(\s*360px,[^}]*safe-area-inset-left[^}]*safe-area-inset-right[^}]*max-block-size:\s*min\(35dvh,\s*220px\);/s
+    /\.is-mobile \.notice\.clinical-workspace-recovery-notice\s*\{[^}]*inline-size:\s*min\(\s*360px,[^}]*safe-area-inset-left[^}]*safe-area-inset-right[^}]*max-block-size:\s*min\(25dvh,\s*160px\);/s
   );
   assert.match(
     source,
