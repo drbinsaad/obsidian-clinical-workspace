@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-09-20
+
+### Fixed
+
+- Manual baseline-review notices now explain that Sync completion or Retry
+  alone will not clear this lock. The confirmation preview reminds users to
+  verify that the displayed records are the complete intended set.
+- Repeated background recovery events no longer restart the same popup.
+  Background notices expire within five seconds, remain suppressed after
+  dismissal for that recovery episode, and use a smaller mobile footprint.
+  Explicit blocked actions still show actionable guidance.
+- Record-verification rules, write barriers, and typed baseline confirmation
+  are unchanged. This update does not approve a baseline or unlock a workspace
+  whose saved recovery state requires manual confirmation.
+
 ## [0.6.7] - 2026-09-18
 
 ### Fixed

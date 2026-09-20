@@ -41,6 +41,7 @@ import {
   ClinicalWorkspaceView
 } from "./ui/workspace-view";
 import {
+  CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE,
   CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE,
   CLINICAL_INITIALIZATION_CHANGED_MESSAGE,
   CLINICAL_INITIALIZATION_REQUIRED_MESSAGE,
@@ -413,8 +414,8 @@ async function retiredRootFingerprint(root: string): Promise<string> {
 
 /** Static, identifier-free highlights shown once after an update. */
 const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
-  "Records added on two devices no longer need a typed ADOPT: writes reopen automatically once every previously trusted record has synced back.",
-  "Every record form now says up front when the workspace is temporarily read-only, instead of failing after it is filled in."
+  "Recovery guidance now distinguishes verification from manual baseline confirmation; finishing Sync alone does not clear a manual review.",
+  "Background recovery popups are shorter and no longer restart repeatedly. Record safety checks and confirmation requirements are unchanged."
 ];
 
 /**
@@ -674,7 +675,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         if (!this.currentMigrationMarker() && !this.missingRootRecoveryBlocked) return false;
         if (!checking) {
           void this.retryPendingMigrationRecovery().catch(() => {
-            this.showMigrationRecoveryNotice();
+            this.showMigrationRecoveryNotice(12000, this.recoveryBlockMessage, false);
           });
         }
         return true;
@@ -1008,7 +1009,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.recoveryBlockMessage = this.firstUseInitializationPending
       ? CLINICAL_INITIALIZATION_REQUIRED_MESSAGE
       : this.baselineReviewRequired
-        ? CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
+        ? this.baselineReviewMessage()
         : this.pendingSyncedInventory
           ? CLINICAL_SYNC_GROWTH_PENDING_MESSAGE
         : this.missingRootRecoveryBlocked
@@ -2281,7 +2282,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     const effectiveMessage = this.firstUseInitializationPending || initializationBlocked
       ? CLINICAL_INITIALIZATION_REQUIRED_MESSAGE
       : this.baselineReviewRequired || reviewBlocked
-        ? CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
+        ? this.baselineReviewMessage()
         : this.pendingSyncedInventory
           ? CLINICAL_SYNC_GROWTH_PENDING_MESSAGE
         : missingRootBlocked
@@ -2307,13 +2308,27 @@ export default class ClinicalWorkspacePlugin extends Plugin {
 
   private showMigrationRecoveryNotice(
     duration = 12000,
-    message = this.recoveryBlockMessage
+    message = this.recoveryBlockMessage,
+    background = true
   ): void {
-    showClinicalRecoveryNotice(message, duration);
+    showClinicalRecoveryNotice(this.contextualRecoveryMessage(message), duration, { background });
   }
 
   private showUserFacingNotice(message: string, duration: number): void {
-    showClinicalNotice(message, duration);
+    showClinicalNotice(this.contextualRecoveryMessage(message), duration);
+  }
+
+  private baselineReviewMessage(): string {
+    return this.baselineReviewNeedsTypedAdoption
+      ? CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE
+      : CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE;
+  }
+
+  /** Presentation only: the review flag and record-write barrier are unchanged. */
+  private contextualRecoveryMessage(message: string): string {
+    return message === CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
+      ? this.baselineReviewMessage()
+      : message;
   }
 
   private setMissingRootRecoveryBlocked(
@@ -3627,10 +3642,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       if (wasMissingRootBlocked && recovered) {
         new Notice("Clinical Workspace folder access was restored.", 7000);
       } else if (wasMissingRootBlocked && operationRecovered) {
-        // The scan itself succeeded, but a final Sync delivery invalidated its
-        // release before the serialized guard opened. Replace a premature
-        // success toast with honest recovery guidance.
-        this.showMigrationRecoveryNotice();
+        // A final delivery invalidated the scan. Explicit Retry still needs
+        // guidance even when this episode's background popup was dismissed.
+        this.showMigrationRecoveryNotice(12000, this.recoveryBlockMessage, false);
       }
       return recovered;
     }
@@ -3640,15 +3654,19 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       { allowSourceRollback: true, externalSettingsEpoch: recoveryEpoch }
     );
     if (recoveryEpoch !== this.externalSettingsEpoch) return false;
-    if (!settled || this.baselineReviewRequired) this.showMigrationRecoveryNotice();
+    if (!settled || this.baselineReviewRequired) {
+      this.showMigrationRecoveryNotice(12000, this.recoveryBlockMessage, false);
+    }
     if (settled) await this.refreshOpenViews();
     return settled && !this.baselineReviewRequired;
   }
 
   /** User retry accepts the exact trusted set or growth that kept it; loss/replacement needs typed ADOPT. */
   private async retryMissingRootRecoveryExplicitly(): Promise<boolean> {
+    const showNotice = (duration = 12000, message = this.recoveryBlockMessage): void =>
+      this.showMigrationRecoveryNotice(duration, message, false);
     if (this.baselineReviewBlocksAutomaticRecovery()) {
-      this.showMigrationRecoveryNotice(
+      showNotice(
         12000,
         CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
       );
@@ -3656,7 +3674,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
     const reviewRequired = this.baselineReviewRequired;
     if (this.externalSettingsApplyOperations > 0) {
-      this.showMigrationRecoveryNotice();
+      showNotice();
       return false;
     }
     const root = clinicalRootFolder();
@@ -3667,7 +3685,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.firstUseInitializationPending ||
       this.currentMigrationMarker()
     ) {
-      this.showMigrationRecoveryNotice();
+      showNotice();
       return false;
     }
     this.activeRootFingerprint = fingerprint;
@@ -3684,7 +3702,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       return !this.migrationRecoveryBlocked;
     }
     if (this.firstUseInitializationPending || this.currentMigrationMarker()) {
-      this.showMigrationRecoveryNotice();
+      showNotice();
       return false;
     }
 
@@ -3718,7 +3736,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       !this.rootExists(root) ||
       (requiresRecords && this.rootManagedRecordCount(root) < Math.max(1, expectedCount))
     ) {
-      this.showMigrationRecoveryNotice();
+      showNotice();
       return false;
     }
 
@@ -3726,7 +3744,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     try {
       verified = await this.verifyRecordInventory(root);
     } catch {
-      this.showMigrationRecoveryNotice();
+      showNotice();
       return false;
     }
     if (
@@ -3735,7 +3753,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.markerFreeRecoveryRevision !== recoveryRevision ||
       !contextUnchanged()
     ) {
-      this.showMigrationRecoveryNotice(
+      showNotice(
         12000,
         verified.reason ?? this.recoveryBlockMessage
       );
@@ -3745,7 +3763,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       !verified.ok &&
       !this.inventoryHasNoExpectedCountRegression(verified.inventory)
     ) {
-      this.showMigrationRecoveryNotice(
+      showNotice(
         12000,
         verified.reason ?? this.recoveryBlockMessage
       );
@@ -3771,7 +3789,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     ) {
       this.setBaselineReviewBlocked(requiresRecords || verified.inventory.total > 0);
       await this.persistWorkspaceSafety();
-      this.showMigrationRecoveryNotice(
+      showNotice(
         12000,
         CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
       );
@@ -3811,7 +3829,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.workspaceSafetyNeedsPersistence = true;
       this.restoreBaselineReview(reviewRequired);
       this.setMissingRootRecoveryBlocked(requiresRecords);
-      this.showMigrationRecoveryNotice();
+      showNotice();
       return false;
     }
 
@@ -3843,7 +3861,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       } catch {
         this.workspaceSafetyNeedsPersistence = true;
       }
-      this.showMigrationRecoveryNotice();
+      showNotice();
       return false;
     }
 
@@ -4067,7 +4085,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     if (this.firstUseInitializationPending) {
       showClinicalRecoveryNotice(
         "A legacy folder move was detected. Let synchronization finish, then use the recovery command before adopting the current workspace baseline.",
-        12000
+        12000,
+        { background: true }
       );
       return true;
     }
@@ -4140,7 +4159,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.workspaceSafetyNeedsPersistence = true;
       showClinicalRecoveryNotice(
         "Clinical Workspace could not save its folder-recovery state. Keep the plugin open and do not edit records.",
-        12000
+        12000,
+        { background: true }
       );
       if (throwOnFailure) throw error;
     }
@@ -4363,7 +4383,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
    */
   private async adoptCurrentBaseline(): Promise<void> {
     if (this.firstUseInitializationPending) {
-      this.showMigrationRecoveryNotice(9000, CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
+      this.showMigrationRecoveryNotice(9000, CLINICAL_INITIALIZATION_REQUIRED_MESSAGE, false);
       return;
     }
     if (this.currentMigrationMarker()) {
@@ -4400,6 +4420,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
     const inventory = candidate.inventory;
     const lines = [
+      ...(this.baselineReviewBlocksAutomaticRecovery()
+        ? ["Manual confirmation is required by saved recovery information. Sync completion alone cannot clear this review. Only confirm if these are all the records you intend to keep."]
+        : []),
       "The current records become the trusted recovery baseline, replacing the previous one. Do this only when the workspace is complete: synchronization has finished and any intentional deletions are accounted for.",
       `Parsed records now on disk: ${inventory.counts.patient} patients, ${inventory.counts.episode} episodes, ${inventory.counts.task} tasks, ${inventory.counts.procedure} procedures.`,
       "No note is created, changed, or deleted by this confirmation."
@@ -4503,7 +4526,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       // The candidate committed, but a last-moment Sync delivery invalidated
       // the queue release. Do not report success while the follow-up exact
       // pass is deciding whether the new on-disk state is complete.
-      this.showMigrationRecoveryNotice();
+      this.showMigrationRecoveryNotice(12000, this.recoveryBlockMessage, false);
     }
     return adopted;
   }
@@ -4647,7 +4670,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.workspaceSafetyNeedsPersistence = true;
       this.baselineReviewRequired ||= wasBaselineReviewRequired;
       this.setMissingRootRecoveryBlocked(requiresRecords || acceptedInventory.total > 0);
-      this.showMigrationRecoveryNotice();
+      this.showMigrationRecoveryNotice(12000, this.recoveryBlockMessage, false);
       return false;
     }
 
@@ -4681,7 +4704,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
           this.workspaceSafetyNeedsPersistence = true;
         }
       }
-      this.showMigrationRecoveryNotice();
+      this.showMigrationRecoveryNotice(12000, this.recoveryBlockMessage, false);
       return false;
     }
 
@@ -4699,7 +4722,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
    */
   private async migrateGeneratedBodies(): Promise<void> {
     if (this.migrationRecoveryBlocked) {
-      this.showMigrationRecoveryNotice(9000);
+      this.showMigrationRecoveryNotice(9000, this.recoveryBlockMessage, false);
       return;
     }
     const folder = `${clinicalRootFolder()}/Patients`;
@@ -4737,7 +4760,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
           // barrier. These writes go through Vault.process directly, so the
           // repository's own barrier cannot intercept them — re-check here.
           if (this.migrationRecoveryBlocked) {
-            this.showMigrationRecoveryNotice(9000);
+            this.showMigrationRecoveryNotice(9000, this.recoveryBlockMessage, false);
             return;
           }
           let rewritten = 0;
