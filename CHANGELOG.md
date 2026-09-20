@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-09-20
+
+### Fixed
+
+- A stale shared manual-review flag can now recover automatically when this
+  device already has a clean, complete recovery journal that exactly matches
+  the synced commitment. Startup and settings delivery recheck the actual
+  record identities, counts, folder binding, and retired-folder evidence;
+  writes reopen only after the save and a second matching scan. Ordinary
+  verified recovery does not ask the user to type `ADOPT` again.
+- Newly detected local integrity failures are recorded in the device-local
+  journal, so another device's settings cannot erase their origin or clear
+  them. If that local evidence cannot be saved and read back, a conservative
+  shared confirmation requirement is retained instead.
+- Missing/replaced records, interrupted journals, incomplete witnesses,
+  conflicting synced commitments, and malformed recovery metadata do not
+  qualify for the stale-flag exception. It does not adopt a different record
+  set or change clinical notes.
+
+### Recovery compatibility
+
+- Older releases stored the manual-review flag without its origin. The
+  narrowly scoped upgrade above treats that legacy flag as a request to
+  reverify an independently committed exact record set, not as proof of a
+  current local failure. It cannot reconstruct an unknown historical reason
+  that an older release did not record. A pending or invalid journal remains
+  protected and is never classified as clean by this upgrade.
+
 ## [0.6.8] - 2026-09-20
 
 ### Fixed
