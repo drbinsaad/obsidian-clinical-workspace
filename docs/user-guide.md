@@ -79,7 +79,8 @@ stored patient's name, MRN and phone.
   the cursor in the MRN field. Nothing was saved.
 - **Use this patient** adds the episode to that stored patient and keeps the
   stored name. Fix a wrong name later with **More → Patient records → Edit
-  identity**.
+  identity**. If Sync moved the MRN to another patient while the dialog was
+  open, it asks again about that patient.
 
 Names are compared ignoring capital letters and Arabic spelling variants. A
 blank name on either side is not a conflict; the missing name is filled in.
@@ -148,8 +149,9 @@ Tap **Save changes**.
   new date and keeps its type, owner, priority and repeat. "Task moved to" the
   new date.
 - **Change the wording** of the next action: a new task replaces the old one,
-  which is cancelled as superseded. The new task keeps the owner and repeat,
-  and the task type too unless you also changed the pathway.
+  which is cancelled as superseded. The new task keeps the task type, owner
+  and repeat. If you also changed the pathway, it is new work instead: it gets
+  the new pathway's task type, no owner and no repeat.
 - **Clear** the next action: no task is added; the card shows the next open
   task, if any.
 - **Raise the priority**: open tasks with a lower priority are raised too, for
@@ -176,6 +178,11 @@ you opened the form, saving is refused; close the form and open it again.
 If new work was added to the episode (for example by Sync) while the form was
 open, the discharge is refused and nothing is cancelled. Close the form and
 open **Discharge** again to review it.
+
+If one of the episode's tasks is filed under a different patient (Sync can
+leave one behind after a merge), a discharge that cancels open tasks is
+refused and nothing is cancelled. Run **Run clinical data integrity check**,
+repair the task it lists, then discharge again.
 
 Archived episodes are listed under **More → Archive**. **Restore** brings one
 back with its previous pathway and keeps its outcome. Restore is refused if the

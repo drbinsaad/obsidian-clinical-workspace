@@ -11,6 +11,7 @@ import {
   careSettingLabel,
   displayMrn,
   displayPhone,
+  formatLocalDateTime,
   normalizeText,
   pathwayLabel,
   priorityLabel,
@@ -223,7 +224,9 @@ const COLUMNS: readonly PatientListColumn[] = [
   { heading: "Status", read: (row) => episodeStatusLabel(row.episode.status) },
   { heading: "Next action", read: (row) => row.episode.next_action },
   { heading: "Due", read: (row) => row.episode.due_date },
-  { heading: "Opened", read: (row) => normalizeText(row.episode.opened_at).slice(0, 10) },
+  // The stored timestamp is UTC; its first ten characters are the wrong day
+  // near local midnight.
+  { heading: "Opened", read: (row) => formatLocalDateTime(row.episode.opened_at).slice(0, 10) },
   { heading: "Open tasks", read: (row) => String(row.openTasks) },
   { heading: "Overdue tasks", read: (row) => String(row.overdueTasks) }
 ];

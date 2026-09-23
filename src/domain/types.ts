@@ -209,10 +209,11 @@ export interface NewEpisodeInput {
   existingPatientId?: string;
   /**
    * Set by the UI after the user was told the entered MRN belongs to a patient
-   * recorded under a different name, and confirmed it is that patient. The
-   * stored name is kept; the typed one is discarded.
+   * recorded under a different name, and confirmed it is that patient: the id
+   * of the record they were shown. The stored name is kept; the typed one is
+   * discarded. If the MRN belongs to another record by then, it is asked again.
    */
-  confirmMrnOwner?: boolean;
+  confirmMrnOwner?: string;
 }
 
 export interface ArchiveEpisodeOptions {

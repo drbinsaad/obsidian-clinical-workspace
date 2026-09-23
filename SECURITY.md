@@ -166,7 +166,8 @@ values are neutralized, but output still requires human review.
 Without `--root`, the exporter reads the vault's
 `.obsidian/plugins/clinical-workspace/data.json` for the configured clinical
 folder, validates that name with the same rules as `--root`, and refuses while
-the file records an unfinished folder move or cannot be read safely. It falls
+the file records an unfinished folder move, recovery check or review, or cannot
+be read safely. It falls
 back to `Clinical Workspace` only when the file does not exist or names no
 folder. `--from`, `--to`, and `--role` narrow the rows after every record has
 been validated, so a filter cannot hide a damaged record from the checks; they

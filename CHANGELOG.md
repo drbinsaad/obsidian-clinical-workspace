@@ -40,7 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for a patient with a different name, a dialog shows the stored patient
   before anything is filed. **Go back and check the MRN** (the default)
   returns to the filled form; **Use this patient** adds the episode there and
-  keeps the stored name.
+  keeps the stored name. If Sync moved the MRN to another patient meanwhile,
+  the dialog asks again about that patient.
 - **Undo after Complete**: completing a task shows "Task completed." with an
   **Undo** button for about 9 seconds, from any tab. For a repeating task the
   notice says whether the next occurrence was withdrawn or, because it had
@@ -49,7 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offers one explicit tick, off by default, to cancel them with the reason
   "Closed at discharge". **Archive episode** stays unavailable until it is
   ticked or the tasks are closed, and work added while the form was open
-  refuses the discharge. Episode cards show "N open tasks".
+  refuses the discharge. So does a task filed under a different patient,
+  before any task is cancelled. Episode cards show "N open tasks".
 - **Add another procedure**: an episode that has moved on after surgery can log
   a further procedure from its newest Surgery logbook entry or from **Quick
   entry → Record procedure**, without changing its pathway, status or next
@@ -111,8 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A repeating task completed late comes back on the first date on or after
   today, on the same cadence, instead of already overdue.
 - **Update**: changing only the date of the next action moves that task and
-  keeps its type, owner, priority and repeat; rewording it keeps the owner and
-  repeat (and the type unless the pathway changed). The episode's next action
+  keeps its type, owner, priority and repeat; rewording it keeps the type,
+  owner and repeat unless the pathway changed too. The episode's next action
   and due date always show the soonest open task and are blank when nothing is
   open. Raising the episode priority raises lower-priority open tasks. The
   notice reports a moved task and how many tasks were raised.
@@ -144,8 +146,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quoted numbers and Arabic-Indic digits.
 - Logbook exporter: without `--root` it reads the clinical folder from the
   plugin's `data.json` in the vault (falling back to `Clinical Workspace`) and
-  refuses while that file records an unfinished folder move. Validation errors
-  give counts per property and point to the in-app integrity check.
+  refuses while that file records an unfinished folder move, recovery check or
+  review. Validation errors give counts per property and point to the in-app
+  integrity check. With `--identifiers` an MRN is read and written the way the
+  plugin stores it: Arabic-Indic and Persian digits as 0–9, without spaces or
+  hyphens.
 - **Settings → Privacy and capabilities** lists exactly what `data.json` keeps,
   including the current and up to 64 previous clinical-folder names and the
   source and destination names during a move.

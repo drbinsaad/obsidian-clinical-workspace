@@ -14,6 +14,13 @@ jobs:
   check:
     name: Typecheck, test, build
     runs-on: ubuntu-latest
+    env:
+      # Public text the identifier-literal gate scans. The NUL-byte gate scans
+      # the same list: a file it missed could hide from the identifier gate.
+      PUBLIC_TEXT_PATHS: >-
+        src tests scripts docs README.md SECURITY.md CONTRIBUTING.md
+        CHANGELOG.md CODE_OF_CONDUCT.md SUPPORT.md manifest.json versions.json
+        .github/ISSUE_TEMPLATE .github/PULL_REQUEST_TEMPLATE.md
     steps:
       # Actions are pinned to commit SHAs: a tag can be moved to point at
       # different code, and this workflow runs against a clinical codebase.
@@ -69,7 +76,9 @@ jobs:
       - name: Assert no NUL bytes in tracked text
         run: |
           set -euo pipefail
-          if git grep -lP '\x00' -- src scripts tests docs ':(exclude)*.png'; then
+          # The list is split on spaces on purpose; no entry contains one.
+          # shellcheck disable=SC2086
+          if git grep -lP '\x00' -- $PUBLIC_TEXT_PATHS ':(exclude)*.png'; then
             echo "::error::NUL byte(s) in the files above. Use the \\u0000 escape instead."
             exit 1
           fi
@@ -92,11 +101,14 @@ jobs:
           # Hex literals are algorithmic constants, not identifiers. `grep -a`
           # keeps a stray binary byte from switching grep into "binary file
           # matches" mode, which silently printed nothing and passed the gate.
-          UNEXPECTED=$(git grep -hI '' -- \
-                       src tests scripts docs README.md SECURITY.md CONTRIBUTING.md \
-                       CHANGELOG.md CODE_OF_CONDUCT.md SUPPORT.md manifest.json versions.json \
-                       .github/ISSUE_TEMPLATE .github/PULL_REQUEST_TEMPLATE.md \
+          # The plugin reads Arabic-Indic (U+0660-0669) and Persian
+          # (U+06F0-06F9) digits as MRN digits, so perl turns them into ASCII
+          # first. It matches their UTF-8 bytes, so the result depends neither
+          # on the runner's locale nor on every file being valid UTF-8.
+          # shellcheck disable=SC2086
+          UNEXPECTED=$(git grep -hI '' -- $PUBLIC_TEXT_PATHS \
                        ':(exclude)docs/assets/SHA256SUMS' \
+                       | perl -pe 's/\xD9([\xA0-\xA9])/chr(ord($1) - 0xA0 + 48)/ge; s/\xDB([\xB0-\xB9])/chr(ord($1) - 0xB0 + 48)/ge' \
                        | sed -E 's/0x[0-9a-fA-F]+//g' \
                        | grep -aoE '[0-9]{7,}' \
                        | sort -u | grep -Ev "$ALLOWED" || true)

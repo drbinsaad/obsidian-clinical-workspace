@@ -529,7 +529,7 @@ export class ClinicalWorkspaceView extends ItemView {
         if (!useStoredPatient) {
           throw new ClinicalSubmitCancelled("Nothing was saved. Check the MRN, then submit again.", "MRN");
         }
-        return this.submitNewEpisode({ ...input, confirmMrnOwner: true });
+        return this.submitNewEpisode({ ...input, confirmMrnOwner: error.patient.id });
       }
       throw error;
     }

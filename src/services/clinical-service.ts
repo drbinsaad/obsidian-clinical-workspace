@@ -172,7 +172,12 @@ export class ClinicalService {
         // plainly differs is the signature of a mistyped MRN. A blank on
         // either side is the fill-in case. Phone numbers change too often
         // to be evidence either way.
-        if (!input.confirmMrnOwner && namesConflict(patientName, existingPatient.record.patient_name)) {
+        // The confirmation names the record the user was shown; Sync can
+        // hand the MRN to another chart while the question is open.
+        if (
+          input.confirmMrnOwner !== existingPatient.record.id &&
+          namesConflict(patientName, existingPatient.record.patient_name)
+        ) {
           throw new MrnIdentityConflictError(existingPatient.record);
         }
         return { patient: existingPatient, reused: true, byMrn: true };
@@ -223,7 +228,7 @@ export class ClinicalService {
       // between the identity lock and this one.
       if (
         resolved.byMrn &&
-        !input.confirmMrnOwner &&
+        input.confirmMrnOwner !== patient.record.id &&
         namesConflict(patientName, patient.record.patient_name)
       ) {
         throw new MrnIdentityConflictError(patient.record);
@@ -886,7 +891,10 @@ export class ClinicalService {
         if (latest.record.episode_id !== task.record.episode_id || !untouched(latest.record)) {
           return "kept";
         }
-        await this.cancelTaskUnlocked(latest, "Completion undone");
+        // No reconcile here: the task being reopened is still completed, so
+        // the episode would briefly look finished (ready to close, losing an
+        // on-hold status). reopenTask reconciles once it is open again.
+        await this.cancelTaskUnlocked(latest, "Completion undone", false);
         return "cancelled";
       });
     }
@@ -1245,14 +1253,17 @@ export class ClinicalService {
     }
 
     // The wording changed, but the replacement is the same piece of work:
-    // it keeps the owner and the repeat series, and its type unless the
-    // pathway changed too (a stale "book-or" type would be auto-completed by
-    // the next procedure). A repeat needs a date to schedule from.
+    // it keeps the type, the owner and the repeat series, unless the pathway
+    // changed too. Then it is new work: a stale "book-or" type would be
+    // auto-completed by the next procedure, and a carried repeat would raise
+    // that pathway's default task again straight after. A repeat needs a
+    // date to schedule from.
+    const sameWork = replaced && pathway === episode.record.pathway ? replaced : undefined;
     const carriedType =
-      replaced && pathway === episode.record.pathway && TASK_TYPES.includes(replaced.record.task_type)
-        ? replaced.record.task_type
+      sameWork && TASK_TYPES.includes(sameWork.record.task_type)
+        ? sameWork.record.task_type
         : this.defaultTaskTypeForPathway(pathway);
-    const carriedRepeat = replaced?.record.repeat_every_days ?? 0;
+    const carriedRepeat = sameWork?.record.repeat_every_days ?? 0;
     // Create first, cancel second. Cancelling first meant any failure in
     // createTask destroyed the outstanding work and left nothing in its place.
     const created = await this.createTaskUnlocked({
@@ -1262,7 +1273,7 @@ export class ClinicalService {
       taskType: carriedType,
       priority,
       dueDate,
-      owner: normalizeText(replaced?.record.owner),
+      owner: normalizeText(sameWork?.record.owner),
       repeatEveryDays:
         dueDate && Number.isInteger(carriedRepeat) && carriedRepeat > 0 && carriedRepeat <= 730
           ? carriedRepeat
@@ -1636,24 +1647,38 @@ export class ClinicalService {
     const open = (await this.repository.list<TaskRecord>("task")).filter(
       ({ record }) => record.episode_id === episode.record.id && taskIsOpen(record)
     );
-    let cancelled = 0;
-    for (const item of open) {
-      await this.repository.withLock(`task-state:${item.record.id}`, async () => {
-        const latest = await this.repository.findById<TaskRecord>("task", item.record.id);
-        if (!latest) throw new Error("A task being closed at discharge was not found.");
-        // Work filed under another chart is not this discharge's to close.
-        if (
-          latest.record.patient_id !== episode.record.patient_id ||
-          latest.record.episode_id !== episode.record.id
-        ) {
-          throw new Error("The task context changed. Retry the operation.");
-        }
-        if (!taskIsOpen(latest.record)) return;
-        await this.cancelTaskUnlocked(latest, "Closed at discharge", false);
-        cancelled += 1;
-      });
+    // Work filed under another chart is not this discharge's to close, and a
+    // retry cannot change that (Sync after a merge leaves such a task). Found
+    // before anything is cancelled, so the refusal leaves every task as it was.
+    if (open.some(({ record }) => record.patient_id !== episode.record.patient_id)) {
+      throw new Error(
+        "A task on this episode is filed under a different patient, so no task was closed. Run the clinical data integrity check and repair that task, then discharge again."
+      );
     }
-    if (open.length) await this.reconcileEpisodeAfterTaskChange(episode.record.id, "");
+    let cancelled = 0;
+    let wrote = false;
+    try {
+      for (const item of open) {
+        await this.repository.withLock(`task-state:${item.record.id}`, async () => {
+          const latest = await this.repository.findById<TaskRecord>("task", item.record.id);
+          if (!latest) throw new Error("A task being closed at discharge was not found.");
+          if (
+            latest.record.patient_id !== episode.record.patient_id ||
+            latest.record.episode_id !== episode.record.id
+          ) {
+            throw new Error("The task context changed. Retry the operation.");
+          }
+          if (!taskIsOpen(latest.record)) return;
+          wrote = true;
+          await this.cancelTaskUnlocked(latest, "Closed at discharge", false);
+          cancelled += 1;
+        });
+      }
+    } finally {
+      // Also when the loop stopped part-way, so the episode never keeps
+      // mirroring a task this call already cancelled.
+      if (wrote) await this.reconcileEpisodeAfterTaskChange(episode.record.id, "");
+    }
     return cancelled;
   }
 

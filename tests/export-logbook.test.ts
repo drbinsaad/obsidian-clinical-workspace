@@ -6,8 +6,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
+import { normalizeMrn } from "../src/domain/schema";
 import { CARE_SETTINGS, EPISODE_STATUSES, PATHWAYS, PRIORITIES } from "../src/domain/types";
-import { PROCEDURE_STATUSES } from "../src/domain/validate";
+import { PROCEDURE_STATUSES, validateRecord } from "../src/domain/validate";
 import { episodeInput, harness } from "./support/harness";
 
 const run = promisify(execFile);
@@ -804,6 +805,144 @@ test("without --root the exporter uses the folder saved in the plugin settings",
       [fixture.vault, "--out", path.join(fixture.home, "default.csv")],
       /clinical root does not exist/
     );
+  } finally {
+    await rm(fixture.home, { recursive: true, force: true });
+  }
+});
+
+test("without --root the exporter refuses while the plugin records an unfinished recovery check or review", async () => {
+  const fixture = await syntheticVault();
+  try {
+    await rename(path.join(fixture.vault, "Clinical Workspace"), path.join(fixture.vault, "Ward Records"));
+    const settingsFolder = path.join(fixture.vault, ".obsidian", "plugins", "clinical-workspace");
+    await mkdir(settingsFolder, { recursive: true });
+    const settings = path.join(settingsFolder, "data.json");
+    const safety = {
+      version: 1,
+      initialized: true,
+      rootRecoveryRequired: false,
+      recoveryValidationRequired: false,
+      baselineReviewRequired: false,
+      // More procedures than have arrived: what a partial Sync looks like.
+      expectedEntityCounts: { patient: 1, episode: 1, task: 0, procedure: 3 }
+    };
+
+    for (const state of ["rootRecoveryRequired", "recoveryValidationRequired", "baselineReviewRequired"]) {
+      await writeFile(
+        settings,
+        JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: { ...safety, [state]: true } }),
+        "utf8"
+      );
+      const output = path.join(fixture.home, `${state}.csv`);
+      const stderr = await expectFailure(
+        [fixture.vault, "--out", output],
+        /recovery check or review that has not finished, so the records may be incomplete\. Finish it in Obsidian first, or pass --root explicitly\./
+      );
+      assert.doesNotMatch(stderr, /Ward Records|Synthetic|PRC-/, state);
+      await assert.rejects(lstat(output), { code: "ENOENT" }, `${state}: no CSV was written`);
+    }
+
+    // With every flag clear the saved folder is used as before.
+    await writeFile(settings, JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: safety }), "utf8");
+    const clear = await run(process.execPath, [script, fixture.vault, "--out", path.join(fixture.home, "clear.csv")]);
+    assert.match(clear.stdout, /Exported 1 completed procedure record/);
+    // A state the plugin itself would not read (another version) is not a refusal either.
+    await writeFile(
+      settings,
+      JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: { ...safety, version: 2, baselineReviewRequired: true } }),
+      "utf8"
+    );
+    await run(process.execPath, [script, fixture.vault, "--out", path.join(fixture.home, "other-version.csv")]);
+
+    // An explicit --root is the operator's own decision.
+    await writeFile(
+      settings,
+      JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: { ...safety, baselineReviewRequired: true } }),
+      "utf8"
+    );
+    await run(process.execPath, [
+      script,
+      fixture.vault,
+      "--out",
+      path.join(fixture.home, "explicit.csv"),
+      "--root",
+      "Ward Records"
+    ]);
+  } finally {
+    await rm(fixture.home, { recursive: true, force: true });
+  }
+});
+
+test("identified export reads a hand-edited MRN the way the plugin does", async () => {
+  const fixture = await syntheticVault();
+  try {
+    const record = path.join(fixture.vault, "Clinical Workspace", "Patients", "PAT-test.md");
+    const content = await readFile(record, "utf8");
+    // Typed on an Arabic keyboard, with a space, a hyphen and a direction mark.
+    const arabic = "\u200F\u0669\u0660\u0660\u0660 \u0660\u0660\u0660-\u0660\u0660\u0661";
+    await writeFile(record, content.replace('mrn: "9000000001"', `mrn: "${arabic}"`), "utf8");
+
+    // The in-app integrity check accepts it, so the exporter must too.
+    const problems = validateRecord({
+      schema_version: 3,
+      entity: "patient",
+      id: "PAT-test",
+      created_at: "2026-08-08T08:00:00.000Z",
+      updated_at: "2026-08-08T08:00:00.000Z",
+      tags: ["clinical/patient"],
+      mrn: arabic,
+      mrn_status: "confirmed",
+      patient_name: "Synthetic Patient",
+      phone: "",
+      phone_status: "not-found",
+      status: "active",
+      merged_into: ""
+    });
+    assert.ok(!problems.some((problem) => problem.code === "invalid-mrn"));
+
+    await run(process.execPath, [script, fixture.vault, "--out", fixture.output, "--identifiers"]);
+    const csv = await readFile(fixture.output, "utf8");
+    assert.equal(normalizeMrn(arabic), "9000000001");
+    assert.match(csv, /,"9000000001","Synthetic Patient"\n/, "written in the plugin's stored form");
+
+    // Letters are still refused, by both.
+    await writeFile(record, content.replace('mrn: "9000000001"', 'mrn: "MRN-X"'), "utf8");
+    await expectFailure(
+      [fixture.vault, "--out", path.join(fixture.home, "letters.csv"), "--identifiers"],
+      /rejected 1 joined-patient identifier field value \(mrn: 1\)/
+    );
+  } finally {
+    await rm(fixture.home, { recursive: true, force: true });
+  }
+});
+
+test("a plugin settings file resolving outside the vault is refused without naming the outside path", async (context) => {
+  const fixture = await syntheticVault();
+  try {
+    const outside = path.join(fixture.home, "outside-settings.json");
+    await writeFile(outside, JSON.stringify({ rootFolder: "Clinical Workspace" }), "utf8");
+    const settingsFolder = path.join(fixture.vault, ".obsidian", "plugins", "clinical-workspace");
+    await mkdir(settingsFolder, { recursive: true });
+    const settings = path.join(settingsFolder, "data.json");
+    try {
+      await symlink(outside, settings);
+    } catch (error) {
+      context.skip(`Symbolic links unavailable: ${String(error)}`);
+      return;
+    }
+    const stderr = await expectFailure(
+      [fixture.vault, "--out", fixture.output],
+      /plugin settings file resolves outside the supplied vault\. Pass --root explicitly\./
+    );
+    assert.ok(!stderr.includes(outside), "the outside path is not echoed");
+    assert.ok(!stderr.includes(fixture.home), "nor any part of the fixture path");
+    await assert.rejects(lstat(fixture.output), { code: "ENOENT" }, "no CSV was written");
+
+    // A settings path that cannot be read as a file is refused as well.
+    await rm(settings);
+    await mkdir(settings);
+    await expectFailure([fixture.vault, "--out", fixture.output], /plugin settings file could not be read/);
+    await assert.rejects(lstat(fixture.output), { code: "ENOENT" });
   } finally {
     await rm(fixture.home, { recursive: true, force: true });
   }

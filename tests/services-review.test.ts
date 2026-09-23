@@ -71,7 +71,7 @@ test("an MRN typed with a different name is refused before any write until the o
       mrn: "9000000101",
       patientName: "Synthetic Bravo",
       caseName: "Case B",
-      confirmMrnOwner: true
+      confirmMrnOwner: first.patient.record.id
     })
   );
   assert.equal(confirmed.reusedPatient, true);
@@ -284,8 +284,8 @@ test("rewording the current task from Update carries its owner, series and type 
   const original = await h.repository.findById<TaskRecord>("task", wound.task.record.id);
   assert.equal(original?.record.status, "cancelled");
 
-  // A pathway change as well gives the replacement the new pathway's type,
-  // but still keeps the owner and the series.
+  // A pathway change as well makes it new work: the new pathway's type, and
+  // neither the owner nor the series of the task it replaces.
   const next = await h.service.updateEpisode(created.episode.record.id, {
     careSetting: "outpatient",
     pathway: "opd-follow-up",
@@ -296,8 +296,8 @@ test("rewording the current task from Update carries its owner, series and type 
   assert.equal(next.task.kind, "created");
   if (next.task.kind !== "created") return;
   assert.equal(next.task.task.record.task_type, "clinical-review");
-  assert.equal(next.task.task.record.owner, "Dr Synthetic");
-  assert.equal(next.task.task.record.repeat_every_days, 7);
+  assert.equal(next.task.task.record.owner, "");
+  assert.equal(next.task.task.record.repeat_every_days ?? 0, 0);
 });
 
 test("Update mirrors the soonest open task, never a closed one or a date no task tracks", async () => {
