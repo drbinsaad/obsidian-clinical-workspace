@@ -38,6 +38,9 @@ jobs:
       - name: Verify Community review readiness
         run: npm run verify-community
 
+      - name: Verify reviewed public assets
+        run: npm run verify-assets
+
       - name: Assert the tag matches the manifest
         run: |
           set -euo pipefail
