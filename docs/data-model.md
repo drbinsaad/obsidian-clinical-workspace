@@ -139,6 +139,41 @@ tasks:
 Items without a `task` value, or with unrecognised types and priorities, are
 dropped or defaulted rather than guessed at.
 
+## Patient lists
+
+**Export patient list** (Patients → Export list, More → Export patient list,
+or the command palette) writes one file into the `Documents` folder listing
+every episode that matches the chosen filter:
+
+| Filter | Choices |
+|---|---|
+| Care setting | Any · `inpatient` · `outpatient` |
+| Pathway | Any · any pathway value above |
+| Priority | Any · `routine` · `urgent` · `emergency` |
+| Episodes | Open (`active`, `on-hold`, `ready-to-close`) · one status · every status except `entered-in-error` |
+
+- One row per matching **episode**: a patient with two matching episodes is
+  listed twice, because the episode carries the setting, pathway, and
+  priority being filtered. Rows are ordered inpatients first, then by
+  priority, due date, and patient name.
+- Columns: MRN, patient, phone, case, setting, pathway, priority, status,
+  next action, due date, opened date, open tasks, overdue tasks.
+- **Note (`.md`)** — a Markdown table that opens in Obsidian. Pipes,
+  brackets, and angle brackets in clinical text are escaped so they cannot
+  break the table or create links.
+- **Spreadsheet (`.csv`)** — UTF-8 with a byte-order mark (so Arabic names
+  display correctly in Excel), CRLF line endings, every cell quoted, and
+  formula-like values (`=`, `+`, `-`, `@`) prefixed with `'` so spreadsheet
+  apps cannot evaluate them. Obsidian cannot display a CSV itself: open it
+  from your file manager or the iOS/iPadOS Files app. Spreadsheet apps may
+  drop leading zeroes from MRN and phone columns unless you import them as
+  text. Obsidian Sync copies a CSV only when syncing of other file types is
+  enabled.
+
+Like the handover note, a patient list contains identifiers by design, stays
+inside the clinical folder, is not a managed record, and should be deleted
+after use. A name collision gets a numeric suffix; nothing is overwritten.
+
 ## Handover notes
 
 **Generate ward handover note** writes one Markdown note into the `Documents`

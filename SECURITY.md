@@ -176,9 +176,9 @@ Before running an export:
 
 **Assets.** Patient identifiers (MRN, name, phone), clinical case text,
 surgical history, the audit trail, pseudonymized exports, and identified
-exports. Generated ward-handover notes are especially sensitive because one
-document intentionally concentrates identifiers and pending work for multiple
-patients.
+exports. Generated ward-handover notes and patient lists are especially
+sensitive because one document intentionally concentrates identifiers and
+pending work for multiple patients.
 
 **Trust boundary.** The plugin runtime trusts the configured clinical folder in
 the vault. Frontmatter is coerced into expected types on read and unrecognised
@@ -209,6 +209,7 @@ vault/root/output path boundaries.
 | 18 | Concurrent identity edits or Episode creation assign one MRN to two active patients, or use a stale MRN resolution | Creation and correction share one lock keyed by the normalized MRN around the real collision lookup and identity write. Identity correction takes patient-merge → patient-identity → MRN locks; Episode resolution releases its short MRN lock before taking a patient lock, avoiding an inverted cycle. It then re-reads and revalidates the resolved MRN after the patient lock and again immediately before Episode creation. External Sync remains asynchronous, so integrity checks are still required after cross-device editing. |
 | 19 | Sync replaces a trusted recovery commitment or retired-root history and the app exits before the conflict flag reaches `data.json` | Before reading an external settings snapshot, the plugin synchronously marks a vault-scoped device-local journal pending while retaining the prior count/digest tuple and the bounded set of one-way retired-root fingerprints. Restart accepts a synced tombstone superset but fails closed if any locally committed fingerprint disappeared; only an exact final rescan or typed `ADOPT` can clear/replace conflicting trust. The record tuple covers Patient, Episode, Task, and Procedure IDs—not body content or Audit Events. The journal stores no raw path, folder name, ID, timestamps, history, or device identity. Clearing local Obsidian storage or opening on a genuinely new device removes this independent anchor and returns that device to trust-on-first-use; it is therefore an additional crash barrier, not a backup or multi-device consensus system. |
 | 20 | A generated ward-handover note exposes a high-density patient list | Handover generation stays inside the configured clinical `Documents/` folder, the UI states that it contains identifiers, and users are instructed to delete it after its approved operational use. Vault access, sanctioned Sync, institutional sharing, and retention controls remain mandatory. |
+| 21 | A patient-list export (Markdown or CSV) concentrates identifiers for every matching patient | The export is written only inside the configured clinical `Documents/` folder through the same fail-closed write barrier as records, with a filter-only filename and no identifier in any notice. The form and file header state that it contains identifiers. CSV cells are quoted and formula-like values neutralized. Once the file leaves the vault (Files app, email, spreadsheet software), institutional sharing, retention, and destruction rules apply. |
 
 ## Before using this with identifiable patient data
 

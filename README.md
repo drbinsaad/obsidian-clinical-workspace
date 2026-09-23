@@ -45,10 +45,10 @@ data.*
 | View | What it keeps in reach |
 |---|---|
 | **Today** | A ward-round list of inpatients, overdue work with its age, due-today, the next 7 days, and undated work. |
-| **Patients** | Inpatient and outpatient cards with pathway, priority, next action, task templates, and per-episode history. |
+| **Patients** | Inpatient and outpatient cards with pathway, priority, next action, task templates, and per-episode history. Filter by pathway and priority, then export the list. |
 | **Tasks** | Open, complete, cancel, reschedule, and add episode work, filtered by priority and type. Tasks can repeat on completion. |
 | **Surgery** | OR booking queue, completed-procedure logbook, and portfolio counts by procedure and role. |
-| **More** | Native Obsidian Bases, per-patient drill-down, identity correction and merge, archive/restore, ward handover notes, and integrity checking. |
+| **More** | Native Obsidian Bases, per-patient drill-down, identity correction and merge, archive/restore, patient-list export, ward handover notes, and integrity checking. |
 
 A header search box (also **Clinical Workspace: Search clinical records**)
 finds patients, MRNs, cases, tasks, and procedures from one field.
@@ -71,6 +71,29 @@ mobile **Open menu**, while toolbar placement is configured separately. Task
 and procedure actions always require a visible Episode choice before their blank form opens.
 See [Quick Entry, hotkeys, mobile toolbar, and safe local
 links](docs/quick-entry.md). Obsidian may vary the exact setting labels by version.
+
+## Extract a list of patients of any type
+
+Use **Patients → Export list**, **More → Export patient list**, or the
+**Clinical Workspace: Export patient list** command.
+
+1. Choose any combination of **Care setting** (inpatient/outpatient),
+   **Pathway** (for example OR Booking or OPD Follow-Up), **Priority**, and
+   **Episodes** (open, active, on hold, ready to close, archived, cancelled, or
+   every status). The form shows how many episodes and patients match before
+   anything is written.
+2. Choose the **Format**: a note that opens in Obsidian with a table, or a
+   `.csv` spreadsheet file for Excel, Numbers, or Google Sheets.
+3. Select **Create patient list**. The file is saved in the clinical
+   `Documents` folder, named after the filter (for example
+   `Patient list 2026-09-23 Inpatient`), never after a patient.
+
+Each row is one episode with MRN, name, phone, case, setting, pathway,
+priority, status, next action, due date, opened date, and open/overdue task
+counts. Starting from **Patients → Export list** pre-selects the pathway and
+priority chips you are viewing. The list contains identifiers: share it only
+through an approved route and delete it after use. See
+[Patient lists](docs/data-model.md#patient-lists) for details.
 
 ## Five-minute synthetic quick start
 

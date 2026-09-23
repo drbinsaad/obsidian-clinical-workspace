@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Export patient list**: save the patients of any type — any combination of
+  care setting, pathway, priority, and episode status — to a Markdown note or
+  a formula-safe CSV spreadsheet in the clinical `Documents` folder. The form
+  previews the match count before writing. Available from **Patients → Export
+  list**, **More → Export patient list**, and the command palette.
+- The Patients tab can be filtered by pathway and priority. Section counts
+  show when a filter hides records, and **Export list** starts from the
+  current filter.
+
 ## [0.6.9] - 2026-09-20
 
 ### Fixed
