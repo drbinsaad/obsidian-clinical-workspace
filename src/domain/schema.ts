@@ -36,13 +36,14 @@ export function normalizeText(value: unknown): string {
     // invisible characters that make two visually identical values compare
     // unequal: zero-width space, word joiner, and the BOM/ZWNBSP. ZWNJ
     // (U+200C) and ZWJ (U+200D) are orthographically significant in Persian
-    // and other Arabic-script languages and must be preserved.
-    .replace(/[\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g, "")
+    // and other Arabic-script languages and must be preserved. The Arabic
+    // Letter Mark (U+061C) is a bidi control like LRM/RLM, not a letter.
+    .replace(/[\u061C\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function normalizeArabicDigits(value: string): string {
+export function normalizeArabicDigits(value: string): string {
   return value.replace(/[\u0660-\u0669\u06F0-\u06F9]/g, (digit) => {
     const code = digit.codePointAt(0) ?? 0;
     const zero = code >= 0x06f0 ? 0x06f0 : 0x0660;
@@ -76,6 +77,28 @@ export function normalizeComparable(value: unknown): string {
 }
 
 /**
+ * Folding key for MATCHING only: search filters and possible-duplicate
+ * warnings. Never store it or use it to reuse a record automatically — it
+ * deliberately conflates spellings that can belong to different people.
+ *
+ * The iPhone Arabic keyboard types Arabic-Indic digits by default, and the
+ * same Arabic name is routinely written with or without hamza, diacritics or
+ * tatweel, and with ta marbuta/ha or alef maqsura/ya used interchangeably.
+ */
+export function searchKey(value: unknown): string {
+  return normalizeArabicDigits(normalizeText(value))
+    // Tashkeel (including the superscript alef) and tatweel.
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, "")
+    // Hamza-bearing and wasla alef forms fold to bare alef.
+    .replace(/[\u0622\u0623\u0625\u0671]/g, "\u0627")
+    .replace(/\u0629/g, "\u0647")
+    .replace(/\u0649/g, "\u064A")
+    .replace(/\u0624/g, "\u0648")
+    .replace(/\u0626/g, "\u064A")
+    .toLocaleLowerCase();
+}
+
+/**
  * Accepts `YYYY-MM-DD` and tolerates a trailing time component, which is what
  * Obsidian's Properties panel writes when a field is typed as a date-time.
  * Returns "" for anything that is not a real calendar date.
@@ -97,6 +120,23 @@ export function normalizeIsoDate(value: unknown): string {
 
 export function isIsoDate(value: unknown): boolean {
   return normalizeIsoDate(value) !== "";
+}
+
+/**
+ * Shows a stored timestamp as `YYYY-MM-DD HH:mm` in the device's local time.
+ * Timestamps are stored in UTC; cutting the stored text down instead reads
+ * hours off, and near midnight shows the wrong day. Display only: storage
+ * stays UTC. A hand-edited value that does not parse is shown as written,
+ * and a bare date is not shifted into a time it never had.
+ */
+export function formatLocalDateTime(iso: unknown): string {
+  const text = normalizeText(iso);
+  if (!text || /^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const time = Date.parse(text);
+  if (Number.isNaN(time)) return text;
+  const date = new Date(time);
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 export function createId(prefix: string): string {

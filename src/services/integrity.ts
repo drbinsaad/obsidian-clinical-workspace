@@ -10,17 +10,24 @@ import type {
 } from "../domain/types";
 import { isIsoDate, mrnMatchKey, normalizeComparable, normalizeText, taskIsOpen } from "../domain/schema";
 import { validateRecord } from "../domain/validate";
+import { storedValueKindsOf } from "../data/markdown";
 import { ClinicalRepository } from "../data/repository";
+
+/** Separates the parts of a composite duplicate key; ordinary note text never contains it. */
+const KEY_SEP = "\u0000";
 
 /** Families of configured checks, counted for honest result wording. */
 export const INTEGRITY_CHECK_FAMILIES = [
   "missing managed folders",
+  "database view folders",
   "unreadable notes",
   "duplicate MRNs",
   "unidentified patients",
   "orphaned records",
   "broken merge links",
   "half-finished merges",
+  "records left under merged patients",
+  "open episodes under inactive patients",
   "duplicate active episodes",
   "duplicate open tasks",
   "duplicate internal ids",
@@ -28,12 +35,59 @@ export const INTEGRITY_CHECK_FAMILIES = [
   "open tasks on closed episodes",
   "invalid dates and timestamps",
   "unexpected field values",
+  "text stored as numbers",
+  "logbook export readiness",
   "schema versions",
   "idempotency keys",
   "follow-up contradictions",
   "episode next-action agreement",
   "audit-trail coverage"
 ] as const;
+
+/**
+ * Why scripts/export-logbook.mjs would reject this completed procedure. The
+ * exporter reads the raw YAML and is stricter than the workspace (which
+ * reads an empty value as "" and a date-time as its day), so these rules
+ * mirror its validateExportSchema. Keep the two in step.
+ */
+function exportBlockers(record: ProcedureRecord): string[] {
+  const kinds = storedValueKindsOf(record);
+  const values = record as unknown as Record<string, unknown>;
+  const storedAsText = (field: string): boolean =>
+    typeof values[field] === "string" && !["number", "boolean", "null"].includes(kinds.get(field) ?? "");
+  const nonEmptyText = (field: string): boolean =>
+    storedAsText(field) && String(values[field]).trim().length > 0;
+  const plainDate = (field: string): boolean =>
+    storedAsText(field) &&
+    kinds.get(field) !== "date-time" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(String(values[field])) &&
+    isIsoDate(values[field]);
+
+  const blockers: string[] = [];
+  if (!nonEmptyText("procedure")) blockers.push("procedure (must not be empty)");
+  if (!nonEmptyText("role")) blockers.push("role (must not be empty)");
+  if (!storedAsText("outcome")) blockers.push('outcome (use "" when there is none)');
+  if (!plainDate("procedure_date")) blockers.push("procedure_date (must be YYYY-MM-DD with no time)");
+  if (!isExportTimestamp(record.created_at)) blockers.push("created_at (must be a UTC timestamp ending in Z)");
+  if (typeof record.follow_up_required !== "boolean") blockers.push("follow_up_required (must be true or false)");
+  const followUpDateValid =
+    storedAsText("follow_up_date") &&
+    (record.follow_up_date === "" ? record.follow_up_required !== true : plainDate("follow_up_date"));
+  if (!followUpDateValid) {
+    blockers.push('follow_up_date (must be YYYY-MM-DD with no time, or "" when no follow-up is required)');
+  }
+  return blockers;
+}
+
+/** The exporter's timestamp rule: strict UTC, and a real instant. */
+function isExportTimestamp(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{3}))?Z$/.exec(value);
+  if (!match) return false;
+  const canonical = `${match[1]}.${match[2] ?? "000"}Z`;
+  const parsed = new Date(canonical);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === canonical;
+}
 
 export interface IntegrityReport {
   issues: IntegrityIssue[];
@@ -95,6 +149,18 @@ export class IntegrityService {
         path: folder
       });
     }
+    // A customised database view is kept as-is through a folder move, so its
+    // filters go on naming the old folders and it silently lists nothing —
+    // which can pass for "no such patients".
+    for (const path of await this.repository.misdirectedBasePaths()) {
+      issues.push({
+        code: "stale-base-folder",
+        severity: "warning",
+        message: "This database view filters on a clinical folder outside the configured folder, so it shows no records. A customised view is never rewritten automatically: edit its file.inFolder(...) lines to name the current folder.",
+        recordId: "",
+        path
+      });
+    }
 
     // A note that cannot be parsed disappears from every list, so nothing else
     // in this scan can see it. It has to be reported here or not at all.
@@ -118,6 +184,18 @@ export class IntegrityService {
         for (const problem of validateRecord(item.record)) {
           issues.push({
             ...problem,
+            recordId: item.record.id,
+            path: item.path
+          });
+        }
+        // Parsing turns an unquoted `mrn: 0012345` into text so the workflow
+        // keeps working, but the digits YAML already dropped are gone.
+        for (const [field, kind] of storedValueKindsOf(item.record)) {
+          if (kind !== "number" && kind !== "boolean") continue;
+          issues.push({
+            code: "text-stored-as-number",
+            severity: "warning",
+            message: `The "${field}" property is stored as a number or true/false rather than text, so leading zeros may have been lost. Check the value and put it in quotes.`,
             recordId: item.record.id,
             path: item.path
           });
@@ -199,6 +277,42 @@ export class IntegrityService {
       }
     }
 
+    // --- Records under retired patients -------------------------------------
+    // A merge moves every linked record, and archiving a last episode archives
+    // its patient, but Sync can deliver a record written offline on another
+    // device afterwards. The workspace refuses to change records of a merged
+    // or inactive patient, so these would otherwise sit stuck — and an open
+    // task among them blocks discharging the surviving patient's episode.
+    const patientById = new Map(patients.map((item) => [item.record.id, item.record] as const));
+    for (const list of [episodes, tasks, procedures] as const) {
+      for (const item of list) {
+        if (!patientById.get(item.record.patient_id)?.merged_into) continue;
+        issues.push({
+          code: "record-linked-to-merged-patient",
+          severity: "error",
+          message: `This ${item.record.entity} is still filed under a patient that was merged into another record, so the workspace cannot change it. Set its patient_id to the merged_into value shown on that patient's note, and its patient link to the same patient.`,
+          recordId: item.record.id,
+          path: item.path
+        });
+      }
+    }
+    for (const episode of episodes) {
+      if (["archived", "cancelled", "entered-in-error"].includes(episode.record.status)) continue;
+      const patient = patientById.get(episode.record.patient_id);
+      if (!patient || patient.merged_into) continue;
+      if (patient.status !== "archived" && patient.status !== "entered-in-error") continue;
+      issues.push({
+        code: "active-episode-under-inactive-patient",
+        severity: "error",
+        message:
+          patient.status === "archived"
+            ? "This episode is still open, but its patient is archived, so the episode cannot be updated, given tasks or discharged. Set the patient note's status back to active, then continue or discharge the episode as usual."
+            : "This episode is still open, but its patient is marked entered in error, so the episode cannot be updated or discharged. If the patient is real, set the patient note's status back to active; otherwise set this episode's status to entered-in-error too.",
+        recordId: episode.record.id,
+        path: episode.path
+      });
+    }
+
     // --- Episodes -----------------------------------------------------------
     const openTasksByEpisode = new Map<string, TaskRecord[]>();
     for (const task of tasks) {
@@ -266,7 +380,7 @@ export class IntegrityService {
         });
       }
       if (!isClosedStatus) {
-        const key = `${episode.record.patient_id} ${normalizeText(episode.record.case).toLocaleLowerCase()}`;
+        const key = `${episode.record.patient_id}${KEY_SEP}${normalizeText(episode.record.case).toLocaleLowerCase()}`;
         const current = activeEpisodeKeys.get(key) ?? [];
         current.push(episode);
         activeEpisodeKeys.set(key, current);
@@ -332,7 +446,7 @@ export class IntegrityService {
         });
       }
       if (taskIsOpen(task.record)) {
-        const identity = `${task.record.episode_id} ${normalizeText(task.record.task).toLocaleLowerCase()} ${task.record.due_date}`;
+        const identity = `${task.record.episode_id}${KEY_SEP}${normalizeText(task.record.task).toLocaleLowerCase()}${KEY_SEP}${task.record.due_date}`;
         const current = activeTaskKeys.get(identity) ?? [];
         current.push(task);
         activeTaskKeys.set(identity, current);
@@ -377,6 +491,18 @@ export class IntegrityService {
           code: "invalid-procedure-date",
           severity: "warning",
           message: "Procedure date is not a valid calendar date.",
+          recordId: procedure.record.id,
+          path: procedure.path
+        });
+      }
+      // The CSV exporter only reports aggregate counts, by design, so this is
+      // where a clinician can find the note that would block the export.
+      const blockers = procedure.record.status === "completed" ? exportBlockers(procedure.record) : [];
+      if (blockers.length > 0) {
+        issues.push({
+          code: "not-exportable",
+          severity: "warning",
+          message: `The logbook CSV export will refuse this completed procedure until these properties are fixed: ${blockers.join("; ")}.`,
           recordId: procedure.record.id,
           path: procedure.path
         });

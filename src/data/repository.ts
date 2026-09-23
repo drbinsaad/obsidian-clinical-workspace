@@ -11,9 +11,9 @@ import type {
   TaskRecord
 } from "../domain/types";
 import { createId, mrnMatchKey, nowIso, SCHEMA_VERSION } from "../domain/schema";
-import { baseFiles, baseSourceFolders, homeNote } from "./bases";
+import { baseFiles, baseFolderFilter, baseSourceFolders, homeNote } from "./bases";
 import { parseClinicalRecord, recordMarkdown, valueMatches } from "./markdown";
-import { isUntouchedBase, isUntouchedHome } from "./scaffold";
+import { baseQueriesOtherRoot, isUntouchedBase, isUntouchedHome } from "./scaffold";
 import { markdownFilesInFolder } from "./vault-scope";
 import {
   allClinicalFolders,
@@ -98,6 +98,13 @@ export class ClinicalRepository {
    * the live vault before an entry is served.
    */
   private readonly recordIndex = new Map<string, ClinicalRecord | null>();
+  /**
+   * Bumped by every vault event for a path. A read that was in flight when
+   * the event landed still returns what it read, but must not store it in
+   * the index: the invalidation already ran, so nothing would ever evict
+   * the stale entry again.
+   */
+  private readonly pathGenerations = new Map<string, number>();
   /** Recorded as the actor on audit notes; set from settings on load. */
   private actor = "local-user";
   /** Non-null while Sync/migration recovery cannot identify one writable root. */
@@ -562,10 +569,24 @@ export class ClinicalRepository {
    * this path. The content-keyed parse memo deliberately survives: it
    * verifies exact content equality on every use, so it can never serve a
    * stale record — and a spurious change event (Sync touches a file without
-   * altering it) then re-reads but skips the re-parse.
+   * altering it) then re-reads but skips the re-parse. Only a path that no
+   * longer exists (deleted, or the old side of a rename) drops its memo, so
+   * the memo does not keep every note ever read in memory.
    */
   invalidatePath(path: string): void {
-    this.recordIndex.delete(normalizePath(path));
+    const normalized = normalizePath(path);
+    this.recordIndex.delete(normalized);
+    this.pathGenerations.set(normalized, this.pathGeneration(normalized) + 1);
+    if (!this.app.vault.getAbstractFileByPath(normalized)) this.parsedRecords.delete(normalized);
+  }
+
+  private pathGeneration(path: string): number {
+    return this.pathGenerations.get(path) ?? 0;
+  }
+
+  /** Indexes a read unless a vault event for its path landed while it was in flight. */
+  private indexRead(path: string, generation: number, record: ClinicalRecord | null): void {
+    if (this.pathGeneration(path) === generation) this.recordIndex.set(path, record);
   }
 
   private parseRecord(path: string, content: string): ClinicalRecord | null {
@@ -573,8 +594,22 @@ export class ClinicalRepository {
     const cached = this.parsedRecords.get(normalized);
     if (cached?.content === content) return cached.record;
     const record = parseClinicalRecord(content);
-    this.parsedRecords.set(normalized, { content, record });
+    // A read that finishes after its note was deleted or renamed away must
+    // not re-add a memo entry that no later event would remove.
+    if (this.app.vault.getAbstractFileByPath(normalized)) {
+      this.parsedRecords.set(normalized, { content, record });
+    }
     return record;
+  }
+
+  /**
+   * Parses note content the caller has already read, through the same
+   * content-keyed memo as `read()`. For whole-root scans that must read
+   * every note themselves (the trusted inventory, possibly of a root other
+   * than the active one) but need not re-parse YAML that has not changed.
+   */
+  parseManagedContent(path: string, content: string): ClinicalRecord | null {
+    return this.parseRecord(path, content);
   }
 
   /**
@@ -610,8 +645,9 @@ export class ClinicalRepository {
           continue;
         }
         // Repair a base whose content no longer matches its name (0.1.0 shipped a
-        // Patients.base that queried Episodes). Only rewritten when it is plainly
-        // wrong, so a base the user has customised is left alone.
+        // Patients.base that queried Episodes), and upgrade one still exactly as
+        // an earlier version generated it. A base the user has customised is
+        // left alone.
         //
         // The decision runs INSIDE Vault.process, against the content the write
         // will actually replace. A separate read-then-modify left a window in
@@ -622,15 +658,13 @@ export class ClinicalRepository {
           this.assertWritesAllowed();
           let leftAlone = false;
           await this.app.vault.process(existing, (current) => {
-            if (current.includes(`file.inFolder("${expectedFolder}")`)) return current;
-            // Only a base still recognisably generated is repaired. Once the user
-            // has customised it, silently replacing their work on every open is
-            // worse than leaving a stale query they can fix themselves.
-            if (!isUntouchedBase(path, current)) {
-              leftAlone = true;
-              return current;
-            }
-            return content;
+            if (current.trim() === content.trim()) return current;
+            if (isUntouchedBase(path, current)) return content;
+            // Once the user has customised a base, silently replacing their
+            // work on every open is worse than leaving a stale query they can
+            // fix themselves.
+            if (!current.includes(baseFolderFilter(expectedFolder))) leftAlone = true;
+            return current;
           });
           if (leftAlone) {
             console.warn(
@@ -648,24 +682,23 @@ export class ClinicalRepository {
       } else if (existingHome instanceof TFile) {
         // Version 0.1.0 embedded a view name that no longer exists, because the
         // base that held it was renamed; a root-folder migration invalidates the
-        // embeds the same way. Rewritten only when an embed is plainly stale —
-        // and the staleness decision runs inside Vault.process against the
-        // content actually being replaced, so a Sync delivery landing mid-repair
-        // is never destroyed.
+        // embeds the same way, and up to 0.6.9 the text named a command that
+        // does not exist. Rewritten only while it is still exactly as generated
+        // — and that decision runs inside Vault.process against the content
+        // actually being replaced, so a Sync delivery landing mid-repair is
+        // never destroyed.
         this.assertWritesAllowed();
         let editedButStale = false;
         await this.app.vault.process(existingHome, (current) => {
+          if (current.trim() === expectedHome.trim()) return current;
+          // A note the user has written in is theirs. Repair or upgrade only
+          // the untouched scaffolding this plugin generated.
+          if (isUntouchedHome(current)) return expectedHome;
           const stale =
             current.includes("Patients.base#Active patients") ||
             (current.includes("![[") && !current.includes(`${clinicalFolder("bases")}/Patients.base`));
-          if (!stale) return current;
-          // A note the user has written in is theirs. Repair only the untouched
-          // scaffolding this plugin generated.
-          if (!isUntouchedHome(current)) {
-            editedButStale = true;
-            return current;
-          }
-          return expectedHome;
+          if (stale) editedButStale = true;
+          return current;
         });
         if (editedButStale) {
           console.warn(
@@ -681,6 +714,22 @@ export class ClinicalRepository {
   /** Managed folders that are absent from the vault. */
   missingFolders(): string[] {
     return allClinicalFolders().filter((folder) => !this.app.vault.getAbstractFileByPath(normalizePath(folder)));
+  }
+
+  /**
+   * Generated base files that still filter on record folders under another
+   * root. A customised base survives a folder move unchanged, so it goes on
+   * querying the old folders and shows no records.
+   */
+  async misdirectedBasePaths(): Promise<string[]> {
+    const root = clinicalRootFolder();
+    const paths: string[] = [];
+    for (const path of Object.keys(baseSourceFolders())) {
+      const file = this.app.vault.getAbstractFileByPath(normalizePath(path));
+      if (!(file instanceof TFile)) continue;
+      if (baseQueriesOtherRoot(await this.app.vault.cachedRead(file), root)) paths.push(file.path);
+    }
+    return paths;
   }
 
   private async ensureFolder(path: string): Promise<void> {
@@ -788,12 +837,16 @@ export class ClinicalRepository {
         return indexed ? { record: indexed as T, path: abstract.path } : null;
       }
     }
+    // Captured before the await: Obsidian updates a TFile's path in place
+    // when it is renamed.
+    const filePath = abstract.path;
+    const generation = this.pathGeneration(filePath);
     const content = fresh
       ? await this.app.vault.read(abstract)
       : await this.app.vault.cachedRead(abstract);
-    const record = this.parseRecord(abstract.path, content);
-    this.recordIndex.set(abstract.path, record);
-    return record ? { record: record as T, path: abstract.path } : null;
+    const record = this.parseRecord(filePath, content);
+    this.indexRead(filePath, generation, record);
+    return record ? { record: record as T, path: filePath } : null;
   }
 
   async update<T extends ClinicalRecord>(
@@ -895,14 +948,16 @@ export class ClinicalRepository {
         // The healthy common case is served from the index; only files that
         // are unindexed, unreadable, or wrongly filed re-read their content
         // (the raw YAML is needed to attribute an unreadable task).
-        const indexed = this.recordIndex.get(file.path);
+        const filePath = file.path;
+        const indexed = this.recordIndex.get(filePath);
         if (indexed !== undefined && indexed?.entity === entity) return null;
+        const generation = this.pathGeneration(filePath);
         const content = await this.app.vault.cachedRead(file);
-        const record = this.parseRecord(file.path, content);
-        this.recordIndex.set(file.path, record);
+        const record = this.parseRecord(filePath, content);
+        this.indexRead(filePath, generation, record);
         if (record?.entity === entity) return null;
         return {
-          path: file.path,
+          path: filePath,
           episodeId: entity === "task" ? episodeIdFromUnreadableTask(content) : null
         };
       })

@@ -15,6 +15,69 @@ const TIMESTAMP_FIELDS = new Set([
   "cancelled_at"
 ]);
 
+/**
+ * Fields the domain types declare as text. YAML reads an unquoted hand edit
+ * such as `mrn: 0012345` as the number 12345, and code that treats these as
+ * strings then throws. Only these keys are coerced: counters and flags such
+ * as schema_version, repeat_every_days and follow_up_required stay typed.
+ */
+const TEXT_FIELDS = new Set([
+  "id",
+  "mrn",
+  "phone",
+  "patient_name",
+  "patient_id",
+  "patient",
+  "episode_id",
+  "episode",
+  "case",
+  "task",
+  "procedure",
+  "next_action",
+  "owner",
+  "role",
+  "outcome",
+  "follow_up_plan",
+  "cancel_reason",
+  "summary",
+  "action",
+  "actor",
+  "target_id",
+  "merged_into",
+  "idempotency_key"
+]);
+
+/**
+ * How a field's stored YAML differed from the shape the record now carries.
+ * "number"/"boolean": a text field stored unquoted (leading zeros may be
+ * gone). "null": a field left empty. "date-time": a calendar-day field stored
+ * with a time of day.
+ */
+export type StoredValueKind = "number" | "boolean" | "null" | "date-time";
+
+const storedValueKinds = new WeakMap<object, ReadonlyMap<string, StoredValueKind>>();
+
+/**
+ * Stored-value notes captured while `record` was parsed; empty for a record
+ * that was not parsed from YAML. The coerced record hides these differences,
+ * so this is the only place the integrity check can still see them.
+ */
+export function storedValueKindsOf(record: object): ReadonlyMap<string, StoredValueKind> {
+  return storedValueKinds.get(record) ?? new Map<string, StoredValueKind>();
+}
+
+function storedValueKind(key: string, value: unknown): StoredValueKind | null {
+  if (value === null) return "null";
+  if (TEXT_FIELDS.has(key)) {
+    if (typeof value === "number") return "number";
+    if (typeof value === "boolean") return "boolean";
+  }
+  if (DATE_ONLY_FIELDS.has(key) && typeof value === "string" && /[T ]\d{2}:\d{2}/.test(value.trim())) {
+    return "date-time";
+  }
+  return null;
+}
+
 export function recordTitle(record: ClinicalRecord): string {
   switch (record.entity) {
     case "patient":
@@ -107,7 +170,8 @@ export function isClinicalEntity(value: unknown): value is EntityType {
 
 /**
  * Normalises one frontmatter value into the shape the rest of the plugin
- * assumes: a string, a number, a boolean, or an array of strings.
+ * assumes: a string, a number, a boolean, or an array of strings. A number
+ * or boolean in a text field becomes its string form.
  *
  * Obsidian's YAML schema currently returns bare `2026-08-03` as a string, so
  * dates round-trip cleanly. That is an implementation detail of a closed-source
@@ -137,7 +201,9 @@ export function coerceFrontmatterValue(key: string, value: unknown): unknown {
   }
   if (value === null || value === undefined) return "";
   if (Array.isArray(value)) return value.map((item) => safeText(item));
-  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return TEXT_FIELDS.has(key) ? String(value) : value;
+  }
   if (typeof value !== "string") return safeText(value);
   if (DATE_ONLY_FIELDS.has(key)) {
     const normalized = normalizeIsoDate(value);
@@ -163,10 +229,14 @@ function safeText(value: unknown): string {
 
 export function coerceFrontmatter(frontmatter: Record<string, unknown>): Record<string, unknown> {
   const coerced = Object.create(null) as Record<string, unknown>;
+  const kinds = new Map<string, StoredValueKind>();
   for (const [key, value] of Object.entries(frontmatter)) {
     if (["__proto__", "constructor", "prototype"].includes(key)) continue;
     coerced[key] = coerceFrontmatterValue(key, value);
+    const kind = storedValueKind(key, value);
+    if (kind) kinds.set(key, kind);
   }
+  if (kinds.size > 0) storedValueKinds.set(coerced, kinds);
   return coerced;
 }
 
