@@ -81,11 +81,12 @@ outside the plugin is never trusted as context.
 
 ## Filling in the forms
 
-- **Return** moves to the next field and saves only from the last text field;
-  the iPhone keyboard's Return key reads "next" or "done" to match. With a
-  hardware keyboard, Ctrl+Return or Cmd+Return saves from any field. This
-  prevents one Return after the procedure name from logging a surgery with the
-  default role and date.
+- **Return** moves to the next field and saves only from the form's last
+  field, when that is a text field; the iPhone keyboard's Return key reads
+  "next" or "done" to match. With a hardware keyboard, Ctrl+Return or
+  Cmd+Return saves from any field. This prevents one Return after the
+  procedure name from logging a surgery with the default role and date, or one
+  after **Next action** from saving before **Due date** is reached.
 - Due and follow-up dates have **Today**, **+1d**, **+2d**, **+1w**, **+2w**,
   **+1m**, and **+3m** chips, and a date in the past is named before saving.
 - If a save is refused, every value you typed stays in the form.

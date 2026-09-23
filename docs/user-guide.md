@@ -28,6 +28,7 @@ The header has three buttons: **Search** (magnifier), **Quick entry**, and
 | **More** | Database views, patient records (identity and merge), archive, patient lists, handover, and the integrity check. |
 
 Long lists show 40 items per page with **Previous** and **Next** at the bottom.
+Changing a filter chip starts the list again at page 1.
 
 ## How do I do a ward round on my iPhone?
 
@@ -106,7 +107,8 @@ starts at the episode's priority.
 
 **Complete.** Tap **Complete** on a task card or in the patient sheet. A
 notice says "Task completed." with an **Undo** button for about 9 seconds.
-Undo works from any tab.
+Undo works from any tab. If the task had already been completed, for example
+on your other device, the notice says so and has no Undo.
 
 **Reopen later.** Open the patient sheet (**View**) and tap **Reopen** under
 **Recently closed**. A task on an archived episode cannot be reopened until the
@@ -373,8 +375,10 @@ reference](data-model.md#integrity-check-findings).
 
 ## Forms on iPhone
 
-- **Return** moves to the next field. It saves only from the last text field
-  in the form; the keyboard's Return key reads "next" or "done" to match. On a
+- **Return** moves to the next field. It saves only from the form's last
+  field, and only when that is a text field; the keyboard's Return key reads
+  "next" or "done" to match. Forms that end with a date, such as **Add
+  patient** and **Update patient workflow**, save only with their button. On a
   hardware keyboard, Ctrl+Return or Cmd+Return saves from any field.
 - Date fields have chips: **Today**, **+1d**, **+2d**, **+1w**, **+2w**, **+1m**
   (30 days) and **+3m** (90 days). A due or follow-up date in the past shows
@@ -403,7 +407,7 @@ mobile toolbar. No command has a default hotkey.
 | **Generate ward handover note** | Writes and opens today's handover note. | Always |
 | **Run clinical data integrity check** | Checks your records and shows a report. Works while read-only. | Always |
 | **Remove identifiers from generated note bodies** | One-time tidy-up for patient notes created before version 0.5: rewrites only untouched generated note bodies so they no longer repeat the name, MRN and phone. Asks you to type `REWRITE`. | Always |
-| **Initialize new workspace** | First-use setup: adopt the records already in the folder or start a new workspace. | Only before the workspace is initialized, or while an approved initialization is unfinished |
+| **Initialize new workspace** | First-use setup: adopt the records already in the folder or start a new workspace. | Only before the workspace is initialized, or while an approved initialization is unfinished and no baseline review is needed |
 | **Recheck records and unlock editing** | Rechecks the records and reopens editing when they are complete. Same as the banner's **Recheck now**. | Only while editing is paused for a recheck, a Sync verification, a review, or a folder move |
 | **Confirm current records as the recovery baseline** | Accepts the current records as complete after you have checked them. Asks you to type `ADOPT`. | Only while editing is paused or a review is pending |
 

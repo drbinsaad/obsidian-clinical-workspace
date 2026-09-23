@@ -44,7 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Undo after Complete**: completing a task shows "Task completed." with an
   **Undo** button for about 9 seconds, from any tab. For a repeating task the
   notice says whether the next occurrence was withdrawn or, because it had
-  been changed, left open.
+  been changed, left open. A task that was already completed, for example on
+  the other device, says so instead and offers no Undo.
 - **Discharge with open tasks**: Discharge lists the episode's open tasks and
   offers one explicit tick, off by default, to cancel them with the reason
   "Closed at discharge". **Archive episode** stays unavailable until it is
@@ -92,22 +93,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of newly synced records is pending. **Confirm current records as the recovery
   baseline** is listed only while editing is paused or a review is pending.
   **Initialize new workspace** stays listed until an approved initialization
-  has finished.
+  has finished, unless a baseline review then needs typed `ADOPT`.
 - Recovery notices say what happened in plain words and name only commands
   that are available at that moment. A successful recheck says "Clinical
   Workspace rechecked its records. Editing is available again." instead of
   "folder access was restored". The What's new window uses plain language too.
 - After a hand edit to a record note, editing still pauses at once, but the
   recheck runs about 1.5 seconds after the last autosave instead of after
-  every autosave.
+  every autosave. Notes saved outside the clinical folder do not delay it.
 - **Run clinical data integrity check** works while editing is paused, and
   notices about unreadable or unrecognised notes point to it. The automatic
-  check on first open is not shown again for an unchanged set of issues in the
-  same session.
+  check on first open waits until editing is available, and is not shown
+  again for an unchanged set of issues in the same session.
 - The `ADOPT` confirmation shows the previously trusted counts beside the
   current ones and warns when any count dropped.
-- Return moves to the next form field and saves only from the last text field
-  (or with Ctrl/Cmd+Return), and the iPhone keyboard shows next/done to match.
+- Return moves to the next form field and saves only from the form's last
+  field when that is a text field (or with Ctrl/Cmd+Return), so **Add
+  patient** and **Update** no longer save from **Next action** before **Due
+  date** is reached. The iPhone keyboard shows next/done to match.
+- Task notices no longer repeat the task's wording: "Task added.", "Task
+  already exists." and "No task added: that task was already completed…".
+  When an action fails with an error that names a file or folder path, the
+  notice shows a fixed message instead; a form still shows the full reason.
 - A repeating task completed late comes back on the first date on or after
   today, on the same cadence, instead of already overdue.
 - **Update**: changing only the date of the next action moves that task and
@@ -167,6 +174,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An episode could show a due date that no open task tracked.
 - The ward round stopped at 30 inpatients while its heading counted them all.
 - A task-type filter could hide every task with no chip left to clear it.
+- Changing a filter chip, or **Clear filters**, kept the page you were on, so
+  the highest-priority matches could sit unseen on an earlier page. The list
+  now starts again at page 1.
+- A quick double tap on **Complete**, **Restore** or **Generate handover**
+  could run it twice.
 - A redraw, including one caused by Sync, no longer drops keyboard or
   VoiceOver focus to the top of the view.
 - Modal footers no longer add the iPhone bottom safe area twice, and shrink

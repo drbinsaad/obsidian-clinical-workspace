@@ -50,7 +50,7 @@ import {
   type PatientListScope
 } from "../services/patient-list";
 import type { QuickEntryAction } from "../quick-entry";
-import { showClinicalNotice } from "./notices";
+import { showClinicalErrorNotice } from "./notices";
 
 type AsyncSubmit<T> = (value: T) => Promise<void>;
 
@@ -124,14 +124,16 @@ function reachableFormControls(root: HTMLElement): HTMLElement[] {
 }
 
 /**
- * Return moves to the next field and submits only from the last text field,
- * so the keyboard's Return key reads "next" everywhere except there.
+ * Return moves to the next field and submits only from the form's last
+ * field, so the keyboard's Return key reads "next" everywhere except there.
+ * A form that ends with a date or a choice has no text field that submits.
  */
 function syncEnterKeyHints(root: HTMLElement): void {
-  const fields = reachableFormControls(root).filter(isTextEntry);
-  fields.forEach((field, index) => {
-    field.setAttribute("enterkeyhint", index === fields.length - 1 ? "done" : "next");
-  });
+  const controls = reachableFormControls(root);
+  const last = controls[controls.length - 1];
+  for (const field of controls.filter(isTextEntry)) {
+    field.setAttribute("enterkeyhint", field === last ? "done" : "next");
+  }
 }
 
 function namedSetting(container: HTMLElement, name: string): Setting {
@@ -808,6 +810,11 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
     return true;
   }
 
+  /** The Notice for a failure whose own message is not safe to show there. */
+  protected submitFailureNotice(): string {
+    return "This could not be saved. The form shows why.";
+  }
+
   /** Re-applies canSubmit() to the submit button after the form's state changed. */
   protected syncSubmitState(): void {
     if (this.submitEl && !this.submitting) this.submitEl.disabled = !this.canSubmit();
@@ -914,11 +921,11 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
       event.preventDefault();
       // Many iPhone users tap Return to move on or to hide the keyboard. When
       // any Return submitted, one tap after the procedure name logged the
-      // surgery with the default role and date. Only the last text field, or
-      // an explicit Ctrl/Cmd+Enter, submits; elsewhere Return moves on.
+      // surgery with the default role and date, and one after Next action
+      // filed the task before its Due date was reached. Only the form's last
+      // field, or an explicit Ctrl/Cmd+Enter, submits; elsewhere Return moves on.
       const controls = reachableFormControls(this.contentEl);
-      const fields = controls.filter(isTextEntry);
-      if (event.ctrlKey || event.metaKey || fields[fields.length - 1] === input) {
+      if (event.ctrlKey || event.metaKey || controls[controls.length - 1] === input) {
         void this.handleSubmit(submit);
         return;
       }
@@ -954,7 +961,9 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
           this.errorEl.show();
           this.errorEl.scrollIntoView({ block: "nearest", inline: "nearest" });
         }
-        showClinicalNotice(message, 7000);
+        // The form's error line keeps the detail; the Notice, which others
+        // may see, never repeats a file-system error that names a note.
+        showClinicalErrorNotice(error, this.submitFailureNotice(), 7000);
       }
       this.submitting = false;
       if (this.cancelEl) this.cancelEl.disabled = false;
@@ -1371,6 +1380,10 @@ export class PatientListModal extends ClinicalModal<PatientListRequest> {
         ? `${episodes} episode${episodes === 1 ? "" : "s"} for ${patients} patient${patients === 1 ? "" : "s"} match.`
         : "No episodes match these filters yet."
     );
+  }
+
+  protected submitFailureNotice(): string {
+    return "The patient list could not be created. The form shows why.";
   }
 
   protected value(): PatientListRequest {
@@ -2102,7 +2115,7 @@ export class ApplyTemplateModal extends ClinicalResponsiveModal {
     });
     if (!this.bundles.length) {
       body.createEl("p", {
-        text: "No task template matches this episode. Create one in the templates folder — see the data model reference for the format.",
+        text: "No task template matches this episode. Create one in the templates folder; the task templates section of the everyday-use guide shows the format.",
         cls: "clinical-empty"
       });
     }

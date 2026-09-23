@@ -12,7 +12,7 @@ import { careSettingLabel, pathwayLabel, priorityLabel } from "../domain/schema"
 import { validateRootFolder } from "../domain/settings";
 import type { MigrationService } from "../services/migration";
 import { ConfirmMaintenanceModal } from "./modals";
-import { showClinicalNotice } from "./notices";
+import { showClinicalErrorNotice } from "./notices";
 
 function renderSetting(
   name: string,
@@ -43,7 +43,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
     try {
       await this.plugin.updateSettings(patch);
     } catch (error) {
-      showClinicalNotice(error instanceof Error ? error.message : "The setting could not be saved.", 7000);
+      showClinicalErrorNotice(error, "The setting could not be saved.", 7000);
       (this as unknown as { update?: () => void }).update?.();
     }
   }
@@ -174,7 +174,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
           ),
           renderSetting(
             "Run integrity check on first open",
-            "Report duplicate MRNs, broken links and unexpected values when the workspace opens. Results stay in the interface.",
+            "Report duplicate MRNs, broken links, unexpected values, text stored as a number and logbook-export problems when the workspace first opens with editing available. Results stay in the interface.",
             (row) => {
               row.addToggle((field) => {
                 field.toggleEl.setAttribute("aria-label", "Run integrity check on first open");
@@ -290,10 +290,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
                             new Notice(`Moved ${result.files} note${result.files === 1 ? "" : "s"} to “${result.to}”.`, 7000);
                             this.update();
                           } catch (error) {
-                            showClinicalNotice(
-                              error instanceof Error ? error.message : "The move could not be completed.",
-                              9000
-                            );
+                            showClinicalErrorNotice(error, "The move could not be completed.", 9000);
                             button.setDisabled(false);
                           }
                         })();

@@ -161,3 +161,37 @@ export function showClinicalNotice(message: string, duration?: number): Notice {
   }
   return new Notice(message, duration);
 }
+
+/** Fields a desktop or mobile file-system error carries and a plugin error never does. */
+const SYSTEM_ERROR_FIELDS = ["code", "errno", "syscall", "path"];
+
+/**
+ * Clinical Workspace's own messages are one line and name no file. An
+ * absolute or Windows path, a file extension, or a quoted source snippet on
+ * a second line means the text came from somewhere else.
+ */
+function isOwnClinicalErrorMessage(error: Error): boolean {
+  if (SYSTEM_ERROR_FIELDS.some((field) => field in error)) return false;
+  const message = error.message.trim();
+  return message !== "" &&
+    !/\\|(?:^|[\s'"“(:])\/\S|\.(?:md|csv|base|json)\b|[\r\n]/i.test(message);
+}
+
+/**
+ * The Notice text for a failed action. Recovery messages and the plugin's
+ * own messages are shown as written. An error from the vault adapter or the
+ * operating system can quote an absolute path, the clinical folder or a
+ * record's filename, which may be a patient's name, so the caller's fixed
+ * fallback is shown instead. A form keeps the full detail in its own error
+ * line, which only the person filling it in sees.
+ */
+export function clinicalErrorNoticeText(error: unknown, fallback: string): string {
+  if (!(error instanceof Error)) return fallback;
+  if (isClinicalRecoveryMessage(error.message)) return error.message;
+  return isOwnClinicalErrorMessage(error) ? error.message : fallback;
+}
+
+/** showClinicalNotice for a caught error; see clinicalErrorNoticeText. */
+export function showClinicalErrorNotice(error: unknown, fallback: string, duration = 7000): Notice {
+  return showClinicalNotice(clinicalErrorNoticeText(error, fallback), duration);
+}

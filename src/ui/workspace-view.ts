@@ -80,7 +80,11 @@ import {
   bidiIsolate,
   patientIdentityLabel
 } from "./modals";
-import { compactClinicalRecoveryNotice, showClinicalNotice } from "./notices";
+import {
+  compactClinicalRecoveryNotice,
+  showClinicalErrorNotice,
+  showClinicalNotice
+} from "./notices";
 
 export const CLINICAL_WORKSPACE_VIEW = "clinical-workspace-view";
 
@@ -248,6 +252,10 @@ const LIST_PAGE_LABELS: Record<string, string> = {
   "more-archive": "Archived episodes"
 };
 
+/** The paged lists each tab's filter chips narrow. */
+const PATIENT_FILTER_PAGES = ["patients-inpatient", "patients-outpatient"] as const;
+const TASK_FILTER_PAGES = ["tasks-open"] as const;
+
 /**
  * What identifies the control that held focus before a redraw, so the
  * rebuilt copy of it can take focus back.
@@ -312,6 +320,21 @@ function newEpisodeNotice(result: CreateEpisodeResult, input: NewEpisodeInput): 
       : "Episode added to an existing patient record (matched by MRN).";
   }
   return "Patient episode created.";
+}
+
+/**
+ * What adding a task reports. Notices stay free of clinical text, so the
+ * task's wording is left to the card and the note.
+ */
+function taskAddedNotice(duplicate: boolean): string {
+  return duplicate ? "Task already exists." : "Task added.";
+}
+
+/** A closed task's status in fixed words; a hand-edited status is never echoed. */
+function closedTaskStatusLabel(status: string): string {
+  if (status === "completed" || status === "cancelled") return status;
+  if (status === "entered-in-error") return "entered in error";
+  return "closed";
 }
 
 /** Identifier-free; says what happened to a recurring task's next occurrence. */
@@ -396,8 +419,15 @@ export class ClinicalWorkspaceView extends ItemView {
     scrollTop: number;
     /** Enter or Space on the pager, as opposed to a tap or click. */
     keyboard: boolean;
+    /** How many refreshes had started when the pager was pressed. */
+    refreshesStarted: number;
   } | null = null;
   private renderGeneration = 0;
+  /** Tasks whose completion this view is writing now. */
+  private readonly completingTasks = new Set<string>();
+  /** Counts refreshes as they start; a render knows which one it belongs to. */
+  private refreshesStarted = 0;
+  private renderingRefresh = 0;
   private writeBlockSlot: HTMLElement | null = null;
 
   private tabId(tab: WorkspaceTab): string {
@@ -479,8 +509,10 @@ export class ClinicalWorkspaceView extends ItemView {
       return;
     }
     this.refreshing = true;
+    const started = ++this.refreshesStarted;
     try {
       const snapshot = await this.repository.snapshot();
+      this.renderingRefresh = started;
       this.render(snapshot);
     } catch (error) {
       this.renderFailure(error);
@@ -581,17 +613,13 @@ export class ClinicalWorkspaceView extends ItemView {
         if (!this.canOpenWriteForm()) return;
         new NewTaskModal(this.app, choice.episode, choice.patientLabel, async (input) => {
           const created = await this.service.createTask(input);
-          new Notice(
-            created.duplicate
-              ? `Task already exists: ${created.task.record.task}`
-              : `Task added: ${created.task.record.task}`
-          );
+          new Notice(taskAddedNotice(created.duplicate));
           this.activeTab = "tasks";
           await this.refresh();
         }).open();
       }).open();
     } catch (error) {
-      showClinicalNotice(error instanceof Error ? error.message : "Could not open task quick entry.", 7000);
+      showClinicalErrorNotice(error, "Could not open task quick entry.");
     }
   }
 
@@ -617,10 +645,7 @@ export class ClinicalWorkspaceView extends ItemView {
         }, { additional }).open();
       }).open();
     } catch (error) {
-      showClinicalNotice(
-        error instanceof Error ? error.message : "Could not open procedure quick entry.",
-        7000
-      );
+      showClinicalErrorNotice(error, "Could not open procedure quick entry.");
     }
   }
 
@@ -983,7 +1008,7 @@ export class ClinicalWorkspaceView extends ItemView {
         // Reschedule, history) is what a round acts on; the raw note that
         // "Open" shows has no clinical actions, so it comes second.
         if (patient) {
-          this.actionButton(rowActions, "View", () => void this.openPatientDetail(patient), false, false, context);
+          this.actionButton(rowActions, "View", () => this.openPatientDetail(patient), false, false, context);
         }
         this.actionButton(rowActions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
       }
@@ -1053,7 +1078,13 @@ export class ClinicalWorkspaceView extends ItemView {
       this.sectionHeader(container, group.title, countNote(shown, total), group.key);
       if (!shown.length && total.length) {
         const noun = group.title.toLocaleLowerCase();
-        this.renderFilteredEmpty(container, `No ${noun} match these filters.`, clearFilters, `show every ${noun.replace(/s$/, "")}`);
+        this.renderFilteredEmpty(
+          container,
+          `No ${noun} match these filters.`,
+          clearFilters,
+          `show every ${noun.replace(/s$/, "")}`,
+          PATIENT_FILTER_PAGES
+        );
       } else {
         this.renderEpisodeList(container, shown, snapshot, group.key);
       }
@@ -1068,7 +1099,8 @@ export class ClinicalWorkspaceView extends ItemView {
     container: HTMLElement,
     message: string,
     clear: () => void,
-    accessibleContext: string
+    accessibleContext: string,
+    pageKeys: readonly string[]
   ): void {
     const list = container.createDiv({ cls: "clinical-list" });
     const empty = list.createDiv({ cls: "clinical-empty" });
@@ -1078,7 +1110,7 @@ export class ClinicalWorkspaceView extends ItemView {
       actions,
       "Clear filters",
       () => {
-        clear();
+        this.changeFilters(clear, pageKeys);
         return this.refresh();
       },
       false,
@@ -1093,6 +1125,8 @@ export class ClinicalWorkspaceView extends ItemView {
    */
   private renderPatientFilters(container: HTMLElement, active: EpisodeRecord[]): void {
     const filters = container.createDiv({ cls: "clinical-chip-rows" });
+    const chip = (row: HTMLElement, label: string, selected: boolean, apply: () => void): void =>
+      this.filterChip(row, label, selected, apply, PATIENT_FILTER_PAGES);
     // A selected pathway stays visible even after its last episode closes, so
     // a filter can never hide the list without a chip that clears it.
     const pathwaysInUse = [
@@ -1105,21 +1139,21 @@ export class ClinicalWorkspaceView extends ItemView {
       .sort((a, b) => pathwayLabel(a).localeCompare(pathwayLabel(b)));
     if (pathwaysInUse.length > 1 || this.patientPathwayFilter !== "all") {
       const pathwayRow = this.chipRow(filters, "Filter by pathway");
-      this.filterChip(pathwayRow, "All pathways", this.patientPathwayFilter === "all", () => {
+      chip(pathwayRow, "All pathways", this.patientPathwayFilter === "all", () => {
         this.patientPathwayFilter = "all";
       });
       for (const pathway of pathwaysInUse) {
-        this.filterChip(pathwayRow, pathwayLabel(pathway), this.patientPathwayFilter === pathway, () => {
+        chip(pathwayRow, pathwayLabel(pathway), this.patientPathwayFilter === pathway, () => {
           this.patientPathwayFilter = this.patientPathwayFilter === pathway ? "all" : pathway;
         });
       }
     }
     const priorityRow = this.chipRow(filters, "Filter by priority");
-    this.filterChip(priorityRow, "All", this.patientPriorityFilter === "all", () => {
+    chip(priorityRow, "All", this.patientPriorityFilter === "all", () => {
       this.patientPriorityFilter = "all";
     });
     for (const priority of PRIORITIES) {
-      this.filterChip(priorityRow, priorityLabel(priority), this.patientPriorityFilter === priority, () => {
+      chip(priorityRow, priorityLabel(priority), this.patientPriorityFilter === priority, () => {
         this.patientPriorityFilter = this.patientPriorityFilter === priority ? "all" : priority;
       });
     }
@@ -1157,7 +1191,7 @@ export class ClinicalWorkspaceView extends ItemView {
       this.renderFilteredEmpty(container, "No open tasks match these filters.", () => {
         this.taskPriorityFilter = "all";
         this.taskTypeFilter = "all";
-      }, "show every open task");
+      }, "show every open task", TASK_FILTER_PAGES);
       return;
     }
     this.renderTaskList(container, filtered, snapshot, "tasks-open");
@@ -1166,7 +1200,8 @@ export class ClinicalWorkspaceView extends ItemView {
   /** Chip rows: one for priority, one for the task types actually in use. */
   private renderTaskFilters(container: HTMLElement, open: TaskRecord[]): void {
     const filters = container.createDiv({ cls: "clinical-chip-rows" });
-    const chip = this.filterChip.bind(this);
+    const chip = (row: HTMLElement, label: string, selected: boolean, apply: () => void): void =>
+      this.filterChip(row, label, selected, apply, TASK_FILTER_PAGES);
 
     const priorityRow = this.chipRow(filters, "Filter by priority");
     chip(priorityRow, "All", this.taskPriorityFilter === "all", () => {
@@ -1217,7 +1252,8 @@ export class ClinicalWorkspaceView extends ItemView {
     row: HTMLElement,
     label: string,
     active: boolean,
-    apply: () => void
+    apply: () => void,
+    pageKeys: readonly string[]
   ): void {
     const button = row.createEl("button", {
       text: label,
@@ -1229,7 +1265,7 @@ export class ClinicalWorkspaceView extends ItemView {
         button as HTMLButtonElement & { ownerDocument?: Document }
       ).ownerDocument;
       const ownedFocusAtStart = !ownerDocument || ownerDocument.activeElement === button;
-      apply();
+      this.changeFilters(apply, pageKeys);
       // A filter change re-reads nothing it does not need; refresh() serves
       // the redraw and keeps the scroll position like any other re-render.
       void this.refresh().then(() => {
@@ -1239,6 +1275,24 @@ export class ClinicalWorkspaceView extends ItemView {
         ) this.restoreActionFocus(label);
       });
     });
+  }
+
+  /**
+   * Applies a chip or Clear filters. When a filter really changed, the lists
+   * it narrows start again at page 1: a kept page index was only clamped to
+   * the last page of the new matches, hiding the highest-priority ones.
+   */
+  private changeFilters(apply: () => void, pageKeys: readonly string[]): void {
+    const filters = (): string => [
+      this.taskPriorityFilter,
+      this.taskTypeFilter,
+      this.patientPathwayFilter,
+      this.patientPriorityFilter
+    ].join("|");
+    const before = filters();
+    apply();
+    if (filters() === before) return;
+    for (const key of pageKeys) this.listPages.delete(key);
   }
 
   private renderSurgery(container: HTMLElement, snapshot: ClinicalSnapshot): void {
@@ -1410,7 +1464,7 @@ export class ClinicalWorkspaceView extends ItemView {
         actions,
         "Restore",
         () =>
-          void this.runAction(async () => {
+          this.runAction(async () => {
             await this.service.restoreEpisode(episode.id);
             new Notice("Patient episode restored.");
           }),
@@ -1436,21 +1490,21 @@ export class ClinicalWorkspaceView extends ItemView {
     const handover = container.createDiv({ cls: "clinical-card" });
     handover.createEl("h4", { text: "End-of-day handover note" });
     handover.createEl("p", {
-      text: "Writes one note in the documents folder listing inpatients and the overdue and due-today work. It contains identifiers, stays inside the clinical folder, and should be deleted after use.",
+      text: "Writes one note in the documents folder listing inpatients, then every patient's overdue, due-today, due-tomorrow and undated tasks. It contains identifiers, stays inside the clinical folder, and should be deleted after use.",
       cls: "clinical-card-meta"
     });
     const handoverActions = handover.createDiv({ cls: "clinical-card-actions" });
-    this.actionButton(handoverActions, "Generate handover", () => void this.generateHandover());
+    this.actionButton(handoverActions, "Generate handover", () => this.generateHandover());
 
     this.sectionHeader(container, "Safety", "Data integrity");
     const safety = container.createDiv({ cls: "clinical-card" });
     safety.createEl("h4", { text: "Data integrity" });
     safety.createEl("p", {
-      text: "Run the configured checks: duplicates, broken links, unexpected values, invalid dates, follow-up contradictions, and audit-trail coverage. Not a full validation of every field.",
+      text: "Run the configured checks: duplicates, broken links, unexpected values, text stored as a number, invalid dates and repeat intervals, follow-up contradictions, logbook-export readiness, stale database views, and audit-trail coverage. Not a full validation of every field.",
       cls: "clinical-card-meta"
     });
     const safetyActions = safety.createDiv({ cls: "clinical-card-actions" });
-    this.actionButton(safetyActions, "Run check", () => void this.showIntegrity());
+    this.actionButton(safetyActions, "Run check", () => this.showIntegrity());
 
     if (__DEV_TOOLS__) {
       this.sectionHeader(container, "Development", "Not present in release builds");
@@ -1462,7 +1516,7 @@ export class ClinicalWorkspaceView extends ItemView {
       });
       const devActions = dev.createDiv({ cls: "clinical-card-actions" });
       this.actionButton(devActions, "Add synthetic demo", () =>
-        void this.runAction(async () => {
+        this.runAction(async () => {
           const count = await seedSyntheticFixtures(this.service);
           new Notice(`${count} synthetic episodes created.`);
         })
@@ -1496,7 +1550,7 @@ export class ClinicalWorkspaceView extends ItemView {
         }
       ).open();
     } catch (error) {
-      showClinicalNotice(error instanceof Error ? error.message : "The patient view could not be opened.", 7000);
+      showClinicalErrorNotice(error, "The patient view could not be opened.");
     }
   }
 
@@ -1515,7 +1569,7 @@ export class ClinicalWorkspaceView extends ItemView {
         else this.openRecord(entity, id);
       }).open();
     } catch (error) {
-      showClinicalNotice(error instanceof Error ? error.message : "Search could not be opened.", 7000);
+      showClinicalErrorNotice(error, "Search could not be opened.");
     }
   }
 
@@ -1538,7 +1592,7 @@ export class ClinicalWorkspaceView extends ItemView {
         seed
       ).open();
     } catch (error) {
-      showClinicalNotice(error instanceof Error ? error.message : "The patient list could not be opened.", 7000);
+      showClinicalErrorNotice(error, "The patient list could not be opened.");
     }
   }
 
@@ -1558,7 +1612,7 @@ export class ClinicalWorkspaceView extends ItemView {
       await this.repository.createLooseFile(folder, baseName, "csv", buildPatientListCsv(rows));
       // Obsidian cannot display a CSV itself; say where it went instead.
       new Notice(
-        `Patient list CSV (${count}) saved in the documents folder. Open it from your file manager or the Files app, and delete it after use.`,
+        `Patient list CSV (${count}) saved in the documents folder. It contains patient identifiers. Open it from your file manager or the Files app, and delete it after use.`,
         9000
       );
       return;
@@ -1585,7 +1639,7 @@ export class ClinicalWorkspaceView extends ItemView {
       new Notice("Handover note created in the documents folder. Delete it after use.", 7000);
       await this.openPath(path);
     } catch (error) {
-      showClinicalNotice(error instanceof Error ? error.message : "The handover note could not be created.", 7000);
+      showClinicalErrorNotice(error, "The handover note could not be created.");
     }
   }
 
@@ -1615,7 +1669,7 @@ export class ClinicalWorkspaceView extends ItemView {
     }
     const patientContext = this.patientLabel(patient);
     const actions = card.createDiv({ cls: "clinical-card-actions" });
-    this.actionButton(actions, "View", () => void this.openPatientDetail(patient), false, false, patientContext);
+    this.actionButton(actions, "View", () => this.openPatientDetail(patient), false, false, patientContext);
     this.actionButton(actions, "Open", () => this.openRecord("patient", patient.id), false, false, patientContext);
     this.actionButton(actions, "Edit identity", () => {
       if (!this.canOpenWriteForm()) return;
@@ -1666,11 +1720,7 @@ export class ClinicalWorkspaceView extends ItemView {
         if (!this.canOpenWriteForm()) return;
         new NewTaskModal(this.app, episode, this.patientLabel(patient), async (input) => {
           const created = await this.service.createTask(input);
-          new Notice(
-            created.duplicate
-              ? `Task already exists: ${created.task.record.task}`
-              : `Task added: ${created.task.record.task}`
-          );
+          new Notice(taskAddedNotice(created.duplicate));
           await this.refresh();
         }).open();
       }, false, false, context);
@@ -1685,8 +1735,8 @@ export class ClinicalWorkspaceView extends ItemView {
           let message = "Patient workflow updated.";
           if (outcome.kind === "created") {
             message = outcome.superseded
-              ? `Task added: ${outcome.task.record.task}. ${outcome.superseded} superseded task${outcome.superseded === 1 ? "" : "s"} cancelled.`
-              : `Task added: ${outcome.task.record.task}`;
+              ? `Task added. ${outcome.superseded} superseded task${outcome.superseded === 1 ? "" : "s"} cancelled.`
+              : "Task added.";
           } else if (outcome.kind === "rescheduled") {
             // Only the date changed, so the task moved and kept its type,
             // owner and repeat.
@@ -1694,7 +1744,7 @@ export class ClinicalWorkspaceView extends ItemView {
               ? `Task moved to ${outcome.task.record.due_date}.`
               : "Task moved.";
           } else if (outcome.kind === "already-closed") {
-            message = `No task added: “${outcome.task.record.task}” was already ${outcome.task.record.status}. Use + Task to raise it again.`;
+            message = `No task added: that task was already ${closedTaskStatusLabel(outcome.task.record.status)}. Use + Task to raise it again.`;
           }
           if (result.tasksEscalated) {
             message = `${message.replace(/\.?$/, ".")} ${result.tasksEscalated} open task${result.tasksEscalated === 1 ? "" : "s"} raised to ${priorityLabel(result.episode.record.priority)}.`;
@@ -1703,8 +1753,8 @@ export class ClinicalWorkspaceView extends ItemView {
           await this.refresh();
         }).open();
       }, false, false, context);
-      this.actionButton(actions, "Template", () => void this.openApplyTemplate(episode), false, false, context);
-      this.actionButton(actions, "History", () => void this.openEpisodeHistory(episode), false, false, context);
+      this.actionButton(actions, "Template", () => this.openApplyTemplate(episode), false, false, context);
+      this.actionButton(actions, "History", () => this.openEpisodeHistory(episode), false, false, context);
       this.actionButton(
         actions,
         "Discharge",
@@ -1771,7 +1821,7 @@ export class ClinicalWorkspaceView extends ItemView {
         void this.applyTemplate(episode, bundle);
       }).open();
     } catch (error) {
-      showClinicalNotice(error instanceof Error ? error.message : "Templates could not be read.", 7000);
+      showClinicalErrorNotice(error, "Templates could not be read.");
     }
   }
 
@@ -1799,7 +1849,7 @@ export class ClinicalWorkspaceView extends ItemView {
       );
       await this.refresh();
     } catch (error) {
-      showClinicalNotice(error instanceof Error ? error.message : "The template could not be applied.", 7000);
+      showClinicalErrorNotice(error, "The template could not be applied.");
       await this.refresh();
     }
   }
@@ -1811,7 +1861,7 @@ export class ClinicalWorkspaceView extends ItemView {
         .filter((event) => event.episode_id === episode.id || event.target_id === episode.id);
       new EpisodeHistoryModal(this.app, episode.case, events).open();
     } catch (error) {
-      showClinicalNotice(error instanceof Error ? error.message : "The episode history could not be read.", 7000);
+      showClinicalErrorNotice(error, "The episode history could not be read.");
     }
   }
 
@@ -1856,18 +1906,14 @@ export class ClinicalWorkspaceView extends ItemView {
       // On phones card actions form a two-column grid in which the primary
       // action fills a row. Complete first, then pairs, leaves no half-empty
       // row, and keeps Complete and Cancel apart against a hurried mis-tap.
-      this.actionButton(actions, "Complete", () => void this.completeTask(task), true, false, context);
+      this.actionButton(actions, "Complete", () => this.completeTask(task), true, false, context);
       this.actionButton(actions, "Reschedule", () => this.openReschedule(task), false, false, context);
       if (episode) {
         this.actionButton(actions, "+ Task", () => {
           if (!this.canOpenWriteForm()) return;
           new NewTaskModal(this.app, episode, this.patientLabel(patient), async (input) => {
             const created = await this.service.createTask(input);
-            new Notice(
-              created.duplicate
-                ? `Task already exists: ${created.task.record.task}`
-                : `Task added: ${created.task.record.task}`
-            );
+            new Notice(taskAddedNotice(created.duplicate));
             await this.refresh();
           }).open();
         }, false, false, this.episodeContext(episode, patient));
@@ -1886,11 +1932,23 @@ export class ClinicalWorkspaceView extends ItemView {
   }
 
   private completeTask(task: TaskRecord): Promise<void> {
+    // The card and the patient sheet can both reach one task; a second tap
+    // while the first completion is being written must not start another.
+    if (this.completingTasks.has(task.id)) return Promise.resolve();
+    this.completingTasks.add(task.id);
+    const requestedAt = Date.now();
     return this.runAction(async () => {
       const completed = await this.service.completeTask(task.id);
-      if (completed.record.status === "completed") this.showCompletedNotice(task.id);
-      else new Notice("This task was already closed.");
-    });
+      if (completed.record.status !== "completed") {
+        new Notice("This task was already closed.");
+      } else if (Date.parse(completed.record.completed_at) >= requestedAt) {
+        this.showCompletedNotice(task.id);
+      } else {
+        // The service returns a task completed earlier (on another device,
+        // or by an earlier tap) unchanged. Undo belongs to that completion.
+        new Notice("This task was already completed.");
+      }
+    }).finally(() => this.completingTasks.delete(task.id));
   }
 
   /**
@@ -2028,7 +2086,7 @@ export class ClinicalWorkspaceView extends ItemView {
         checkFamilies: report.checkFamilies
       }).open();
     } catch (error) {
-      showClinicalNotice(error instanceof Error ? error.message : "Integrity check failed.", 7000);
+      showClinicalErrorNotice(error, "Integrity check failed.");
     }
   }
 
@@ -2049,7 +2107,7 @@ export class ClinicalWorkspaceView extends ItemView {
       await action();
       await this.refresh();
     } catch (error) {
-      showClinicalNotice(error instanceof Error ? error.message : "The clinical action could not be completed.", 7000);
+      showClinicalErrorNotice(error, "The clinical action could not be completed.");
       await this.refresh();
     }
   }
@@ -2235,7 +2293,8 @@ export class ClinicalWorkspaceView extends ItemView {
       action,
       // instanceOf, not instanceof: a pop-out window has its own HTMLElement.
       scrollTop: scroller?.instanceOf(HTMLElement) ? scroller.scrollTop : 0,
-      keyboard
+      keyboard,
+      refreshesStarted: this.refreshesStarted
     };
     this.listPages.set(key, page);
     void this.refresh();
@@ -2279,9 +2338,12 @@ export class ClinicalWorkspaceView extends ItemView {
       scroller.scrollTop = context.scrollTop;
       this.pagerControl(context.key, context.action)?.focus({ preventScroll: true });
     }
-    // A click can land during an in-flight refresh. Preserve the context for
-    // the queued final redraw; otherwise that second redraw would jump to top.
-    if (!this.refreshQueued) this.pendingPageContext = null;
+    // A click can land during an in-flight refresh, whose render comes first.
+    // Keep the context for the redraw the click queued, then drop it: later
+    // Sync redraws must not scroll back to the header or take focus again.
+    if (!this.refreshQueued || this.renderingRefresh > context.refreshesStarted) {
+      this.pendingPageContext = null;
+    }
   }
 
   private empty(container: HTMLElement, message: string): void {

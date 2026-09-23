@@ -69,10 +69,12 @@ Open each exact URL from Apple Shortcuts **Open URLs**:
   record once, refreshes the intended view, and does not silently select a
   different Episode.
 - [ ] In **Add patient**, **Add patient task**, and **Complete surgery**, the
-  keyboard's Return key reads "next" on every text field except the last,
-  where it reads "done". Tapping Return after the procedure name moves to the
-  next field and does not log the surgery; only Return in the last text field
-  (or the Submit button) saves.
+  keyboard's Return key reads "next" on every text field except one that is
+  the form's last field, where it reads "done" (**Owner** in **Add patient
+  task**). Tapping Return after the procedure name moves to the next field and
+  does not log the surgery; tapping Return after **Next action** in **Add
+  patient** moves to **Due date** and saves nothing. Only Return in that last
+  field (or the Submit button) saves.
 - [ ] With **Follow-up required** turned on, **Follow-up plan** becomes the last
   text field and its Return key saves.
 - [ ] Due-date and follow-up-date fields show **Today**, **+1d**, **+2d**,
