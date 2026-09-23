@@ -28,6 +28,12 @@ the database views that Obsidian does not rewrite automatically. A customised
 home note or Base is preserved; only missing or still-untouched generated files
 are rebuilt.
 
+A customised Base therefore keeps filtering on the old folder after the move
+and shows no records. **Run clinical data integrity check** reports each one as
+`stale-base-folder`: open it and change its `file.inFolder(...)` lines to name
+the new clinical folder. See [Generated database
+views](data-model.md#generated-database-views).
+
 The destination and an in-progress marker are saved before the rename. That
 marker lets the plugin recover after a restart or interruption instead of
 quietly pointing at an empty folder. After the move, the plugin audits managed
@@ -43,6 +49,24 @@ writable root, Clinical Workspace keeps reads on the last safe source and
 blocks clinical and scaffolding writes. The recovery state survives restart and
 reconciliation is retried when the vault changes.
 
+What you see depends on the reason editing is paused:
+
+- **A folder move is unfinished.** The workspace does not open ("Clinical
+  Workspace cannot open yet"), because either folder may hold only part of the
+  records. Let Sync finish, then run **Clinical Workspace: Recheck records and
+  unlock editing**.
+- **The configured clinical folder is missing.** The workspace does not open
+  until the folder is restored or Sync delivers it; then run the same command.
+- **Any other pause** (records being rechecked after a change outside the
+  plugin, newly synced records being verified, or a review being required).
+  The workspace opens read-only with an **Editing is paused** banner and a
+  **Recheck now** button. You can read, search, and run the integrity check;
+  every write is refused until the recheck succeeds.
+
+**Recheck records and unlock editing** was called **Retry pending folder move
+recovery** in earlier versions. Its command id (`retry-folder-move-recovery`)
+is unchanged, so existing hotkeys and toolbar buttons still work.
+
 This applies regardless of delivery order. If settings arrive before the
 folder, if the folder rename arrives before settings, or if a final settings
 file arrives without the intermediate marker, the plugin preserves or
@@ -57,10 +81,10 @@ if an interrupted Sync callback appears to have dropped part of the history.
 | Visible state after Sync | Plugin behaviour | What to do |
 |---|---|---|
 | Destination alone contains the complete expected managed-record count | Settles at the destination and clears the recovery marker. | Wait for the success notice, then run the integrity check. |
-| Source alone contains records while settings name the destination | Remains read-only because the destination may still be in transit. | Let Sync finish, then run **Retry pending folder move recovery** to confirm rollback to the source. |
-| Both source and destination contain records | Remains read-only instead of choosing one and hiding records from the other. | Inspect both roots, let Sync converge or resolve the duplicate tree deliberately, retry recovery, then run the integrity check. |
-| Neither root contains records in a previously record-free workspace | Uses folder presence as evidence only when the old root is gone and the destination exists. | Let Sync finish before retrying. |
-| Configured root is missing, externally renamed, empty, or only partly delivered | Keeps the write block in place. | Restore/finish Sync, then retry recovery. |
+| Source alone contains records while settings name the destination | Remains read-only because the destination may still be in transit. | Let Sync finish, then run **Recheck records and unlock editing** to confirm rollback to the source. |
+| Both source and destination contain records | Remains read-only instead of choosing one and hiding records from the other. | Inspect both roots, let Sync converge or resolve the duplicate tree deliberately, run **Recheck records and unlock editing**, then run the integrity check. |
+| Neither root contains records in a previously record-free workspace | Uses folder presence as evidence only when the old root is gone and the destination exists. | Let Sync finish before rechecking. |
+| Configured root is missing, externally renamed, empty, or only partly delivered | Keeps the write block in place. | Restore/finish Sync, then run **Recheck records and unlock editing**. |
 
 For a workspace that has previously held records, an empty parent folder or a
 single early-delivered file is not convergence. The prior aggregate count of
@@ -81,7 +105,8 @@ whose baseline differs from this device's (a higher count, an equal count with
 a different digest, or an older lower snapshot arriving late), the delivered
 baseline is staged as evidence rather than adopted or rejected:
 
-- Writes pause with the "verifying newly synced records" notice.
+- Writes pause with the "verifying newly synced records" notice, and the
+  workspace shows its read-only banner.
 - Once the record files have finished arriving, the plugin checks that every
   record this device trusted is still on disk, that no entity class shrank,
   that every note in the record folders parses, and that the disk holds at
@@ -92,9 +117,13 @@ baseline is staged as evidence rather than adopted or rejected:
 Only a record that vanished or was replaced keeps the workspace read-only. A
 synced baseline that has fully arrived and omits a record this device trusted
 is a genuine conflict and requires **Confirm current records as the recovery
-baseline** (typed `ADOPT`). If Sync has finished and the workspace is still
-read-only, run **Retry pending folder move recovery**; it applies the same rule
-and reports why the current records cannot be accepted.
+baseline** (typed `ADOPT`). The confirmation shows the previously trusted
+counts beside the current ones and warns when any count dropped; restore
+missing notes from Sync version history or File recovery before adopting a
+smaller set. If Sync has finished and the workspace is still read-only, run
+**Recheck records and unlock editing** (or tap **Recheck now** in the banner);
+it applies the same rule and reports why the current records cannot be
+accepted.
 
 The "needs review" state itself follows the same rule. A review flag saved by
 an earlier version, or delivered in another device's `data.json` while that
@@ -102,7 +131,8 @@ device was still locked, is a comparison this device can redo: the next
 startup, Sync delivery, workspace open, or explicit Retry re-runs the membership
 proof and clears the flag when every record this device trusted is still on
 disk and every note parses. The cleared flag is then what Sync carries to the
-other device, so a stale lock does not bounce between devices. Typed `ADOPT`
+other device, so a stale lock does not bounce between devices. Explicit Retry
+here means **Recheck records and unlock editing**. Typed `ADOPT`
 remains the only exit when the review was raised by something a scan cannot
 verify: an unreadable or unmergeable retired-root list, a device-local journal
 that could not be armed or committed, a displaced folder-move edge, an
@@ -134,14 +164,17 @@ are created and the workspace remains read-only.
 
 1. Stop edits and let Sync finish on every device.
 2. Do not manually create a replacement clinical tree.
-3. Run **Retry pending folder move recovery** on the device showing the notice.
-4. If both roots still contain records, reconcile that ambiguity before retrying.
-5. Run **Run clinical data integrity check**.
+3. Run **Recheck records and unlock editing** on the device showing the notice.
+4. If both roots still contain records, reconcile that ambiguity before
+   rechecking again.
+5. Run **Run clinical data integrity check**. Fix any `stale-base-folder`
+   warning for a customised database view.
 6. Review any notes elsewhere in the vault that link into the moved folder.
 
-Plugin `data.json` stores the visible settings, versioned path-free
-initialization/recovery flags, an aggregate managed-file count, and the bounded
-retired-root name list described above. It does not store MRNs, patient names,
-phone numbers, record IDs, clinical-note paths, or clinical text. For the
-complete trust boundary and limitations, see
-[Security and privacy](../SECURITY.md).
+Plugin `data.json` stores the visible settings (including the clinical folder
+name), versioned initialization/recovery flags, aggregate managed-record
+counts, a checksum of opaque record IDs, the bounded retired-root name list
+described above, and, while a move is in progress, its source and destination
+folder names. It does not store MRNs, patient names, phone numbers, record IDs,
+clinical-note paths, or clinical text. For the complete trust boundary and
+limitations, see [Security and privacy](../SECURITY.md).

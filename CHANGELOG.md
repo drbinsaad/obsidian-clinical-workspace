@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Customised Surgery Logbook Base.** If you edited
+  `Bases/Surgery Logbook.base`, it is left exactly as you made it, so it does
+  not get the new "completed only" filter or the **Retracted** view. Add the
+  filter yourself as shown in [Generated database
+  views](docs/data-model.md#generated-database-views), or rename your copy and
+  reopen the workspace to get a fresh generated one. Untouched Bases and home
+  notes are upgraded automatically.
+- **Quote MRN and phone when editing a note by hand.** Write
+  `mrn: "0090000077"`, not `mrn: 0090000077`. Without quotes YAML reads a
+  number and drops the leading zeros. Run **Run clinical data integrity
+  check**: the new `text-stored-as-number` warning points to every property
+  that needs quotes and a check of its value.
+- **Renamed command.** "Retry pending folder move recovery" is now **Recheck
+  records and unlock editing**. Its id (`retry-folder-move-recovery`) is
+  unchanged, so hotkeys and mobile-toolbar buttons keep working; update any
+  personal notes or shortcuts that use the old name.
+
 ### Added
 
 - **Export patient list**: save the patients of any type — any combination of
@@ -17,6 +36,153 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Patients tab can be filtered by pathway and priority. Section counts
   show when a filter hides records, and **Export list** starts from the
   current filter.
+- **Check the MRN**: when the MRN typed in **Add patient** is already recorded
+  for a patient with a different name, a dialog shows the stored patient
+  before anything is filed. **Go back and check the MRN** (the default)
+  returns to the filled form; **Use this patient** adds the episode there and
+  keeps the stored name.
+- **Undo after Complete**: completing a task shows "Task completed." with an
+  **Undo** button for about 9 seconds, from any tab. For a repeating task the
+  notice says whether the next occurrence was withdrawn or, because it had
+  been changed, left open.
+- **Discharge with open tasks**: Discharge lists the episode's open tasks and
+  offers one explicit tick, off by default, to cancel them with the reason
+  "Closed at discharge". **Archive episode** stays unavailable until it is
+  ticked or the tasks are closed, and work added while the form was open
+  refuses the discharge. Episode cards show "N open tasks".
+- **Add another procedure**: an episode that has moved on after surgery can log
+  a further procedure from its newest Surgery logbook entry or from **Quick
+  entry → Record procedure**, without changing its pathway, status or next
+  action.
+- **Read-only banner**: while editing is paused the workspace shows **Editing
+  is paused**, the reason in plain words, a warning when the list may be
+  incomplete, and a **Recheck now** button. It clears by itself.
+- The patient sheet can complete and reschedule open tasks. Ward-round rows
+  have **View** (the patient sheet) beside **Open**, and choosing a patient in
+  Search opens the sheet.
+- Date fields gain **Today**, **+1d** and **+2d** chips, and a due or
+  follow-up date in the past is named before saving.
+- The ward handover note adds **Due tomorrow** and **No date set** sections;
+  every task section lists emergency work first, and each task line shows its
+  case and priority.
+- A **Retracted** view in the generated Surgery Logbook Base lists cancelled
+  and entered-in-error procedures.
+- Integrity check findings for text stored as a number, invalid repeat
+  intervals, records left under a merged patient, open episodes under an
+  archived or entered-in-error patient, completed procedures the logbook
+  exporter would refuse, and database views still filtering on a previous
+  clinical folder. The report now covers 24 check families. See [Integrity
+  check findings](docs/data-model.md#integrity-check-findings).
+- Task template previews show each task's type, priority and due date, and list
+  anything that was skipped or defaulted under "Check this template:".
+- Logbook exporter: `--from`, `--to` and `--role` filters, applied only after
+  every record has been validated.
+- An everyday-use guide, [docs/user-guide.md](docs/user-guide.md), with
+  step-by-step recipes and a table of every command.
+
+### Changed
+
+- A workspace whose editing is paused now opens read-only instead of refusing
+  to open, from the ribbon, commands, Quick entry and links. It still refuses
+  while a synced folder move is unfinished, while the clinical folder is
+  missing, and before first-use initialization. Forms that would write refuse
+  up front with the reason.
+- **Retry pending folder move recovery** is renamed **Recheck records and
+  unlock editing** and is also offered while a baseline review or verification
+  of newly synced records is pending. **Confirm current records as the recovery
+  baseline** is listed only while editing is paused or a review is pending.
+  **Initialize new workspace** stays listed until an approved initialization
+  has finished.
+- Recovery notices say what happened in plain words and name only commands
+  that are available at that moment. A successful recheck says "Clinical
+  Workspace rechecked its records. Editing is available again." instead of
+  "folder access was restored". The What's new window uses plain language too.
+- After a hand edit to a record note, editing still pauses at once, but the
+  recheck runs about 1.5 seconds after the last autosave instead of after
+  every autosave.
+- **Run clinical data integrity check** works while editing is paused, and
+  notices about unreadable or unrecognised notes point to it. The automatic
+  check on first open is not shown again for an unchanged set of issues in the
+  same session.
+- The `ADOPT` confirmation shows the previously trusted counts beside the
+  current ones and warns when any count dropped.
+- Return moves to the next form field and saves only from the last text field
+  (or with Ctrl/Cmd+Return), and the iPhone keyboard shows next/done to match.
+- A repeating task completed late comes back on the first date on or after
+  today, on the same cadence, instead of already overdue.
+- **Update**: changing only the date of the next action moves that task and
+  keeps its type, owner, priority and repeat; rewording it keeps the owner and
+  repeat (and the type unless the pathway changed). The episode's next action
+  and due date always show the soonest open task and are blank when nothing is
+  open. Raising the episode priority raises lower-priority open tasks. The
+  notice reports a moved task and how many tasks were raised.
+- **Add patient**: an MRN nobody holds yet, typed for a name already recorded
+  without an MRN, now offers that chart in **Possible duplicate patient** and
+  records the MRN on it if chosen. Duplicate names match across Arabic spelling
+  variants. Cancelling the dialog returns to the filled form.
+- A new task's due date starts at today, or the episode's later planned date.
+  Reschedule starts at tomorrow and says "Date unchanged." when nothing moved.
+- Today's Overdue, Today and No date set lists sort by priority first. The ward
+  round pages like other lists. Card buttons put **Complete** first and pair
+  the rest; **Discharge** and **Cancel** have a red border.
+- Search and the episode picker match Arabic spelling variants, Arabic-Indic
+  digits and MRNs with or without leading zeros. A patient search also finds
+  that patient's episodes, tasks and procedures, each row names its patient,
+  and a capped group says "+N more — refine your search".
+- A filter that hides every item keeps its chip and offers **Clear filters**.
+  Tapping **Next** or **Previous** starts the new page at its heading.
+- The generated Surgery Logbook Base lists completed procedures only. Generated
+  Bases are versioned, and untouched ones are upgraded when the workspace opens
+  and after a folder move.
+- The generated home note names the real command: **Clinical Workspace: Open
+  workspace** (or the stethoscope ribbon icon).
+- Audit history in the patient sheet and episode history shows local time.
+- MRN, name, phone and owner fields turn off autocorrect and autofill; text
+  fields follow the direction of the text typed.
+- Task templates ignore capital letters and surrounding spaces in `task_type`,
+  `priority`, `pathway` and `clinical_template`, and `due_in_days` accepts
+  quoted numbers and Arabic-Indic digits.
+- Logbook exporter: without `--root` it reads the clinical folder from the
+  plugin's `data.json` in the vault (falling back to `Clinical Workspace`) and
+  refuses while that file records an unfinished folder move. Validation errors
+  give counts per property and point to the in-app integrity check.
+- **Settings → Privacy and capabilities** lists exactly what `data.json` keeps,
+  including the current and up to 64 previous clinical-folder names and the
+  source and destination names during a move.
+
+### Fixed
+
+- A hand-typed unquoted number or `true`/`false` in a text property (MRN,
+  phone, name, case, task, and similar) no longer breaks adding tasks or
+  episodes or Search; it is read as text and reported by the integrity check.
+- A clinical folder name containing an apostrophe no longer produces broken
+  Bases; untouched Bases broken by earlier versions are repaired.
+- Restoring an archived episode can no longer create a second active episode
+  for the same case.
+- A second procedure on an episode that already had one was refused.
+- Undoing a repeating task's completion left its automatically created next
+  occurrence open, so the series ran twice.
+- Changing only the date in **Update** ended a repeating series and dropped the
+  task's owner and type.
+- An episode could show a due date that no open task tracked.
+- The ward round stopped at 30 inpatients while its heading counted them all.
+- A task-type filter could hide every task with no chip left to clear it.
+- A redraw, including one caused by Sync, no longer drops keyboard or
+  VoiceOver focus to the top of the view.
+- Modal footers no longer add the iPhone bottom safe area twice, and shrink
+  while the keyboard is open.
+- On a new device, a plain note inside a record folder is reported as "not a
+  valid Clinical Workspace record" with a pointer to the integrity check, and
+  records that Sync delivered before initialization no longer force a typed
+  `ADOPT` after a restart.
+- The integrity check on first open no longer reappears after every settings
+  save from the other device.
+- **Remove identifiers from generated note bodies** reports how many notes it
+  rewrote when Sync interrupts it, instead of failing silently.
+- The Arabic Letter Mark (U+061C) is stripped from entered text and logbook CSV
+  cells like the other direction-control characters.
+- Danger buttons and error text meet AA contrast with the default light and
+  dark themes.
 
 ## [0.6.9] - 2026-09-20
 

@@ -16,12 +16,15 @@ shortcut.
 | **Quick entry** | Opens the action hub. |
 | **Quick entry: new patient / episode** | Opens a completely blank patient and Episode form. |
 | **Quick entry: add task / follow-up** | Opens an Episode chooser, then a blank task form. |
-| **Quick entry: record procedure** | Opens an eligible active **OR booking** Episode chooser, then a blank procedure form. |
+| **Quick entry: record procedure** | Opens a chooser of active **OR booking** Episodes and Episodes that already have a logged procedure, then a blank procedure form. |
 | **Open today's pending work** | Opens the Today view with overdue, due-today, and undated tasks refreshed from the vault. |
 
 Every command passes through the same initialization, Sync-recovery, and
 folder-migration barriers as the main workspace. A shortcut cannot make a
-blocked workspace writable.
+blocked workspace writable: while editing is paused the workspace opens
+read-only, and the new patient, task, and procedure actions stop with a notice
+before any form opens. The [Everyday use guide](user-guide.md#all-commands)
+lists every Clinical Workspace command.
 
 ## iPhone and other mobile devices
 
@@ -48,14 +51,26 @@ Before release, record the physical-device checks in the
 
 Task and procedure actions never choose an Episode automatically. They first
 show a searchable picker containing the visible patient label, case, care
-setting, and pathway. Task entry can use any active usable Episode; procedure
-entry retains the existing Surgery workflow boundary and offers only active
-Episodes on the **OR booking** pathway. The user must tap **Use this episode**
-before the blank entry form opens.
+setting, and pathway. Search matches Arabic spelling variants, Arabic-Indic
+digits, and a full MRN with or without leading zeros. Task entry can use any
+active usable Episode. The user must tap **Use this episode** before the blank
+entry form opens.
 
-If no eligible OR booking exists, procedure Quick Entry does not broaden the
-workflow or write a logbook record. Update the intended Episode to the OR
-booking pathway through the ordinary, visible Episode workflow first.
+Procedure entry offers two kinds of Episode:
+
+- Active Episodes on the **OR booking** pathway. **Use this episode** opens
+  **Complete surgery**; saving logs the procedure and moves the Episode on
+  (OPD Follow-Up with a follow-up task, or Discharge Ready).
+- Active Episodes that already have a logged procedure and have moved on from
+  OR booking, for a second procedure or a return to theatre. These rows say "A
+  procedure is already logged here; this adds another." and their button reads
+  **Add another procedure**. Saving (**Log procedure**) adds a logbook entry and
+  leaves the Episode's pathway, status, and next action unchanged; a follow-up
+  task is added only when **Follow-up required** is on.
+
+If neither kind exists, procedure Quick Entry does not broaden the workflow or
+write a logbook record. Update the intended Episode to the OR booking pathway
+through the ordinary, visible Episode workflow first.
 
 If the currently active Markdown file is an Episode that Clinical Workspace
 already found inside its configured Episodes folder, that row is promoted and
@@ -63,6 +78,17 @@ labelled **Current episode**. It is still unselected and requires an explicit
 **Confirm current episode** tap. An arbitrary note, stale active file, renamed
 path that no longer matches a managed Episode, or identifier supplied from
 outside the plugin is never trusted as context.
+
+## Filling in the forms
+
+- **Return** moves to the next field and saves only from the last text field;
+  the iPhone keyboard's Return key reads "next" or "done" to match. With a
+  hardware keyboard, Ctrl+Return or Cmd+Return saves from any field. This
+  prevents one Return after the procedure name from logging a surgery with the
+  default role and date.
+- Due and follow-up dates have **Today**, **+1d**, **+2d**, **+1w**, **+2w**,
+  **+1m**, and **+3m** chips, and a date in the past is named before saving.
+- If a save is refused, every value you typed stays in the form.
 
 ## Parameter-free Obsidian links
 
