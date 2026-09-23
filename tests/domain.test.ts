@@ -60,11 +60,11 @@ test("MRN normalisation preserves the value as typed", () => {
 });
 
 test("MRN match key ignores leading zeroes so one patient is not split in two", () => {
-  assert.equal(mrnMatchKey("0012345"), mrnMatchKey("12345"));
-  assert.equal(mrnMatchKey(" 00-123 45 "), "12345");
+  assert.equal(mrnMatchKey("0090000077"), mrnMatchKey("90000077"));
+  assert.equal(mrnMatchKey(" 00-9000 0077 "), "90000077");
   // A value that is all zeroes still has to keep one digit.
   assert.equal(mrnMatchKey("000"), "0");
-  assert.notEqual(mrnMatchKey("12345"), mrnMatchKey("123456"));
+  assert.notEqual(mrnMatchKey("90000077"), mrnMatchKey("900000776"));
   assert.equal(mrnMatchKey(""), "");
 });
 

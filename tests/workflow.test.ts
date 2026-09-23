@@ -226,11 +226,11 @@ test("double-tapping complete records the action once", async () => {
 
 test("leading zeroes do not split one patient into two charts", async () => {
   const { service, repository } = await harness();
-  await service.createEpisode(episodeInput({ mrn: "0012345", caseName: "Case one" }));
-  await service.createEpisode(episodeInput({ mrn: "12345", caseName: "Case two" }));
+  await service.createEpisode(episodeInput({ mrn: "0090000077", caseName: "Case one" }));
+  await service.createEpisode(episodeInput({ mrn: "90000077", caseName: "Case two" }));
   const patients = await repository.list<PatientRecord>("patient");
   assert.equal(patients.length, 1);
-  assert.equal(patients[0]!.record.mrn, "0012345", "the value as first typed is preserved");
+  assert.equal(patients[0]!.record.mrn, "0090000077", "the value as first typed is preserved");
 });
 
 test("an MRN-less patient with a matching name raises a duplicate prompt", async () => {
@@ -264,12 +264,12 @@ test("patient identity can be corrected", async () => {
   const { service, repository } = await harness();
   const created = await service.createEpisode(episodeInput({ mrn: "", patientName: "Unknown" }));
   await service.updatePatientIdentity(created.patient.record.id, {
-    mrn: "0077",
+    mrn: "0090000077",
     patientName: "Correct Name",
     phone: "0500000000"
   });
   const patient = (await repository.findById<PatientRecord>("patient", created.patient.record.id))!.record;
-  assert.equal(patient.mrn, "0077");
+  assert.equal(patient.mrn, "0090000077");
   assert.equal(patient.mrn_status, "confirmed");
   assert.equal(patient.patient_name, "Correct Name");
   assert.equal(patient.phone_status, "confirmed");
@@ -277,10 +277,10 @@ test("patient identity can be corrected", async () => {
 
 test("identity edits cannot create an MRN collision", async () => {
   const { service } = await harness();
-  await service.createEpisode(episodeInput({ mrn: "111", caseName: "A" }));
-  const second = await service.createEpisode(episodeInput({ mrn: "222", caseName: "B" }));
+  await service.createEpisode(episodeInput({ mrn: "9000000111", caseName: "A" }));
+  const second = await service.createEpisode(episodeInput({ mrn: "9000000222", caseName: "B" }));
   await assert.rejects(
-    () => service.updatePatientIdentity(second.patient.record.id, { mrn: "111", patientName: "X", phone: "" }),
+    () => service.updatePatientIdentity(second.patient.record.id, { mrn: "9000000111", patientName: "X", phone: "" }),
     /Merge the two records instead/
   );
 });
@@ -291,7 +291,7 @@ test("merging moves every linked record and retires the source without deleting 
     episodeInput({ mrn: "", patientName: "Jane Doe", caseName: "Case A", nextAction: "Do thing", dueDate: "2026-08-10" })
   );
   const b = await service.createEpisode(
-    episodeInput({ mrn: "9001", patientName: "Jane Doe", caseName: "Case B", forceNewPatient: true })
+    episodeInput({ mrn: "9000009001", patientName: "Jane Doe", caseName: "Case B", forceNewPatient: true })
   );
 
   const preview = await service.previewPatientMerge(a.patient.record.id, b.patient.record.id);
@@ -312,10 +312,10 @@ test("merging moves every linked record and retires the source without deleting 
 
 test("a merged-away patient is no longer matched by MRN", async () => {
   const { service, repository } = await harness();
-  const a = await service.createEpisode(episodeInput({ mrn: "4321", patientName: "A", caseName: "A" }));
-  const b = await service.createEpisode(episodeInput({ mrn: "8765", patientName: "B", caseName: "B" }));
+  const a = await service.createEpisode(episodeInput({ mrn: "9000004321", patientName: "A", caseName: "A" }));
+  const b = await service.createEpisode(episodeInput({ mrn: "9000008765", patientName: "B", caseName: "B" }));
   await service.mergePatients(a.patient.record.id, b.patient.record.id);
-  assert.equal(await repository.findPatientByMrn("4321"), null);
+  assert.equal(await repository.findPatientByMrn("9000004321"), null);
 });
 
 // --- P0-1 follow-up: cancellation unblocks a stuck episode -------------------

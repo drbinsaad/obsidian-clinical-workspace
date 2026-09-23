@@ -16,7 +16,7 @@ test("every record type survives a markdown round trip unchanged", async () => {
   const { service, repository } = await harness();
   const created = await service.createEpisode(
     episodeInput({
-      mrn: "0012345",
+      mrn: "0090000077",
       phone: "0500000001",
       pathway: "or-booking",
       nextAction: "Book OR",
@@ -70,8 +70,8 @@ test("a YAML writer that yields Date objects is coerced back into strings", () =
 });
 
 test("an MRN with leading zeroes is not mangled into a number by YAML", () => {
-  const yaml = stringifyYaml({ mrn: "0012345", phone: "0500000001" });
-  assert.match(yaml, /mrn: ['"]0012345['"]/);
+  const yaml = stringifyYaml({ mrn: "0090000077", phone: "0500000001" });
+  assert.match(yaml, /mrn: ['"]0090000077['"]/);
   assert.match(yaml, /phone: ['"]0500000001['"]/);
 });
 
@@ -99,8 +99,8 @@ test("update on a missing record fails loudly", async () => {
 
 test("a hand-edited record does not take down the whole snapshot", async () => {
   const { service, repository, app } = await harness();
-  const good = await service.createEpisode(episodeInput({ mrn: "111", caseName: "Good case" }));
-  const bad = await service.createEpisode(episodeInput({ mrn: "222", caseName: "Bad case" }));
+  const good = await service.createEpisode(episodeInput({ mrn: "9000000111", caseName: "Good case" }));
+  const bad = await service.createEpisode(episodeInput({ mrn: "9000000222", caseName: "Bad case" }));
 
   const raw = app.vault.files.get(bad.episode.path)!;
   app.vault.writeRaw(

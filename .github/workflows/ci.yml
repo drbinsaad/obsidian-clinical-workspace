@@ -83,10 +83,12 @@ jobs:
         run: |
           set -euo pipefail
           # Any value beginning 9000 is reserved for test fixtures and is approved
-          # by convention. The two long decimal values are documented FNV-1a
-          # constants in the release verifier. Everything else must be listed
-          # deliberately, so a real MRN pasted in while debugging fails the build.
-          ALLOWED='^(9000[0-9]*|0009000000001|0012345|0500000000|0500000001|16777619|2166136261)$'
+          # by convention. 0090000077 is the leading-zero 9000 fixture the MRN
+          # normalization tests use. The two long decimal values are documented
+          # FNV-1a constants in the release verifier. Everything else must be
+          # listed deliberately, so a real MRN pasted in while debugging fails
+          # the build.
+          ALLOWED='^(9000[0-9]*|0009000000001|0090000077|0012345|0500000000|0500000001|16777619|2166136261)$'
           # Hex literals are algorithmic constants, not identifiers. `grep -a`
           # keeps a stray binary byte from switching grep into "binary file
           # matches" mode, which silently printed nothing and passed the gate.

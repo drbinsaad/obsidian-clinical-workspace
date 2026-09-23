@@ -65,7 +65,7 @@ import {
 const ROOT = DEFAULT_SETTINGS.rootFolder;
 const MANAGED_FOLDERS = ["Patients", "Episodes", "Tasks", "Procedures"];
 const PATIENT_NAME = "Lifecycle Synthetic Patient";
-const MRN = "9001";
+const MRN = "9000009001";
 
 const RECOVERY_MESSAGES = [
   CLINICAL_ROOT_UNAVAILABLE_MESSAGE,
@@ -485,7 +485,7 @@ test("each recovery command is offered exactly while its guidance can name it", 
 
     // First use offers initialization, and the adopt command explains itself.
     const fresh = await harness();
-    await fresh.service.createEpisode(episodeInput({ mrn: "9002", patientName: PATIENT_NAME }));
+    await fresh.service.createEpisode(episodeInput({ mrn: "9000009002", patientName: PATIENT_NAME }));
     const firstUse = await loadedPlugin(fresh.app, () => null);
     assert.equal(firstUse.plugin.firstUseInitializationPending, true);
     assert.equal(commandAvailable(firstUse.commands.get("initialize-new-workspace")), true);
@@ -537,7 +537,7 @@ test("typing into a record note pauses writes at once and rechecks once after th
     assert.equal(local.repository.getWriteBlockReason(), null);
     assert.equal(parses, 2, "one recheck: the exact scan and its post-save confirmation");
     assert.equal(local.saves(), 2, "one barrier save and one clearing save for the whole burst");
-    await local.service.createEpisode(episodeInput({ mrn: "9003", caseName: "Writable after edit" }));
+    await local.service.createEpisode(episodeInput({ mrn: "9000009003", caseName: "Writable after edit" }));
   } finally {
     restoreWindow();
     setClinicalRoot(originalRoot);
@@ -562,7 +562,7 @@ test("a note left unreadable keeps record-level wording and the integrity check 
     assert.equal(local.plugin.migrationRecoveryBlocked, true);
     assert.equal(local.plugin.recoveryBlockMessage, CLINICAL_RECORD_CHANGED_MESSAGE);
     await assert.rejects(
-      () => local.service.createEpisode(episodeInput({ mrn: "9004" })),
+      () => local.service.createEpisode(episodeInput({ mrn: "9000009004" })),
       /a record note was added, edited, deleted or moved outside Clinical Workspace/
     );
 
@@ -749,7 +749,7 @@ test("a Sync delivery before first-use initialization does not turn the next lau
   try {
     setClinicalRoot(ROOT);
     const { app, repository, service } = await harness();
-    await service.createEpisode(episodeInput({ mrn: "9005", patientName: PATIENT_NAME }));
+    await service.createEpisode(episodeInput({ mrn: "9000009005", patientName: PATIENT_NAME }));
     const first = makePlugin(app, repository, () => null);
     await first.loadSettings();
     assert.equal(first.firstUseInitializationPending, true);
@@ -776,7 +776,7 @@ test("a stray note in a record folder gets not-a-record guidance instead of a Sy
   try {
     setClinicalRoot(ROOT);
     const { app, repository, service } = await harness();
-    await service.createEpisode(episodeInput({ mrn: "9006", patientName: PATIENT_NAME }));
+    await service.createEpisode(episodeInput({ mrn: "9000009006", patientName: PATIENT_NAME }));
     const strayPath = `${ROOT}/Patients/Ward list scratch.md`;
     app.vault.writeRaw(strayPath, "Beds to review after lunch.\n");
     const plugin = makePlugin(app, repository, () => null);

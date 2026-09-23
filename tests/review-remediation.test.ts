@@ -614,8 +614,8 @@ test("wikilink labels cannot inject link syntax and bidi controls are stripped",
 });
 
 test("Arabic-Indic identifiers are normalised to ASCII without losing leading zeroes", () => {
-  assert.equal(normalizeMrn("٠٠١٢٣٤٥"), "0012345");
-  assert.equal(normalizeMrn("۰۰۱۲۳۴۵"), "0012345");
+  assert.equal(normalizeMrn("٠٠٩٠٠٠٠٠٧٧"), "0090000077");
+  assert.equal(normalizeMrn("۰۰۹۰۰۰۰۰۷۷"), "0090000077");
 });
 
 test("frontmatter coercion drops prototype-mutating keys", () => {
@@ -646,7 +646,7 @@ test("integrity reports duplicate active episodes and interrupted patient merges
   const { service, repository, integrity } = await harness();
   const source = await service.createEpisode(episodeInput({ caseName: "Duplicate case" }));
   const target = await service.createEpisode(
-    episodeInput({ mrn: "9002", patientName: "Target", caseName: "Target case" })
+    episodeInput({ mrn: "9000009002", patientName: "Target", caseName: "Target case" })
   );
   const duplicate: EpisodeRecord = {
     ...source.episode.record,
@@ -664,13 +664,13 @@ test("integrity reports duplicate active episodes and interrupted patient merges
 test("a patient already merged away cannot be selected as a merge target", async () => {
   const { service } = await harness();
   const source = await service.createEpisode(
-    episodeInput({ mrn: "9003", patientName: "Source", caseName: "Source case" })
+    episodeInput({ mrn: "9000009003", patientName: "Source", caseName: "Source case" })
   );
   const retiredTarget = await service.createEpisode(
-    episodeInput({ mrn: "9004", patientName: "Retired", caseName: "Retired case" })
+    episodeInput({ mrn: "9000009004", patientName: "Retired", caseName: "Retired case" })
   );
   const survivor = await service.createEpisode(
-    episodeInput({ mrn: "9005", patientName: "Survivor", caseName: "Survivor case" })
+    episodeInput({ mrn: "9000009005", patientName: "Survivor", caseName: "Survivor case" })
   );
   await service.mergePatients(retiredTarget.patient.record.id, survivor.patient.record.id);
   await assert.rejects(

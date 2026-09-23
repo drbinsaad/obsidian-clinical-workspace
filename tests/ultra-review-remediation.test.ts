@@ -160,14 +160,14 @@ test("a stale form snapshot is refused instead of reverting concurrent changes",
 
   const patient = created.patient;
   await service.updatePatientIdentity(patient.record.id, {
-    mrn: "5001",
+    mrn: "9000005001",
     patientName: "Corrected Elsewhere",
     phone: ""
   });
   await assert.rejects(
     () =>
       service.updatePatientIdentity(patient.record.id, {
-        mrn: "5001",
+        mrn: "9000005001",
         patientName: "Stale Form Value",
         phone: "",
         expectedUpdatedAt: patient.record.updated_at

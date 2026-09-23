@@ -231,7 +231,7 @@ test("unquoted numeric identifiers read back as text and are reported", async ()
       "schema_version: 3",
       "entity: patient",
       "id: PAT-numeric",
-      "mrn: 0012345",
+      "mrn: 0090000077",
       "phone: 0500000000",
       "patient_name:",
       "status: active",
@@ -239,7 +239,7 @@ test("unquoted numeric identifiers read back as text and are reported", async ()
       ""
     ].join("\n")
   ) as PatientRecord;
-  assert.equal(record.mrn, "12345", "YAML already dropped the zeros; the value is now text");
+  assert.equal(record.mrn, "90000077", "YAML already dropped the zeros; the value is now text");
   assert.equal(record.phone, "0500000000".slice(1), "the leading zero is already gone");
   assert.equal(record.patient_name, "");
   assert.equal(record.schema_version, 3, "non-text fields keep their type");
@@ -250,8 +250,8 @@ test("unquoted numeric identifiers read back as text and are reported", async ()
   assert.equal(kinds.has("schema_version"), false);
 
   // A defensive label never throws on a non-string value.
-  assert.equal(wikilink("Clinical Workspace/Patients/PAT-numeric.md", 12345 as unknown as string),
-    "[[Clinical Workspace/Patients/PAT-numeric|12345]]");
+  assert.equal(wikilink("Clinical Workspace/Patients/PAT-numeric.md", 90000077 as unknown as string),
+    "[[Clinical Workspace/Patients/PAT-numeric|90000077]]");
   assert.equal(wikilink("Clinical Workspace/Patients/PAT-numeric.md"), "[[Clinical Workspace/Patients/PAT-numeric]]");
 });
 
@@ -260,7 +260,7 @@ test("an MRN-only patient with an unquoted MRN can still be given tasks, and the
   const created = await h.service.createEpisode(episodeInput({ mrn: "9000000406", patientName: "" }));
   const vault = vaultOf(h);
   const patientPath = created.patient.path;
-  vault.writeRaw(patientPath, vault.files.get(patientPath)!.replace(/^mrn: .*$/m, "mrn: 0012345"));
+  vault.writeRaw(patientPath, vault.files.get(patientPath)!.replace(/^mrn: .*$/m, "mrn: 0090000077"));
   h.repository.invalidatePath(patientPath);
 
   const result = await h.service.createTask({
@@ -272,14 +272,14 @@ test("an MRN-only patient with an unquoted MRN can still be given tasks, and the
     dueDate: "2026-09-02",
     owner: ""
   });
-  assert.match(result.task.record.patient, /\|12345\]\]$/);
+  assert.match(result.task.record.patient, /\|90000077\]\]$/);
 
   const issues = await h.integrity.scan();
   const numeric = issues.filter((issue) => issue.code === "text-stored-as-number");
   assert.equal(numeric.length, 1);
   assert.equal(numeric[0]!.path, patientPath);
   assert.match(numeric[0]!.message, /"mrn".*leading zeros may have been lost.*quotes/);
-  assert.doesNotMatch(numeric[0]!.message, /12345|9000000406/);
+  assert.doesNotMatch(numeric[0]!.message, /90000077|9000000406/);
 });
 
 test("updates still verify on a record whose YAML holds a numeric text field", async () => {
@@ -287,15 +287,15 @@ test("updates still verify on a record whose YAML holds a numeric text field", a
   const created = await h.service.createEpisode(episodeInput({ mrn: "9000000407" }));
   const vault = vaultOf(h);
   const patientPath = created.patient.path;
-  vault.writeRaw(patientPath, vault.files.get(patientPath)!.replace(/^mrn: .*$/m, "mrn: 0012345"));
+  vault.writeRaw(patientPath, vault.files.get(patientPath)!.replace(/^mrn: .*$/m, "mrn: 0090000077"));
   h.repository.invalidatePath(patientPath);
 
   const phone = await h.repository.update<PatientRecord>(patientPath, { phone: "0500000001" });
   assert.equal(phone.record.phone, "0500000001");
-  assert.equal(phone.record.mrn, "12345");
+  assert.equal(phone.record.mrn, "90000077");
 
-  const corrected = await h.repository.update<PatientRecord>(patientPath, { mrn: "0012345" });
-  assert.equal(corrected.record.mrn, "0012345", "a quoted MRN round-trips with its zeros");
+  const corrected = await h.repository.update<PatientRecord>(patientPath, { mrn: "0090000077" });
+  assert.equal(corrected.record.mrn, "0090000077", "a quoted MRN round-trips with its zeros");
   assert.equal(storedValueKindsOf(corrected.record).has("mrn"), false);
 });
 
