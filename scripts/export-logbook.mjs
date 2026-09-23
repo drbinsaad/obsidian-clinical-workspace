@@ -206,13 +206,13 @@ async function configuredRoot(vault) {
       "The plugin records a clinical folder move that has not finished. Finish or recover it in Obsidian first, or pass --root explicitly."
     );
   }
+  // recoveryValidationRequired is deliberately not read: the plugin sets it
+  // on every startup and never clears it, so a healthy workspace carries it.
   const safety = settings.workspaceSafety;
   if (
     isRecord(safety) &&
     safety.version === 1 &&
-    (safety.rootRecoveryRequired === true ||
-      safety.recoveryValidationRequired === true ||
-      safety.baselineReviewRequired === true)
+    (safety.rootRecoveryRequired === true || safety.baselineReviewRequired === true)
   ) {
     fail(
       "The plugin records a recovery check or review that has not finished, so the records may be incomplete. Finish it in Obsidian first, or pass --root explicitly."

@@ -3313,7 +3313,13 @@ export default class ClinicalWorkspacePlugin extends Plugin {
 
   async updateSettings(patch: Partial<ClinicalSettings>): Promise<void> {
     if (this.firstUseInitializationPending || this.initializationScaffoldApproved) {
-      throw new Error(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
+      // An initialization interrupted by a Sync delivery hides Initialize and
+      // needs typed ADOPT; name that exit rather than the hidden command.
+      throw new Error(
+        this.initializationScaffoldApproved && this.baselineReviewRequired
+          ? this.recoveryBlockMessage
+          : CLINICAL_INITIALIZATION_REQUIRED_MESSAGE
+      );
     }
     const previous = this.settings;
     this.settings = normalizeSettings(

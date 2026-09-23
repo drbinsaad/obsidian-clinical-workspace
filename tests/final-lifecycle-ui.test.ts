@@ -138,6 +138,7 @@ type TestPlugin = {
   registerVaultEvents: () => void;
   scheduleManagedRecordRecheck: (path: string) => void;
   activateWorkspace: () => Promise<ClinicalWorkspaceView>;
+  updateSettings: (patch: Partial<ClinicalSettings>) => Promise<void>;
   runIntegrityCheck: (options?: { onlyWhenIssuesFound?: boolean }) => Promise<void>;
   requestFirstUseInitialization: () => Promise<boolean>;
   initializeNewWorkspace: () => Promise<void>;
@@ -506,6 +507,12 @@ test("an initialization interrupted by a Sync delivery names typed ADOPT, not In
       "Initialize would only reopen read-only while typed ADOPT is required"
     );
     assert.equal(commandAvailable(adopt), true);
+    // A settings change in this state names the same exit, not the hidden command.
+    await assert.rejects(
+      () => plugin!.updateSettings({ clinicianName: "Synthetic Clinician" }),
+      (error: unknown) =>
+        error instanceof Error && error.message === CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE
+    );
   } finally {
     plugin?.onunload();
     confirmations.restore();

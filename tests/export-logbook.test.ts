@@ -827,7 +827,7 @@ test("without --root the exporter refuses while the plugin records an unfinished
       expectedEntityCounts: { patient: 1, episode: 1, task: 0, procedure: 3 }
     };
 
-    for (const state of ["rootRecoveryRequired", "recoveryValidationRequired", "baselineReviewRequired"]) {
+    for (const state of ["rootRecoveryRequired", "baselineReviewRequired"]) {
       await writeFile(
         settings,
         JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: { ...safety, [state]: true } }),
@@ -842,10 +842,25 @@ test("without --root the exporter refuses while the plugin records an unfinished
       await assert.rejects(lstat(output), { code: "ENOENT" }, `${state}: no CSV was written`);
     }
 
-    // With every flag clear the saved folder is used as before.
+    // With every flag clear the saved folder is used as before. A healthy
+    // workspace also carries recoveryValidationRequired after any restart,
+    // because the plugin sets it at startup and never clears it; that alone
+    // must not block an export.
     await writeFile(settings, JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: safety }), "utf8");
     const clear = await run(process.execPath, [script, fixture.vault, "--out", path.join(fixture.home, "clear.csv")]);
     assert.match(clear.stdout, /Exported 1 completed procedure record/);
+    await writeFile(
+      settings,
+      JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: { ...safety, recoveryValidationRequired: true } }),
+      "utf8"
+    );
+    const restarted = await run(process.execPath, [
+      script,
+      fixture.vault,
+      "--out",
+      path.join(fixture.home, "restarted.csv")
+    ]);
+    assert.match(restarted.stdout, /Exported 1 completed procedure record/);
     // A state the plugin itself would not read (another version) is not a refusal either.
     await writeFile(
       settings,
