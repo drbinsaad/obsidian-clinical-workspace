@@ -578,6 +578,11 @@ export interface QuickEntryEpisodeChoice {
   isCurrent: boolean;
   /** The patient's stored MRN, so a digits-only search can match it as an MRN. */
   patientMrn?: string;
+  /**
+   * For the procedure picker: the episode has moved on from OR booking after
+   * a logged procedure, so choosing it adds another procedure.
+   */
+  additionalProcedure?: boolean;
 }
 
 /**
@@ -598,13 +603,22 @@ export function bidiIsolate(value: string): string {
   return value ? `\u2068${value}\u2069` : value;
 }
 
+/** Visible text of an Episode picker row's button. */
+function episodeChoiceButtonText(choice: QuickEntryEpisodeChoice): string {
+  if (choice.isCurrent) return "Confirm current episode";
+  return choice.additionalProcedure ? "Add another procedure" : "Use this episode";
+}
+
 export function episodeChoiceAccessibleLabel(
   actionLabel: string,
   choice: QuickEntryEpisodeChoice
 ): string {
-  const action = choice.isCurrent ? "Confirm current episode" : "Use this episode";
+  const action = episodeChoiceButtonText(choice);
+  const purpose = choice.additionalProcedure
+    ? choice.isCurrent ? "to add another procedure" : "to this episode"
+    : `for ${actionLabel}`;
   const episode = choice.episode.case ? bidiIsolate(choice.episode.case) : "Case not recorded";
-  return `${action} for ${actionLabel}: ${episode}; ${choice.patientLabel}; episode ${choice.episode.id}`;
+  return `${action} ${purpose}: ${episode}; ${choice.patientLabel}; episode ${choice.episode.id}`;
 }
 
 /**
@@ -714,8 +728,14 @@ export class QuickEntryEpisodeModal extends ClinicalResponsiveModal {
         text: `${careSettingLabel(choice.episode.care_setting)} · ${pathwayLabel(choice.episode.pathway)}`,
         cls: "clinical-card-meta"
       });
+      if (choice.additionalProcedure) {
+        card.createEl("p", {
+          text: "A procedure is already logged here; this adds another.",
+          cls: "clinical-card-review"
+        });
+      }
       const choose = card.createEl("button", {
-        text: choice.isCurrent ? "Confirm current episode" : "Use this episode",
+        text: episodeChoiceButtonText(choice),
         cls: "clinical-card-button mod-cta",
         attr: {
           type: "button",
@@ -740,9 +760,28 @@ function seedOption<T extends string>(value: string, allowed: readonly T[], fall
   return (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
+/**
+ * Thrown by a submit handler when the user backed out of a follow-up question,
+ * such as which patient this is. Nothing was saved and nothing failed: the
+ * form stays open with everything typed, and says so quietly instead of
+ * raising an error Notice.
+ */
+export class ClinicalSubmitCancelled extends Error {
+  constructor(
+    message = "Nothing was saved. Check the details, then submit again.",
+    /** Accessible name of the field to return focus to, such as "MRN". */
+    readonly focusField = ""
+  ) {
+    super(message);
+    this.name = "ClinicalSubmitCancelled";
+  }
+}
+
 export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
   private errorEl: HTMLElement | null = null;
+  private noteEl: HTMLElement | null = null;
   private cancelEl: HTMLButtonElement | null = null;
+  private submitEl: HTMLButtonElement | null = null;
   private submitting = false;
 
   protected constructor(
@@ -763,6 +802,21 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
   }
 
   protected abstract value(): T;
+
+  /** A form that must not be submitted in its current state says so here. */
+  protected canSubmit(): boolean {
+    return true;
+  }
+
+  /** Re-applies canSubmit() to the submit button after the form's state changed. */
+  protected syncSubmitState(): void {
+    if (this.submitEl && !this.submitting) this.submitEl.disabled = !this.canSubmit();
+  }
+
+  /** Links the submit button to the text that explains when it is unavailable. */
+  protected describeSubmit(hintId: string): void {
+    this.submitEl?.setAttribute("aria-describedby", hintId);
+  }
 
   protected addDateSetting(
     container: HTMLElement,
@@ -836,6 +890,13 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
       attr: { role: "alert", "aria-live": "assertive" }
     });
     this.errorEl.hide();
+    // Backing out of a follow-up question is not a failure; it gets a quiet
+    // status line rather than the alert.
+    this.noteEl = errorContainer.createDiv({
+      cls: "clinical-modal-note",
+      attr: { role: "status", "aria-live": "polite" }
+    });
+    this.noteEl.hide();
     const actions = container.createDiv({ cls: "clinical-modal-actions" });
     const cancel = actions.createEl("button", { text: "Cancel" });
     cancel.addEventListener("click", () => this.close());
@@ -844,6 +905,8 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
       text: this.submitLabel,
       cls: "mod-cta"
     });
+    this.submitEl = submit;
+    this.syncSubmitState();
     submit.addEventListener("click", () => void this.handleSubmit(submit));
     this.contentEl.addEventListener("keydown", (event) => {
       const input = event.target as HTMLElement | null;
@@ -875,21 +938,33 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
     this.submitting = true;
     if (this.cancelEl) this.cancelEl.disabled = true;
     this.errorEl?.hide();
+    this.noteEl?.hide();
     try {
       await this.onSubmit(this.value());
       this.submitting = false;
       this.close();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "The clinical action could not be completed.";
-      if (this.errorEl) {
-        this.errorEl.setText(message);
-        this.errorEl.show();
-        this.errorEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+      if (error instanceof ClinicalSubmitCancelled) {
+        this.noteEl?.setText(error.message);
+        this.noteEl?.show();
+      } else {
+        const message = error instanceof Error ? error.message : "The clinical action could not be completed.";
+        if (this.errorEl) {
+          this.errorEl.setText(message);
+          this.errorEl.show();
+          this.errorEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+        showClinicalNotice(message, 7000);
       }
-      showClinicalNotice(message, 7000);
       this.submitting = false;
       if (this.cancelEl) this.cancelEl.disabled = false;
-      button.disabled = false;
+      button.disabled = !this.canSubmit();
+      if (error instanceof ClinicalSubmitCancelled && error.focusField) {
+        const field = reachableFormControls(this.contentEl).find(
+          (control) => control.getAttribute("aria-label") === error.focusField
+        );
+        field?.focus();
+      }
     }
   }
 
@@ -987,15 +1062,26 @@ export class NewEpisodeModal extends ClinicalModal<NewEpisodeInput> {
   }
 }
 
+export interface DuplicatePatientOptions {
+  /** The MRN typed into the form, when there was one; the candidates have none. */
+  enteredMrn?: string;
+  /** Called when the prompt closes without a choice, so the form can stay open. */
+  onCancel?: () => void;
+}
+
 /**
- * Shown when a patient is being created without an MRN and an existing record
- * carries the same name. Without this step the two are silently kept apart.
+ * Shown when a new patient's name matches a record that has no MRN: either
+ * no MRN was entered, or the one entered belongs to nobody yet. Without this
+ * step the two are silently kept apart.
  */
 export class DuplicatePatientModal extends ClinicalResponsiveModal {
+  private decided = false;
+
   constructor(
     app: App,
     private readonly candidates: PatientRecord[],
-    private readonly onChoose: (patientId: string | null) => void
+    private readonly onChoose: (patientId: string | null) => void,
+    private readonly options: DuplicatePatientOptions = {}
   ) {
     super(app);
   }
@@ -1003,10 +1089,13 @@ export class DuplicatePatientModal extends ClinicalResponsiveModal {
   onOpen(): void {
     this.modalEl.addClass("clinical-modal");
     this.contentEl.empty();
+    const enteredMrn = this.options.enteredMrn ?? "";
     const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
     body.createEl("h2", { text: "Possible duplicate patient", cls: "clinical-modal-heading" });
     body.createEl("p", {
-      text: "No MRN was entered, and a patient with this name already exists. Choose an existing record or create a separate one.",
+      text: enteredMrn
+        ? `A patient with this name is already recorded without an MRN. If this is the same person, choose their record: MRN ${enteredMrn} will be recorded on the chosen chart. Otherwise create a separate patient.`
+        : "No MRN was entered, and a patient with this name already exists. Choose an existing record or create a separate one.",
       cls: "clinical-section-note"
     });
     const list = body.createDiv({ cls: "clinical-list" });
@@ -1015,6 +1104,12 @@ export class DuplicatePatientModal extends ClinicalResponsiveModal {
       card.createEl("h4", { text: candidate.patient_name || "Name not recorded", attr: { dir: "auto" } });
       card.createEl("p", { text: `MRN ${displayMrn(candidate.mrn)}`, cls: "clinical-card-meta" });
       card.createEl("p", { text: `Phone ${displayPhone(candidate.phone)}`, cls: "clinical-card-meta" });
+      if (enteredMrn && !candidate.mrn) {
+        card.createEl("p", {
+          text: `Choosing this chart records MRN ${enteredMrn} on it.`,
+          cls: "clinical-card-review"
+        });
+      }
       const actions = card.createDiv({ cls: "clinical-card-actions" });
       const use = actions.createEl("button", {
         text: "Use this patient",
@@ -1022,19 +1117,92 @@ export class DuplicatePatientModal extends ClinicalResponsiveModal {
         // Several candidates share this button text; name the record it picks.
         attr: { "aria-label": `Use this patient — ${patientIdentityLabel(candidate.mrn, candidate.patient_name)}` }
       });
-      use.addEventListener("click", () => {
-        this.onChoose(candidate.id);
-        this.close();
-      });
+      use.addEventListener("click", () => this.choose(candidate.id));
     }
     const footer = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
     const cancel = footer.createEl("button", { text: "Cancel" });
     cancel.addEventListener("click", () => this.close());
     const create = footer.createEl("button", { text: "Create separate patient", cls: "clinical-card-button" });
-    create.addEventListener("click", () => {
-      this.onChoose(null);
-      this.close();
+    create.addEventListener("click", () => this.choose(null));
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+    if (!this.decided) {
+      this.decided = true;
+      this.options.onCancel?.();
+    }
+  }
+
+  private choose(patientId: string | null): void {
+    if (this.decided) return;
+    this.decided = true;
+    this.onChoose(patientId);
+    this.close();
+  }
+}
+
+/**
+ * Shown when the MRN entered for a new episode is already recorded for a
+ * patient under a different name, which is what a mistyped MRN looks like.
+ * The stored identity is shown here, in the modal, and never in a Notice.
+ * Closing without a choice goes back to the still-filled form.
+ */
+export class MrnOwnerConflictModal extends ClinicalResponsiveModal {
+  private decided = false;
+
+  constructor(
+    app: App,
+    private readonly stored: PatientRecord,
+    private readonly typedName: string,
+    private readonly onDecide: (useStoredPatient: boolean) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("clinical-modal");
+    this.contentEl.empty();
+    const { stored } = this;
+    const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
+    body.createEl("h2", { text: "Check the MRN", cls: "clinical-modal-heading" });
+    body.createEl("p", {
+      text: `MRN ${displayMrn(stored.mrn)} is already recorded for ${bidiIsolate(stored.patient_name)}, but the form names ${bidiIsolate(this.typedName.trim())}. A one-digit slip in the MRN would file this episode in someone else's record.`,
+      cls: "clinical-section-note"
     });
+    const card = body.createDiv({ cls: "clinical-card" });
+    card.createEl("h4", { text: stored.patient_name || "Name not recorded", attr: { dir: "auto" } });
+    card.createEl("p", { text: `MRN ${displayMrn(stored.mrn)}`, cls: "clinical-card-meta" });
+    card.createEl("p", { text: `Phone ${displayPhone(stored.phone)}`, cls: "clinical-card-meta" });
+    body.createEl("p", {
+      text: "If this is the same person, use this patient: the episode is added to their record and the stored name is kept. A wrong name can be corrected later from the patient's record.",
+      cls: "clinical-section-note"
+    });
+    const footer = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
+    const back = footer.createEl("button", { text: "Go back and check the MRN", cls: "mod-cta" });
+    back.addEventListener("click", () => this.finish(false));
+    const use = footer.createEl("button", {
+      text: "Use this patient",
+      attr: { "aria-label": `Use this patient — ${patientIdentityLabel(stored.mrn, stored.patient_name)}` }
+    });
+    use.addEventListener("click", () => this.finish(true));
+    // The safe answer takes focus, so Return or a hurried tap goes back.
+    queueMicrotask(() => back.focus());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+    if (!this.decided) {
+      this.decided = true;
+      this.onDecide(false);
+    }
+  }
+
+  private finish(useStoredPatient: boolean): void {
+    if (this.decided) return;
+    this.decided = true;
+    this.close();
+    this.onDecide(useStoredPatient);
   }
 }
 
@@ -1286,7 +1454,7 @@ export class UpdateEpisodeModal extends ClinicalModal<EpisodeUpdateInput> {
       });
     });
     namedSetting(form, "Next action")
-      .setDesc("A new task is added only when this changes.")
+      .setDesc("Changing the next action replaces the current task; changing only its date moves it.")
       .addText((field) => {
         field.setValue(this.input.nextAction).setPlaceholder("What must happen next?").onChange((value) => {
           this.input.nextAction = value;
@@ -1476,32 +1644,45 @@ export class MergePatientsModal extends ClinicalResponsiveModal {
   }
 }
 
-export class ArchiveEpisodeModal extends ClinicalModal<string> {
+export interface ArchiveEpisodeRequest {
+  outcome: string;
+  /** True only when open tasks were listed and the clinician ticked to cancel them. */
+  cancelOpenTasks: boolean;
+}
+
+export class ArchiveEpisodeModal extends ClinicalModal<ArchiveEpisodeRequest> {
   private outcome = "Discharged";
   private typedConfirmation = "";
+  /** Dropping open clinical work is an explicit choice, so this starts off. */
+  private cancelOpenTasks = false;
+  private blockHint: HTMLElement | null = null;
   private readonly episode: EpisodeRecord;
   private readonly requireConfirmation: boolean;
+  private readonly openTasks: readonly TaskRecord[];
 
   constructor(
     app: App,
     episode: EpisodeRecord,
-    onSubmit: AsyncSubmit<string>,
-    requireConfirmation = false
+    onSubmit: AsyncSubmit<ArchiveEpisodeRequest>,
+    requireConfirmation = false,
+    openTasks: readonly TaskRecord[] = []
   ) {
     super(app, "Archive episode", onSubmit);
     this.episode = episode;
     this.requireConfirmation = requireConfirmation;
+    this.openTasks = openTasks;
   }
 
   onOpen(): void {
     const form = this.prepare(
       "Discharge and archive",
-      "The record remains searchable and can be restored with its pathway and outcome intact. Open tasks must be completed or cancelled first."
+      "The record remains searchable and can be restored with its pathway and outcome intact."
     );
     form.createEl("h3", { text: this.episode.case, attr: { dir: "auto" } });
     namedSetting(form, "Outcome / reason").addText((field) => {
       field.setValue(this.outcome).onChange((value) => (this.outcome = value));
     });
+    if (this.openTasks.length) this.renderOpenTasks(form);
     if (this.requireConfirmation) {
       namedSetting(form, "Type DISCHARGE to confirm")
         .setDesc("Confirmation is enabled in Clinical Workspace settings.")
@@ -1510,13 +1691,68 @@ export class ArchiveEpisodeModal extends ClinicalModal<string> {
         });
     }
     this.addActions(this.contentEl);
+    const hintId = this.blockHint?.getAttribute("id");
+    if (hintId) this.describeSubmit(hintId);
   }
 
-  protected value(): string {
+  /**
+   * Discharge used to reveal open work only as an error after submit, and
+   * clearing it meant cancelling each task from another tab. The work is
+   * listed here, and one explicit tick cancels it as part of the discharge.
+   */
+  private renderOpenTasks(form: HTMLElement): void {
+    const count = this.openTasks.length;
+    const section = form.createDiv({ cls: "clinical-discharge-tasks" });
+    section.createEl("h4", {
+      text: `${count} open task${count === 1 ? "" : "s"} on this episode`
+    });
+    const list = section.createEl("ul", { cls: "clinical-discharge-task-list" });
+    for (const task of this.openTasks) {
+      list.createEl("li", {
+        text: `${bidiIsolate(task.task || "Task not recorded")} — ${task.due_date ? `due ${task.due_date}` : "no date"}`
+      });
+    }
+    const label = section.createEl("label", { cls: "clinical-confirm-check" });
+    const checkbox = label.createEl("input", { attr: { type: "checkbox" } });
+    checkbox.checked = this.cancelOpenTasks;
+    label.createSpan({
+      text: count === 1
+        ? "Cancel this open task (reason: Closed at discharge)"
+        : `Cancel these ${count} open tasks (reason: Closed at discharge)`
+    });
+    this.blockHint = section.createEl("p", {
+      cls: "clinical-section-note",
+      attr: { id: `clinical-discharge-hint-${++fieldHintSequence}`, "aria-live": "polite" }
+    });
+    checkbox.addEventListener("change", () => {
+      this.cancelOpenTasks = checkbox.checked;
+      this.syncBlockHint();
+      this.syncSubmitState();
+    });
+    this.syncBlockHint();
+  }
+
+  private syncBlockHint(): void {
+    const one = this.openTasks.length === 1;
+    this.blockHint?.setText(
+      this.cancelOpenTasks
+        ? `${one ? "The task is" : "Each task is"} cancelled with its own audit entry and stays in the record.`
+        : `Archive stays unavailable while ${one ? "this task is" : "these tasks are"} open. Select the option above to cancel ${one ? "it" : "them"} at discharge, or complete ${one ? "it" : "them"} first.`
+    );
+  }
+
+  protected canSubmit(): boolean {
+    return !this.openTasks.length || this.cancelOpenTasks;
+  }
+
+  protected value(): ArchiveEpisodeRequest {
     if (this.requireConfirmation && this.typedConfirmation.trim().toUpperCase() !== "DISCHARGE") {
       throw new Error("Type DISCHARGE to confirm, or turn the confirmation off in settings.");
     }
-    return this.outcome;
+    return {
+      outcome: this.outcome,
+      cancelOpenTasks: this.openTasks.length > 0 && this.cancelOpenTasks
+    };
   }
 }
 
@@ -1551,14 +1787,21 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
   private input: CompleteProcedureInput;
   private readonly episode: EpisodeRecord;
   private readonly patientLabel: string;
+  private readonly additional: boolean;
 
   constructor(
     app: App,
     episode: EpisodeRecord,
     patientLabel: string,
-    onSubmit: AsyncSubmit<CompleteProcedureInput>
+    onSubmit: AsyncSubmit<CompleteProcedureInput>,
+    /**
+     * `additional`: the episode already has a logged procedure and has moved
+     * on from OR booking; this logs another without changing its workflow.
+     */
+    options: { additional?: boolean } = {}
   ) {
-    super(app, "Complete surgery", onSubmit);
+    super(app, options.additional ? "Log procedure" : "Complete surgery", onSubmit);
+    this.additional = options.additional === true;
     this.episode = episode;
     this.patientLabel = patientLabel;
     this.input = {
@@ -1577,7 +1820,16 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
   }
 
   onOpen(): void {
-    const form = this.prepare("Complete surgery", `${this.patientLabel} · ${bidiIsolate(this.episode.case)}`);
+    const form = this.prepare(
+      this.additional ? "Add another procedure" : "Complete surgery",
+      `${this.patientLabel} · ${bidiIsolate(this.episode.case)}`
+    );
+    if (this.additional) {
+      form.createEl("p", {
+        text: "This episode already has a logged procedure. This adds another logbook entry; the episode's pathway, status and next action stay as they are, and a follow-up task is added only if you ask for one.",
+        cls: "clinical-section-note"
+      });
+    }
     namedSetting(form, "Surgery / procedure")
       .setDesc("The operation performed, which may differ from the booked case.")
       .addText((field) => {

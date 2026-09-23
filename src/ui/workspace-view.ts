@@ -19,6 +19,7 @@ import {
   episodeNeedsReview,
   isoDateWithOffset,
   normalizeComparable,
+  normalizeMrn,
   normalizeText,
   pathwayLabel,
   priorityLabel,
@@ -45,7 +46,13 @@ import type { ClinicalSettings } from "../domain/settings";
 import { DEFAULT_SETTINGS } from "../domain/settings";
 import { ClinicalRepository } from "../data/repository";
 import type { QuickEntryAction } from "../quick-entry";
-import { ClinicalService, PossibleDuplicatePatientError } from "../services/clinical-service";
+import {
+  ClinicalService,
+  MrnIdentityConflictError,
+  PossibleDuplicatePatientError,
+  type CreateEpisodeResult,
+  type ReopenTaskResult
+} from "../services/clinical-service";
 import { IntegrityService } from "../services/integrity";
 import { seedSyntheticFixtures } from "../services/synthetic-fixtures";
 import {
@@ -53,10 +60,12 @@ import {
   ArchiveEpisodeModal,
   CancelTaskModal,
   ClinicalSearchModal,
+  ClinicalSubmitCancelled,
   DuplicatePatientModal,
   EpisodeHistoryModal,
   IntegrityReportModal,
   MergePatientsModal,
+  MrnOwnerConflictModal,
   NewEpisodeModal,
   NewTaskModal,
   PatientDetailModal,
@@ -283,10 +292,42 @@ export function pageWindow<T>(items: readonly T[], requestedPage: number): PageW
   };
 }
 
+/** How long the "Task completed" notice keeps its Undo button. */
+export const UNDO_COMPLETE_NOTICE_MS = 9000;
+
+/**
+ * What Add patient reports. Identifier-free: a reused chart is described by
+ * how it was matched, never by whose it is.
+ */
+function newEpisodeNotice(result: CreateEpisodeResult, input: NewEpisodeInput): string {
+  if (result.duplicateEpisode) return "This active case already exists; the existing episode was kept.";
+  if (input.existingPatientId) {
+    return normalizeMrn(input.mrn)
+      ? "Episode added to the chosen patient record, and the MRN was recorded on it."
+      : "Episode added to the chosen patient record.";
+  }
+  if (result.reusedPatient) {
+    return input.confirmMrnOwner
+      ? "Episode added to the existing patient record for this MRN; the stored name was kept."
+      : "Episode added to an existing patient record (matched by MRN).";
+  }
+  return "Patient episode created.";
+}
+
+/** Identifier-free; says what happened to a recurring task's next occurrence. */
+function reopenedTaskNotice(result: Pick<ReopenTaskResult, "nextOccurrence">): string {
+  if (result.nextOccurrence === "cancelled") return "Task reopened. Its next occurrence was withdrawn.";
+  if (result.nextOccurrence === "kept") {
+    return "Task reopened. Its next occurrence was changed, so it was left open.";
+  }
+  return "Task reopened.";
+}
+
 /**
  * Task/procedure shortcuts can target only a visible, active patient Episode.
  * The returned choices are labels for an explicit picker, never an automatic
- * attachment decision.
+ * attachment decision. A procedure goes on an OR booking, or on an episode
+ * that has moved on after a logged procedure, as another procedure.
  */
 export function quickEntryEpisodeChoices(
   snapshot: ClinicalSnapshot,
@@ -303,11 +344,16 @@ export function quickEntryEpisodeChoices(
       )
       .map((patient) => [patient.id, patient] as const)
   );
+  const withProcedure = new Set(
+    snapshot.procedures
+      .filter((procedure) => procedure.status === "completed")
+      .map((procedure) => procedure.episode_id)
+  );
   return snapshot.episodes
     .filter(
       (episode) =>
         !["archived", "cancelled", "entered-in-error"].includes(episode.status) &&
-        (purpose !== "procedure" || episode.pathway === "or-booking")
+        (purpose !== "procedure" || episode.pathway === "or-booking" || withProcedure.has(episode.id))
     )
     .flatMap((episode) => {
       const patient = patients.get(episode.patient_id);
@@ -316,7 +362,10 @@ export function quickEntryEpisodeChoices(
         episode,
         patientLabel: patientIdentityLabel(patient.mrn, patient.patient_name),
         isCurrent: episode.id === currentEpisodeId,
-        patientMrn: patient.mrn
+        patientMrn: patient.mrn,
+        ...(purpose === "procedure" && episode.pathway !== "or-booking"
+          ? { additionalProcedure: true }
+          : {})
       }];
     })
     .sort((a, b) => {
@@ -454,38 +503,56 @@ export class ClinicalWorkspaceView extends ItemView {
       priority: settings.defaultPriority,
       ...seed
     };
-    new NewEpisodeModal(
-      this.app,
-      async (input) => {
-        try {
-          const result = await this.service.createEpisode(input);
-          new Notice(
-            result.duplicateEpisode
-              ? "This active case already exists; the existing episode was kept."
-              : "Patient episode created."
-          );
-          this.activeTab = "patients";
-          await this.refresh();
-        } catch (error) {
-          if (error instanceof PossibleDuplicatePatientError) {
-            // Close the form, ask which patient this is, then resubmit.
-            new DuplicatePatientModal(this.app, error.candidates, (patientId) => {
-              void this.runAction(async () => {
-                const resolved: NewEpisodeInput = patientId
-                  ? { ...input, existingPatientId: patientId }
-                  : { ...input, forceNewPatient: true };
-                await this.service.createEpisode(resolved);
-                new Notice("Patient episode created.");
-                this.activeTab = "patients";
-              });
-            }).open();
-            return;
-          }
-          throw error;
+    new NewEpisodeModal(this.app, (input) => this.submitNewEpisode(input), defaults).open();
+  }
+
+  /**
+   * Files the Add patient form. A question about who the patient is gets
+   * asked while the form stays open, and backing out of it returns to the
+   * form with everything still typed. Each resubmission carries only the
+   * answer the user gave; the form's own values are never changed.
+   */
+  private async submitNewEpisode(input: NewEpisodeInput): Promise<void> {
+    let result: CreateEpisodeResult;
+    try {
+      result = await this.service.createEpisode(input);
+    } catch (error) {
+      if (error instanceof PossibleDuplicatePatientError) {
+        const patientId = await this.askWhichPatient(error.candidates, input.mrn);
+        if (patientId === undefined) throw new ClinicalSubmitCancelled();
+        return this.submitNewEpisode(
+          patientId ? { ...input, existingPatientId: patientId } : { ...input, forceNewPatient: true }
+        );
+      }
+      if (error instanceof MrnIdentityConflictError) {
+        const useStoredPatient = await this.askMrnOwner(error.patient, input.patientName);
+        if (!useStoredPatient) {
+          throw new ClinicalSubmitCancelled("Nothing was saved. Check the MRN, then submit again.", "MRN");
         }
-      },
-      defaults
-    ).open();
+        return this.submitNewEpisode({ ...input, confirmMrnOwner: true });
+      }
+      throw error;
+    }
+    new Notice(newEpisodeNotice(result, input));
+    this.activeTab = "patients";
+    await this.refresh();
+  }
+
+  /** Resolves to the chosen patient's id, null for a separate patient, or undefined on cancel. */
+  private askWhichPatient(candidates: PatientRecord[], enteredMrn: string): Promise<string | null | undefined> {
+    return new Promise((resolve) => {
+      new DuplicatePatientModal(this.app, candidates, resolve, {
+        enteredMrn: normalizeMrn(enteredMrn),
+        onCancel: () => resolve(undefined)
+      }).open();
+    });
+  }
+
+  /** Resolves true only when the user confirms the MRN's stored owner is this patient. */
+  private askMrnOwner(stored: PatientRecord, typedName: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      new MrnOwnerConflictModal(this.app, stored, typedName, resolve).open();
+    });
   }
 
   openQuickEntry(activeEpisodePath = ""): void {
@@ -535,18 +602,19 @@ export class ClinicalWorkspaceView extends ItemView {
       const choices = await this.quickEntryChoices(activeEpisodePath, "procedure");
       if (!choices.length) {
         new Notice(
-          "No active operating-room booking episode is available. Move an episode to the operating-room booking pathway first."
+          "No active operating-room booking episode, or episode with a logged procedure, is available. Move an episode to the operating-room booking pathway first."
         );
         return;
       }
       new QuickEntryEpisodeModal(this.app, "a procedure", choices, (choice) => {
         if (!this.canOpenWriteForm()) return;
+        const additional = choice.additionalProcedure === true;
         new ProcedureModal(this.app, choice.episode, choice.patientLabel, async (input) => {
           await this.service.completeProcedure(input);
-          new Notice("Procedure logged and workflow updated.");
+          new Notice(additional ? "Procedure added to the logbook." : "Procedure logged and workflow updated.");
           this.activeTab = "surgery";
           await this.refresh();
-        }).open();
+        }, { additional }).open();
       }).open();
     } catch (error) {
       showClinicalNotice(
@@ -585,9 +653,10 @@ export class ClinicalWorkspaceView extends ItemView {
     activeEpisodePath: string,
     purpose: "task" | "procedure"
   ): Promise<QuickEntryEpisodeChoice[]> {
-    const [patients, episodes] = await Promise.all([
+    const [patients, episodes, procedures] = await Promise.all([
       this.repository.list<PatientRecord>("patient"),
-      this.repository.list<EpisodeRecord>("episode")
+      this.repository.list<EpisodeRecord>("episode"),
+      purpose === "procedure" ? this.repository.list<ProcedureRecord>("procedure") : Promise.resolve([])
     ]);
     const currentEpisodeId = episodes.find(
       (item) => item.path === activeEpisodePath
@@ -597,7 +666,7 @@ export class ClinicalWorkspaceView extends ItemView {
         patients: patients.map((item) => item.record),
         episodes: episodes.map((item) => item.record),
         tasks: [],
-        procedures: []
+        procedures: procedures.map((item) => item.record)
       },
       currentEpisodeId,
       purpose
@@ -1235,8 +1304,19 @@ export class ClinicalWorkspaceView extends ItemView {
     this.sectionHeader(container, "Surgery logbook", `${procedures.length} completed`, "surgery-logbook");
     const procedureList = container.createDiv({ cls: "clinical-list" });
     if (!procedures.length) this.empty(procedureList, "No completed procedures yet.");
+    // A second procedure from the same operation, or a return to theatre, is
+    // logged from the episode's newest entry, once per episode.
+    const newestPerEpisode = new Set<string>();
+    const episodesSeen = new Set<string>();
+    for (const procedure of procedures) {
+      if (episodesSeen.has(procedure.episode_id)) continue;
+      episodesSeen.add(procedure.episode_id);
+      newestPerEpisode.add(procedure.id);
+    }
     const procedurePage = this.pageFor("surgery-logbook", procedures);
-    for (const procedure of procedurePage.items) this.renderProcedureCard(procedureList, procedure, snapshot);
+    for (const procedure of procedurePage.items) {
+      this.renderProcedureCard(procedureList, procedure, snapshot, newestPerEpisode.has(procedure.id));
+    }
     this.renderPagination(container, "surgery-logbook", procedurePage);
 
     // The counts a training portfolio asks for: per procedure, how many and
@@ -1407,11 +1487,7 @@ export class ClinicalWorkspaceView extends ItemView {
           events: events.map((item) => item.record).filter((event) => event.patient_id === patient.id)
         },
         (entity, id) => this.openRecord(entity, id),
-        (taskId) =>
-          void this.runAction(async () => {
-            await this.service.reopenTask(taskId);
-            new Notice("Task reopened.");
-          }),
+        (taskId) => void this.reopenTask(taskId),
         // The sheet closes first and the view's own actions run, so nothing
         // acts on the sheet's snapshot after the record has changed.
         {
@@ -1611,10 +1687,19 @@ export class ClinicalWorkspaceView extends ItemView {
             message = outcome.superseded
               ? `Task added: ${outcome.task.record.task}. ${outcome.superseded} superseded task${outcome.superseded === 1 ? "" : "s"} cancelled.`
               : `Task added: ${outcome.task.record.task}`;
+          } else if (outcome.kind === "rescheduled") {
+            // Only the date changed, so the task moved and kept its type,
+            // owner and repeat.
+            message = outcome.task.record.due_date
+              ? `Task moved to ${outcome.task.record.due_date}.`
+              : "Task moved.";
           } else if (outcome.kind === "already-closed") {
             message = `No task added: “${outcome.task.record.task}” was already ${outcome.task.record.status}. Use + Task to raise it again.`;
           }
-          new Notice(message, outcome.kind === "already-closed" ? 9000 : 4000);
+          if (result.tasksEscalated) {
+            message = `${message.replace(/\.?$/, ".")} ${result.tasksEscalated} open task${result.tasksEscalated === 1 ? "" : "s"} raised to ${priorityLabel(result.episode.record.priority)}.`;
+          }
+          new Notice(message, outcome.kind === "already-closed" || result.tasksEscalated ? 9000 : 4000);
           await this.refresh();
         }).open();
       }, false, false, context);
@@ -1625,15 +1710,26 @@ export class ClinicalWorkspaceView extends ItemView {
         "Discharge",
         () => {
           if (!this.canOpenWriteForm()) return;
+          const openTasks = this.openTasksFor(snapshot, episode.id);
           new ArchiveEpisodeModal(
             this.app,
             episode,
-            async (outcome) => {
-              await this.service.archiveEpisode(episode.id, outcome);
-              new Notice("Patient episode archived.");
+            async (request) => {
+              // The tick covered the tasks listed; work that arrived since
+              // (another device, Sync) must be seen before it is cancelled.
+              if (request.cancelOpenTasks) await this.assertOpenTasksUnchanged(episode.id, openTasks);
+              const result = await this.service.archiveEpisode(episode.id, request.outcome, {
+                cancelOpenTasks: request.cancelOpenTasks
+              });
+              new Notice(
+                result.cancelledTasks
+                  ? `Patient episode archived. ${result.cancelledTasks} open task${result.cancelledTasks === 1 ? " was" : "s were"} cancelled.`
+                  : "Patient episode archived."
+              );
               await this.refresh();
             },
-            this.getSettings().confirmBeforeDischarge
+            this.getSettings().confirmBeforeDischarge,
+            openTasks
           ).open();
         },
         false,
@@ -1642,6 +1738,26 @@ export class ClinicalWorkspaceView extends ItemView {
       );
     }
     this.renderPagination(container, pageKey, page);
+  }
+
+  /** An episode's open tasks, soonest first and undated last, as Discharge lists them. */
+  private openTasksFor(snapshot: ClinicalSnapshot, episodeId: string): TaskRecord[] {
+    return snapshot.tasks
+      .filter((task) => task.episode_id === episodeId && taskIsOpen(task))
+      .sort((a, b) => this.taskSortKey(a).localeCompare(this.taskSortKey(b)));
+  }
+
+  /** Refuses when the episode now has open work the discharge form did not list. */
+  private async assertOpenTasksUnchanged(episodeId: string, listed: readonly TaskRecord[]): Promise<void> {
+    const shown = new Set(listed.map((task) => task.id));
+    const unseen = (await this.repository.list<TaskRecord>("task")).some(
+      ({ record }) => record.episode_id === episodeId && taskIsOpen(record) && !shown.has(record.id)
+    );
+    if (unseen) {
+      throw new Error(
+        "This episode has open work that was added after this form opened. Nothing was cancelled. Close this form, then open Discharge again to review it."
+      );
+    }
   }
 
   /** Explicit, previewed application of a user-authored task bundle. */
@@ -1771,8 +1887,43 @@ export class ClinicalWorkspaceView extends ItemView {
 
   private completeTask(task: TaskRecord): Promise<void> {
     return this.runAction(async () => {
-      await this.service.completeTask(task.id);
-      new Notice("Task completed.");
+      const completed = await this.service.completeTask(task.id);
+      if (completed.record.status === "completed") this.showCompletedNotice(task.id);
+      else new Notice("This task was already closed.");
+    });
+  }
+
+  /**
+   * Complete writes on one tap, and the next card then slides under the
+   * finger, so the notice offers Undo for a few seconds. It holds only the
+   * task id: Undo works from any tab, and after the view has redrawn. The
+   * text stays identifier-free.
+   */
+  private showCompletedNotice(taskId: string): void {
+    let notice: Notice | null = null;
+    const message = createFragment((fragment) => {
+      const row = fragment.createDiv({ cls: "clinical-undo-notice" });
+      row.createSpan({ text: "Task completed." });
+      const undo = row.createEl("button", {
+        text: "Undo",
+        cls: "clinical-undo-notice-action",
+        attr: { type: "button", "aria-label": "Undo task completion" }
+      });
+      undo.addEventListener("click", () => {
+        if (undo.disabled) return;
+        undo.disabled = true;
+        notice?.hide();
+        void this.reopenTask(taskId);
+      });
+    });
+    notice = new Notice(message, UNDO_COMPLETE_NOTICE_MS);
+  }
+
+  /** Reopen errors, including a closed write barrier, surface as a clinical notice. */
+  private reopenTask(taskId: string): Promise<void> {
+    return this.runAction(async () => {
+      const reopened = await this.service.reopenTask(taskId);
+      new Notice(reopenedTaskNotice(reopened));
     });
   }
 
@@ -1803,13 +1954,21 @@ export class ClinicalWorkspaceView extends ItemView {
     this.badge(badges, careSettingLabel(episode.care_setting), episode.care_setting);
     this.badge(badges, pathwayLabel(episode.pathway), "pathway");
     this.badge(badges, priorityLabel(episode.priority), episode.priority);
+    // What stands between this episode and Discharge, before Discharge is opened.
+    const openTasks = this.renderOpenTaskCount.get(episode.id) ?? 0;
+    if (openTasks) this.badge(badges, `${openTasks} open task${openTasks === 1 ? "" : "s"}`, "open-tasks");
     if (episodeNeedsReview(episode) || !patient?.mrn || !patient.patient_name) {
       this.badge(badges, "Needs review", "overdue");
     }
     return card;
   }
 
-  private renderProcedureCard(container: HTMLElement, procedure: ProcedureRecord, snapshot: ClinicalSnapshot): void {
+  private renderProcedureCard(
+    container: HTMLElement,
+    procedure: ProcedureRecord,
+    snapshot: ClinicalSnapshot,
+    newestForEpisode = false
+  ): void {
     const patient = this.patientFor(snapshot, procedure.patient_id);
     const card = container.createDiv({ cls: "clinical-card" });
     const top = card.createDiv({ cls: "clinical-card-top" });
@@ -1829,6 +1988,36 @@ export class ClinicalWorkspaceView extends ItemView {
       false,
       `${procedure.procedure ? bidiIsolate(procedure.procedure) : "procedure not recorded"}, ${this.patientLabel(patient)}`
     );
+    // An episode still on OR booking logs its procedures from the booking
+    // card; one that has moved on takes another here without changing its
+    // workflow.
+    const episode = this.renderEpisodeById.get(procedure.episode_id);
+    if (
+      newestForEpisode &&
+      episode &&
+      patient &&
+      this.isActiveEpisode(episode) &&
+      episode.pathway !== "or-booking" &&
+      patient.status === "active" &&
+      !patient.merged_into &&
+      !patient.merge_in_progress
+    ) {
+      this.actionButton(
+        actions,
+        "Add another procedure",
+        () => {
+          if (!this.canOpenWriteForm()) return;
+          new ProcedureModal(this.app, episode, this.patientLabel(patient), async (input) => {
+            await this.service.completeProcedure(input);
+            new Notice("Procedure added to the logbook.");
+            await this.refresh();
+          }, { additional: true }).open();
+        },
+        false,
+        false,
+        this.episodeContext(episode, patient)
+      );
+    }
   }
 
   private async showIntegrity(): Promise<void> {
@@ -1906,10 +2095,16 @@ export class ClinicalWorkspaceView extends ItemView {
    */
   private renderPatientById = new Map<string, PatientRecord>();
   private renderEpisodeById = new Map<string, EpisodeRecord>();
+  private renderOpenTaskCount = new Map<string, number>();
 
   private indexSnapshot(snapshot: ClinicalSnapshot): void {
     this.renderPatientById = new Map(snapshot.patients.map((patient) => [patient.id, patient]));
     this.renderEpisodeById = new Map(snapshot.episodes.map((episode) => [episode.id, episode]));
+    this.renderOpenTaskCount = new Map();
+    for (const task of snapshot.tasks) {
+      if (!taskIsOpen(task)) continue;
+      this.renderOpenTaskCount.set(task.episode_id, (this.renderOpenTaskCount.get(task.episode_id) ?? 0) + 1);
+    }
   }
 
   private patientFor(_snapshot: ClinicalSnapshot, patientId: string): PatientRecord | undefined {

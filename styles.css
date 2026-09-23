@@ -700,6 +700,64 @@
   font-size: var(--font-ui-small);
 }
 
+/* Backing out of a follow-up question is not a failure: a neutral note, not
+   the red alert. */
+.clinical-modal-note {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+}
+
+/* Discharge lists the open work it would close, with one explicit opt-in. */
+.clinical-discharge-tasks {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+}
+
+.clinical-discharge-tasks h4 {
+  margin: 0 0 6px;
+}
+
+.clinical-discharge-task-list {
+  margin: 0 0 8px;
+  padding-inline-start: 18px;
+  font-size: var(--font-ui-small);
+  overflow-wrap: anywhere;
+}
+
+.clinical-confirm-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.clinical-confirm-check input[type="checkbox"] {
+  flex: 0 0 auto;
+  inline-size: 20px;
+  block-size: 20px;
+  margin: 0;
+}
+
+/* The Undo in the "Task completed" notice is a full-size touch target. */
+.clinical-undo-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.clinical-undo-notice-action {
+  min-height: 44px;
+  padding: 4px 16px;
+}
+
 .clinical-quick-entry-grid,
 .clinical-quick-entry-results {
   display: grid;
