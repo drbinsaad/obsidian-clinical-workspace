@@ -396,12 +396,20 @@ test("mobile card actions use two touch-safe columns instead of a full-width sta
     "card controls need their own touch target; tab declarations must not satisfy this assertion"
   );
 
-  for (const selector of [
-    ".clinical-workspace-view.is-narrow .clinical-card-button.mod-cta",
-    ".clinical-workspace-view.is-narrow .clinical-card-button.is-danger"
-  ]) {
-    assert.equal(styleFor(rules, selector).get("grid-column"), "1 / -1");
-  }
+  assert.equal(
+    styleFor(rules, ".clinical-workspace-view.is-narrow .clinical-card-button.mod-cta").get("grid-column"),
+    "1 / -1"
+  );
+  // Danger actions pair with a neighbour instead of taking a row of their
+  // own, which left half-empty rows; a red border keeps them distinct.
+  assert.equal(
+    styleFor(rules, ".clinical-workspace-view.is-narrow .clinical-card-button.is-danger").has("grid-column"),
+    false
+  );
+  assert.match(
+    required(styleFor(rules, ".clinical-card-button.is-danger"), "border-color"),
+    /--text-error/
+  );
 });
 
 test("filter and date chips meet the mobile touch-target floor", async () => {

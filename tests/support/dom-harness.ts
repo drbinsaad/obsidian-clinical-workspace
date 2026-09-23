@@ -33,6 +33,29 @@ export class TestElement {
     return [...this.classes].join(" ");
   }
 
+  get parentElement(): TestElement | null {
+    return this.parent;
+  }
+
+  get previousElementSibling(): TestElement | null {
+    const siblings = this.parent?.children ?? [];
+    return siblings[siblings.indexOf(this) - 1] ?? null;
+  }
+
+  contains(other: TestElement | null): boolean {
+    for (let node = other; node; node = node.parent) {
+      if (node === this) return true;
+    }
+    return false;
+  }
+
+  closest(selector: string): TestElement | null {
+    for (let node: TestElement | null = this; node; node = node.parent) {
+      if (matches(node, selector)) return node;
+    }
+    return null;
+  }
+
   get textContent(): string {
     return [this.text, ...this.children.map((child) => child.textContent)].join("");
   }
@@ -197,6 +220,10 @@ export function installTestDomGlobals(): void {
 }
 
 function matches(element: TestElement, selector: string): boolean {
+  // Selector lists ("input, select, textarea") match when any member does.
+  // Commas inside an attribute value such as [aria-label="a, b"] are data.
+  const alternatives = selector.split(/,(?![^[]*\])/);
+  if (alternatives.length > 1) return alternatives.some((alternative) => matches(element, alternative));
   const trimmed = selector.trim();
   const attribute = /^\[([\w-]+)(?:=["']([^"']*)["'])?\]$/.exec(trimmed);
   if (attribute) {
