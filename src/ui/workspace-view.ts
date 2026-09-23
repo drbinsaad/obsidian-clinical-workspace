@@ -1204,6 +1204,7 @@ export class ClinicalWorkspaceView extends ItemView {
    * example the chips currently active on the Patients tab.
    */
   async openPatientListExport(seed?: Partial<PatientListFilter>): Promise<void> {
+    if (!this.canOpenWriteForm()) return;
     try {
       const snapshot = await this.repository.snapshot();
       const today = todayIso();

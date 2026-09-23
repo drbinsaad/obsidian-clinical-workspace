@@ -387,3 +387,21 @@ test("the More tab explains and offers patient-list export", () => {
     "the More tab has a direct export action"
   );
 });
+
+test("the export form is not offered while the repository cannot save", async () => {
+  let snapshotReads = 0;
+  const view = new ClinicalWorkspaceView(
+    {} as never,
+    {
+      getWriteBlockReason: () => "Synthetic recovery barrier",
+      snapshot: async () => {
+        snapshotReads += 1;
+        return mixedSnapshot();
+      }
+    } as unknown as ClinicalRepository,
+    {} as ClinicalService,
+    {} as IntegrityService
+  );
+  await view.openPatientListExport();
+  assert.equal(snapshotReads, 0, "a blocked export must not read records or open the form");
+});
