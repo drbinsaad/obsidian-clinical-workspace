@@ -1,4 +1,5 @@
 import type {
+  ArchiveEpisodeOptions,
   CompleteProcedureInput,
   EpisodeRecord,
   EpisodeUpdateInput,
@@ -7,13 +8,15 @@ import type {
   NewTaskInput,
   PatientIdentityInput,
   PatientRecord,
+  Priority,
   ProcedureRecord,
   RecordWithPath,
   TaskRecord
 } from "../domain/types";
-import { CARE_SETTINGS, PATHWAYS, PRIORITIES } from "../domain/types";
+import { CARE_SETTINGS, PATHWAYS, PRIORITIES, TASK_TYPES } from "../domain/types";
 import {
   createId,
+  formatLocalDateTime,
   isIsoDate,
   isoDateWithOffset,
   mrnMatchKey,
@@ -28,6 +31,7 @@ import {
   phoneStatus,
   procedureIdempotencyKey,
   SCHEMA_VERSION,
+  searchKey,
   taskIdempotencyKey,
   taskIsOpen,
   validateNewEpisodeInput,
@@ -39,8 +43,10 @@ import {
   canArchiveEpisode,
   canTransitionEpisode,
   canTransitionTask,
+  nextOccurrenceDate,
   pathwayAfterProcedure,
   pathwayAfterRestore,
+  priorityRank,
   statusAfterRestore,
   statusAfterTaskCompletion
 } from "../domain/transitions";
@@ -64,19 +70,57 @@ export type EpisodeTaskOutcome =
   | { kind: "no-action" }
   | { kind: "unchanged"; task: RecordWithPath<TaskRecord> }
   | { kind: "already-closed"; task: RecordWithPath<TaskRecord> }
-  | { kind: "created"; task: RecordWithPath<TaskRecord>; superseded: number };
+  | { kind: "created"; task: RecordWithPath<TaskRecord>; superseded: number }
+  /** Only the date changed, so the existing task was moved rather than replaced. */
+  | { kind: "rescheduled"; task: RecordWithPath<TaskRecord>; previousDueDate: string };
 
 export interface UpdateEpisodeResult {
   episode: RecordWithPath<EpisodeRecord>;
   task: EpisodeTaskOutcome;
+  /** Open tasks whose priority was raised to match an escalated episode. */
+  tasksEscalated: number;
 }
 
-/** Raised when an MRN-less patient looks like one that already exists. */
+export interface ReopenTaskResult extends RecordWithPath<TaskRecord> {
+  /**
+   * What happened to the next occurrence the completion of a recurring task
+   * raised: "cancelled" when it was withdrawn, "kept" when it was changed or
+   * started after it was raised and so was left open, "none" otherwise.
+   */
+  nextOccurrence: "cancelled" | "kept" | "none";
+}
+
+export interface ArchiveEpisodeResult extends RecordWithPath<EpisodeRecord> {
+  /** Open tasks cancelled by the discharge; always 0 without cancelOpenTasks. */
+  cancelledTasks: number;
+}
+
+/** Raised when a patient looks like one that already exists. */
 export class PossibleDuplicatePatientError extends Error {
   constructor(readonly candidates: PatientRecord[]) {
     super("A patient with this name already exists.");
     this.name = "PossibleDuplicatePatientError";
   }
+}
+
+/**
+ * Raised when the entered MRN belongs to a patient recorded under a different
+ * name. A one-digit slip lands on another person's chart, so the episode is
+ * not filed until the user confirms (`confirmMrnOwner`) or corrects the MRN.
+ * The message is identifier-free; the stored record is for a modal only.
+ */
+export class MrnIdentityConflictError extends Error {
+  constructor(readonly patient: PatientRecord) {
+    super("This MRN is already recorded for a patient with a different name.");
+    this.name = "MrnIdentityConflictError";
+  }
+}
+
+/** Both names are recorded and do not match even after spelling folding. */
+function namesConflict(typed: string, stored: string): boolean {
+  const typedKey = searchKey(typed);
+  const storedKey = searchKey(stored);
+  return Boolean(typedKey && storedKey && typedKey !== storedKey);
 }
 
 export class ClinicalService {
@@ -112,27 +156,45 @@ export class ClinicalService {
     // record being created does not exist yet, so path-keyed locking cannot
     // make the "find or create" pair atomic.
     const submittedMrnKey = mrnMatchKey(mrn);
-    const identityKey = submittedMrnKey || `name:${normalizeComparable(patientName)}`;
+    // The same folding key findPatientsByName matches on, so two submissions
+    // that would warn about each other are also serialised against each other.
+    const identityKey = submittedMrnKey || `name:${searchKey(patientName)}`;
     const resolved = await this.repository.withLock(`patient:${identityKey}`, async () => {
       if (input.existingPatientId) {
         const chosen = await this.repository.findById<PatientRecord>("patient", input.existingPatientId);
         if (!chosen) throw new Error("The selected patient was not found.");
-        return { patient: chosen, reused: true };
+        return { patient: chosen, reused: true, byMrn: false };
       }
 
       const existingPatient = mrn ? await this.repository.findPatientByMrn(mrn) : null;
       if (existingPatient) {
-        return { patient: existingPatient, reused: true };
+        // Reuse by MRN is the documented behaviour, but a typed name that
+        // plainly differs is the signature of a mistyped MRN. A blank on
+        // either side is the fill-in case. Phone numbers change too often
+        // to be evidence either way.
+        if (!input.confirmMrnOwner && namesConflict(patientName, existingPatient.record.patient_name)) {
+          throw new MrnIdentityConflictError(existingPatient.record);
+        }
+        return { patient: existingPatient, reused: true, byMrn: true };
       }
 
-      // Without an MRN there is no reliable key, so surface near-matches and let
-      // the caller decide rather than silently creating a second chart.
-      if (!mrn && !input.forceNewPatient) {
-        const candidates = await this.findPatientsByName(patientName);
+      // Without a matching MRN there is no reliable key, so surface same-name
+      // charts and let the caller decide rather than silently creating a
+      // second one. With an MRN, only charts that have none are candidates:
+      // the usual history is a name-only ED entry whose MRN arrives later,
+      // and a same-name chart holding a different MRN is a different person.
+      if (!input.forceNewPatient) {
+        const candidates = (await this.findPatientsByName(patientName)).filter(
+          (candidate) => !mrn || !mrnMatchKey(candidate.mrn)
+        );
         if (candidates.length) throw new PossibleDuplicatePatientError(candidates);
       }
 
-      return { patient: await this.createPatient(mrn, patientName, phone, timestamp), reused: false };
+      return {
+        patient: await this.createPatient(mrn, patientName, phone, timestamp),
+        reused: false,
+        byMrn: false
+      };
     });
 
     // Every operation that can create a patient-owned record follows one lock
@@ -149,11 +211,27 @@ export class ClinicalService {
       if (patient.record.merged_into || patient.record.merge_in_progress) {
         throw new Error("The patient context changed. Choose the active patient and retry.");
       }
-      if (submittedMrnKey && mrnMatchKey(patient.record.mrn) !== submittedMrnKey) {
+      // A chart picked from the duplicate prompt may have been added by name
+      // alone; it takes the entered MRN. One holding a different MRN may not.
+      const fillMrn = Boolean(
+        submittedMrnKey && input.existingPatientId && !mrnMatchKey(patient.record.mrn)
+      );
+      if (submittedMrnKey && !fillMrn && mrnMatchKey(patient.record.mrn) !== submittedMrnKey) {
         throw new Error("The patient identity changed. Retry the Episode selection.");
       }
+      // Re-checked on the re-read record: the name can have been corrected
+      // between the identity lock and this one.
+      if (
+        resolved.byMrn &&
+        !input.confirmMrnOwner &&
+        namesConflict(patientName, patient.record.patient_name)
+      ) {
+        throw new MrnIdentityConflictError(patient.record);
+      }
       if (resolved.reused) {
-        patient = await this.reconcilePatient(patient, patientName, phone);
+        patient = fillMrn
+          ? await this.fillPatientMrn(patient.record.id, mrn, patientName, phone)
+          : await this.reconcilePatient(patient, patientName, phone);
       }
       if (patient.record.status !== "active") {
         throw new Error("Episodes can only be created for an active patient.");
@@ -292,9 +370,13 @@ export class ClinicalService {
     });
   }
 
-  /** Active patients whose recorded name matches, used to warn before duplicating. */
+  /**
+   * Active patients whose recorded name matches, used to warn before
+   * duplicating. Matched on the spelling-folded key, so a variant spelling
+   * still warns; a folded match is only ever a prompt, never an automatic reuse.
+   */
   async findPatientsByName(patientName: string): Promise<PatientRecord[]> {
-    const name = normalizeComparable(patientName);
+    const name = searchKey(patientName);
     if (!name) return [];
     const patients = await this.repository.list<PatientRecord>("patient");
     return patients
@@ -302,7 +384,7 @@ export class ClinicalService {
         ({ record }) =>
           record.status !== "entered-in-error" &&
           !record.merged_into &&
-          normalizeComparable(record.patient_name) === name
+          searchKey(record.patient_name) === name
       )
       .map(({ record }) => record);
   }
@@ -368,6 +450,58 @@ export class ClinicalService {
       });
     }
     return updated;
+  }
+
+  /**
+   * Records the entered MRN on a chart first added without one, then
+   * reconciles it like any reused patient. Caller must hold the patient-merge
+   * lock; the identity and MRN locks follow in updatePatientIdentity's order,
+   * so two concurrent submissions cannot give two charts the same MRN.
+   */
+  private async fillPatientMrn(
+    patientId: string,
+    mrn: string,
+    patientName: string,
+    phone: string
+  ): Promise<RecordWithPath<PatientRecord>> {
+    return this.repository.withLock(`patient-identity:${patientId}`, () =>
+      this.repository.withLock(`patient:${mrnMatchKey(mrn)}`, async () => {
+        const latest = await this.repository.findById<PatientRecord>("patient", patientId);
+        if (
+          !latest ||
+          latest.record.status === "entered-in-error" ||
+          Boolean(latest.record.merged_into) ||
+          Boolean(latest.record.merge_in_progress)
+        ) {
+          throw new Error("The patient context changed. Choose the active patient and retry.");
+        }
+        // A retry, or another device, may already have recorded it.
+        if (mrnMatchKey(latest.record.mrn)) {
+          if (mrnMatchKey(latest.record.mrn) !== mrnMatchKey(mrn)) {
+            throw new Error("The patient identity changed. Retry the Episode selection.");
+          }
+          return this.reconcilePatient(latest, patientName, phone);
+        }
+        const clash = await this.repository.findPatientByMrn(mrn);
+        if (clash && clash.record.id !== patientId) {
+          throw new Error("Another patient already has this MRN. Merge the two records instead.");
+        }
+        const filled = await this.repository.update<PatientRecord>(latest.path, {
+          mrn,
+          mrn_status: mrnStatus(mrn)
+        });
+        await this.repository.createEvent({
+          action: "patient-identity-updated",
+          patientId,
+          targetId: patientId,
+          targetEntity: "patient",
+          summary: "MRN recorded for a patient first added without one",
+          previousState: "mrn missing",
+          newState: "mrn recorded"
+        });
+        return this.reconcilePatient(filled, patientName, phone);
+      })
+    );
   }
 
   async createTask(input: NewTaskInput): Promise<CreateTaskResult> {
@@ -456,10 +590,7 @@ export class ClinicalService {
     // This block also runs for a duplicate: an earlier attempt can have
     // created the task and then failed before this pointer was written, and
     // the retry is the only chance to repair it. The update is idempotent.
-    const outstanding = (await this.repository.list<TaskRecord>("task"))
-      .filter(({ record }) => record.episode_id === episode.record.id && taskIsOpen(record))
-      .sort((a, b) => String(a.record.due_date || "9999").localeCompare(String(b.record.due_date || "9999")));
-    const imminent = outstanding[0] ?? result.task;
+    const imminent = (await this.imminentOpenTask(episode.record.id)) ?? result.task;
     await this.repository.update<EpisodeRecord>(episode.path, {
       next_action: imminent.record.task,
       due_date: imminent.record.due_date,
@@ -476,6 +607,16 @@ export class ClinicalService {
       newState: result.task.record.status
     });
     return result;
+  }
+
+  /**
+   * The open task an episode's next action and due date mirror: soonest due
+   * first, undated last. One definition, so every writer agrees on it.
+   */
+  private async imminentOpenTask(episodeId: string): Promise<RecordWithPath<TaskRecord> | undefined> {
+    return (await this.repository.list<TaskRecord>("task"))
+      .filter(({ record }) => record.episode_id === episodeId && taskIsOpen(record))
+      .sort((a, b) => String(a.record.due_date || "9999").localeCompare(String(b.record.due_date || "9999")))[0];
   }
 
   async completeTask(taskId: string): Promise<RecordWithPath<TaskRecord>> {
@@ -501,16 +642,20 @@ export class ClinicalService {
     // A crash between the two writes leaves both visible; the retry then
     // converges through the duplicate check instead of losing the repeat.
     // Cancelling deliberately breaks the chain — only completion recurs.
+    // The next date keeps the series' cadence but is never in the past, so
+    // a late completion does not raise an occurrence that is already
+    // overdue. A retry on the same day computes the same date.
     const interval = task.record.repeat_every_days ?? 0;
     if (Number.isInteger(interval) && interval > 0 && interval <= 730) {
-      const seed = normalizeIsoDate(task.record.due_date) || todayIso();
+      const today = todayIso();
+      const seed = normalizeIsoDate(task.record.due_date) || today;
       const nextInput = {
         patientId: task.record.patient_id,
         episodeId: task.record.episode_id,
         task: task.record.task,
         taskType: task.record.task_type,
         priority: task.record.priority,
-        dueDate: isoDateWithOffset(interval, seed),
+        dueDate: nextOccurrenceDate(seed, interval, today),
         owner: task.record.owner,
         repeatEveryDays: interval
       };
@@ -552,15 +697,20 @@ export class ClinicalService {
     );
   }
 
-  /** Caller must hold patient, Episode, and task-state locks in that order. */
+  /**
+   * Caller must hold patient, Episode, and task-state locks in that order.
+   * `reconcile: false` is for a caller that closes several tasks and then
+   * reconciles the episode once itself.
+   */
   private async cancelTaskUnlocked(
     task: RecordWithPath<TaskRecord>,
-    reason: string
+    reason: string,
+    reconcile = true
   ): Promise<RecordWithPath<TaskRecord>> {
     if (!taskIsOpen(task.record)) {
       // Same partial-failure repair as completion: a closed task whose
       // episode still points at it is reconciled on retry.
-      await this.reconcileEpisodeAfterTaskChange(task.record.episode_id, task.record.id);
+      if (reconcile) await this.reconcileEpisodeAfterTaskChange(task.record.episode_id, task.record.id);
       return task;
     }
     if (!canTransitionTask(task.record.status, "cancelled")) {
@@ -572,7 +722,7 @@ export class ClinicalService {
       cancelled_at: nowIso(),
       cancel_reason: normalizeText(reason) || "Cancelled by user"
     });
-    await this.reconcileEpisodeAfterTaskChange(task.record.episode_id, task.record.id);
+    if (reconcile) await this.reconcileEpisodeAfterTaskChange(task.record.episode_id, task.record.id);
     await this.repository.createEvent({
       action: "task-cancelled",
       patientId: task.record.patient_id,
@@ -592,35 +742,41 @@ export class ClinicalService {
    * keep matching the fields it hashes. The episode pointer follows.
    */
   async rescheduleTask(taskId: string, dueDate: string): Promise<RecordWithPath<TaskRecord>> {
-    return this.withTaskTransitionLocks(taskId, async (task) => {
-      if (!taskIsOpen(task.record)) {
-        throw new Error(`A ${task.record.status} task cannot be rescheduled.`);
-      }
-      const normalized = normalizeIsoDate(dueDate);
-      if (!normalized) throw new Error("Due date is invalid.");
-      if (normalizeText(task.record.due_date) === normalized) return task;
-      const previousDueDate = task.record.due_date;
-      const updated = await this.repository.update<TaskRecord>(task.path, {
-        due_date: normalized,
-        idempotency_key: taskIdempotencyKey({
-          episodeId: task.record.episode_id,
-          task: task.record.task,
-          dueDate: normalized
-        })
-      });
-      await this.reconcileEpisodeAfterTaskChange(task.record.episode_id, "");
-      await this.repository.createEvent({
-        action: "task-rescheduled",
-        patientId: task.record.patient_id,
+    return this.withTaskTransitionLocks(taskId, (task) => this.rescheduleTaskUnlocked(task, dueDate));
+  }
+
+  /** Caller must hold patient, Episode, and task-state locks in that order. */
+  private async rescheduleTaskUnlocked(
+    task: RecordWithPath<TaskRecord>,
+    dueDate: string
+  ): Promise<RecordWithPath<TaskRecord>> {
+    if (!taskIsOpen(task.record)) {
+      throw new Error(`A ${task.record.status} task cannot be rescheduled.`);
+    }
+    const normalized = normalizeIsoDate(dueDate);
+    if (!normalized) throw new Error("Due date is invalid.");
+    if (normalizeText(task.record.due_date) === normalized) return task;
+    const previousDueDate = task.record.due_date;
+    const updated = await this.repository.update<TaskRecord>(task.path, {
+      due_date: normalized,
+      idempotency_key: taskIdempotencyKey({
         episodeId: task.record.episode_id,
-        targetId: task.record.id,
-        targetEntity: "task",
-        summary: "Task rescheduled",
-        previousState: previousDueDate || "no date",
-        newState: normalized
-      });
-      return updated;
+        task: task.record.task,
+        dueDate: normalized
+      })
     });
+    await this.reconcileEpisodeAfterTaskChange(task.record.episode_id, "");
+    await this.repository.createEvent({
+      action: "task-rescheduled",
+      patientId: task.record.patient_id,
+      episodeId: task.record.episode_id,
+      targetId: task.record.id,
+      targetEntity: "task",
+      summary: "Task rescheduled",
+      previousState: previousDueDate || "no date",
+      newState: normalized
+    });
+    return updated;
   }
 
   /**
@@ -628,9 +784,9 @@ export class ClinicalService {
    * without this the only correction was raising a duplicate. The reopen is
    * audited, so the trail shows both the closure and the correction.
    */
-  async reopenTask(taskId: string): Promise<RecordWithPath<TaskRecord>> {
+  async reopenTask(taskId: string): Promise<ReopenTaskResult> {
     return this.withTaskTransitionLocks(taskId, async (task) => {
-      if (taskIsOpen(task.record)) return task;
+      if (taskIsOpen(task.record)) return { ...task, nextOccurrence: "none" };
       if (!canTransitionTask(task.record.status, "open")) {
         throw new Error(`A ${task.record.status} task cannot be reopened.`);
       }
@@ -641,6 +797,10 @@ export class ClinicalService {
       if (!episode || ["archived", "cancelled", "entered-in-error"].includes(episode.record.status)) {
         throw new Error("Restore the episode before reopening its tasks.");
       }
+      // Withdrawn before the reopen, so a retry after a failure in between
+      // still finds the task closed and converges instead of skipping this.
+      const nextOccurrence =
+        task.record.status === "completed" ? await this.withdrawNextOccurrence(task) : "none";
       const reopened = await this.repository.update<TaskRecord>(task.path, {
         status: "open",
         completed_at: "",
@@ -667,8 +827,70 @@ export class ClinicalService {
         previousState: task.record.status,
         newState: "open"
       });
-      return reopened;
+      return { ...reopened, nextOccurrence };
     });
+  }
+
+  /**
+   * Completing a recurring task raised its next occurrence; undoing the
+   * completion withdraws it, or the series would run twice. The occurrence is
+   * found by its idempotency key (episode, wording, next date) and cancelled
+   * only while nobody has touched it: one that was changed or started is the
+   * clinician's work, so it stays open and the caller is told.
+   *
+   * Caller must hold patient, Episode, and task-state locks in that order.
+   */
+  private async withdrawNextOccurrence(
+    task: RecordWithPath<TaskRecord>
+  ): Promise<ReopenTaskResult["nextOccurrence"]> {
+    const interval = task.record.repeat_every_days ?? 0;
+    if (!Number.isInteger(interval) || interval <= 0 || interval > 730) return "none";
+    // The date the completion used as "today", in the device's local time
+    // exactly as todayIso() had it; the stored timestamp is UTC.
+    const completedDay = normalizeIsoDate(formatLocalDateTime(task.record.completed_at).slice(0, 10));
+    const seed = normalizeIsoDate(task.record.due_date) || completedDay || todayIso();
+    const candidates = [
+      ...new Set([
+        nextOccurrenceDate(seed, interval, completedDay || todayIso()),
+        // Completions recorded before the roll-forward raised this date.
+        isoDateWithOffset(interval, seed)
+      ])
+    ];
+    const tasks = await this.repository.list<TaskRecord>("task");
+    const wording = normalizeComparable(task.record.task);
+    const untouched = (record: TaskRecord): boolean =>
+      record.status === "open" &&
+      record.updated_at === record.created_at &&
+      record.patient_id === task.record.patient_id &&
+      record.task_type === task.record.task_type &&
+      record.priority === task.record.priority &&
+      normalizeText(record.owner) === normalizeText(task.record.owner) &&
+      (record.repeat_every_days ?? 0) === interval;
+    for (const dueDate of candidates) {
+      const key = taskIdempotencyKey({ episodeId: task.record.episode_id, task: task.record.task, dueDate });
+      const successor = tasks.find(
+        ({ record }) =>
+          record.id !== task.record.id &&
+          record.episode_id === task.record.episode_id &&
+          record.idempotency_key === key &&
+          normalizeComparable(record.task) === wording &&
+          normalizeText(record.due_date) === dueDate &&
+          taskIsOpen(record)
+      );
+      if (!successor) continue;
+      if (!untouched(successor.record)) return "kept";
+      const id = successor.record.id;
+      return this.repository.withLock(`task-state:${id}`, async (): Promise<ReopenTaskResult["nextOccurrence"]> => {
+        const latest = await this.repository.findById<TaskRecord>("task", id);
+        if (!latest || !taskIsOpen(latest.record)) return "none";
+        if (latest.record.episode_id !== task.record.episode_id || !untouched(latest.record)) {
+          return "kept";
+        }
+        await this.cancelTaskUnlocked(latest, "Completion undone");
+        return "cancelled";
+      });
+    }
+    return "none";
   }
 
   /** Serializes public task transitions with every competing Episode write. */
@@ -801,13 +1023,14 @@ export class ClinicalService {
           ? "active"
           : episode.record.status;
 
+    // Priority, next action and due date are written last. The next action and
+    // due date mirror whatever tasks reconciliation leaves open, not the form;
+    // and while the episode still carries its old priority, repeating an
+    // interrupted save repeats the task escalation below instead of skipping it.
     await this.repository.update<EpisodeRecord>(episode.path, {
       care_setting: input.careSetting,
       pathway: input.pathway,
-      priority: input.priority,
-      status,
-      next_action: nextAction,
-      due_date: input.dueDate
+      status
     });
 
     // Task handling here has to satisfy three things at once: re-saving the
@@ -821,21 +1044,30 @@ export class ClinicalService {
       input.pathway,
       input.priority
     );
+    // Escalating the patient must reach the work: a routine task on an
+    // emergency episode is missed by the priority filter and sorts last.
+    // Only raised, never lowered — a task may carry its own higher priority.
+    const tasksEscalated =
+      priorityRank(input.priority) > priorityRank(episode.record.priority)
+        ? await this.raiseOpenTaskPriorities(episode, input.priority)
+        : 0;
     // `discharge-ready` is only a proposed pathway. Reconciliation can keep
     // an existing task open (including one that was not raised by this form)
     // or create a new one. In either case the episode is still active work,
     // so it must not remain ready-to-close. Re-read after reconciliation both
     // to enforce that invariant and to return the record that actually won the
-    // nested task update rather than the stale pre-reconcile snapshot.
-    const openTaskRemains = (await this.repository.list<TaskRecord>("task"))
-      .some(({ record }) => record.episode_id === episodeId && taskIsOpen(record));
-    let finalEpisode = await this.repository.findById<EpisodeRecord>("episode", episodeId);
-    if (!finalEpisode) throw new Error("Episode was not found after updating its tasks.");
-    if (finalEpisode.record.status === "ready-to-close" && openTaskRemains) {
-      finalEpisode = await this.repository.update<EpisodeRecord>(finalEpisode.path, {
-        status: "active"
-      });
-    }
+    // nested task update rather than the stale pre-reconcile snapshot. With
+    // nothing open, next action and due date are cleared: a date no task
+    // tracks is a phantom deadline, and a closed task is not a next step.
+    const imminent = await this.imminentOpenTask(episodeId);
+    const current = await this.repository.findById<EpisodeRecord>("episode", episodeId);
+    if (!current) throw new Error("Episode was not found after updating its tasks.");
+    const finalEpisode = await this.repository.update<EpisodeRecord>(current.path, {
+      priority: input.priority,
+      next_action: imminent?.record.task ?? "",
+      due_date: imminent?.record.due_date ?? "",
+      status: current.record.status === "ready-to-close" && imminent ? "active" : current.record.status
+    });
     await this.repository.createEvent({
       action: "episode-updated",
       patientId: episode.record.patient_id,
@@ -846,7 +1078,57 @@ export class ClinicalService {
       previousState: `${episode.record.care_setting}/${episode.record.pathway}/${episode.record.priority}`,
       newState: `${input.careSetting}/${input.pathway}/${input.priority}`
     });
-    return { episode: finalEpisode, task: outcome };
+    return { episode: finalEpisode, task: outcome, tasksEscalated };
+  }
+
+  /**
+   * Raises every open task on the episode that ranks below `priority` to it,
+   * one audited change per task. Returns how many were raised.
+   *
+   * Caller must hold the patient-merge lock, then the Episode lifecycle lock.
+   */
+  private async raiseOpenTaskPriorities(
+    episode: RecordWithPath<EpisodeRecord>,
+    priority: Priority
+  ): Promise<number> {
+    const target = priorityRank(priority);
+    const lower = (await this.repository.list<TaskRecord>("task")).filter(
+      ({ record }) =>
+        record.episode_id === episode.record.id &&
+        taskIsOpen(record) &&
+        priorityRank(record.priority) < target
+    );
+    let raised = 0;
+    for (const item of lower) {
+      const changed = await this.repository.withLock(`task-state:${item.record.id}`, async () => {
+        const latest = await this.repository.findById<TaskRecord>("task", item.record.id);
+        // A task filed under another chart is reported by the integrity
+        // check; changing it here would act on the wrong patient's work.
+        if (
+          !latest ||
+          !taskIsOpen(latest.record) ||
+          latest.record.episode_id !== episode.record.id ||
+          latest.record.patient_id !== episode.record.patient_id ||
+          priorityRank(latest.record.priority) >= target
+        ) {
+          return false;
+        }
+        await this.repository.update<TaskRecord>(latest.path, { priority });
+        await this.repository.createEvent({
+          action: "task-priority-raised",
+          patientId: latest.record.patient_id,
+          episodeId: episode.record.id,
+          targetId: latest.record.id,
+          targetEntity: "task",
+          summary: "Task priority raised with its episode",
+          previousState: latest.record.priority,
+          newState: priority
+        });
+        return true;
+      });
+      if (changed) raised += 1;
+    }
+    return raised;
   }
 
   /**
@@ -912,12 +1194,12 @@ export class ClinicalService {
       return { kind: "already-closed", task: closedMatch };
     }
 
-    // The plan changed: close the task the previous next action raised, so the
+    // The plan changed: close the task the previous next action named, so the
     // episode carries one live task rather than an accumulating pile.
     // Identified by idempotency key, not by wording. The key folds in the due
     // date, so it names exactly the task the episode's previous next action
-    // raised — and leaves alone a repeat of the same wording on another date,
-    // which the clinician scheduled deliberately with "+ Task".
+    // mirrored — and leaves alone a repeat of the same wording on another
+    // date, which the clinician scheduled deliberately with "+ Task".
     const previousAction = normalizeComparable(episode.record.next_action);
     const previousDueDate = normalizeText(episode.record.due_date);
     const previousKey = normalizeText(episode.record.next_action)
@@ -939,16 +1221,52 @@ export class ClinicalService {
             normalizeText(record.due_date) === previousDueDate
         )
       : [];
+    const replaced = superseded[0];
+
+    // The previous next action mirrors the soonest open task of any origin,
+    // including a repeating or owned one added with "+ Task". When only its
+    // date changed, move that task: replacing it would end its series and
+    // drop its type and owner. Clearing the date still replaces it, because a
+    // repeating task needs a date to schedule from.
+    if (superseded.length === 1 && replaced && requestedTask === previousAction && normalizeIsoDate(dueDate)) {
+      const previousDueDate = replaced.record.due_date;
+      const moved = await this.repository.withLock(`task-state:${replaced.record.id}`, async () => {
+        const latest = await this.repository.findById<TaskRecord>("task", replaced.record.id);
+        if (!latest) throw new Error("The task being rescheduled was not found.");
+        if (
+          latest.record.patient_id !== episode.record.patient_id ||
+          latest.record.episode_id !== episode.record.id
+        ) {
+          throw new Error("The task context changed. Retry the operation.");
+        }
+        return this.rescheduleTaskUnlocked(latest, dueDate);
+      });
+      return { kind: "rescheduled", task: moved, previousDueDate };
+    }
+
+    // The wording changed, but the replacement is the same piece of work:
+    // it keeps the owner and the repeat series, and its type unless the
+    // pathway changed too (a stale "book-or" type would be auto-completed by
+    // the next procedure). A repeat needs a date to schedule from.
+    const carriedType =
+      replaced && pathway === episode.record.pathway && TASK_TYPES.includes(replaced.record.task_type)
+        ? replaced.record.task_type
+        : this.defaultTaskTypeForPathway(pathway);
+    const carriedRepeat = replaced?.record.repeat_every_days ?? 0;
     // Create first, cancel second. Cancelling first meant any failure in
     // createTask destroyed the outstanding work and left nothing in its place.
     const created = await this.createTaskUnlocked({
       patientId: episode.record.patient_id,
       episodeId: episode.record.id,
       task: nextAction,
-      taskType: this.defaultTaskTypeForPathway(pathway),
+      taskType: carriedType,
       priority,
       dueDate,
-      owner: ""
+      owner: normalizeText(replaced?.record.owner),
+      repeatEveryDays:
+        dueDate && Number.isInteger(carriedRepeat) && carriedRepeat > 0 && carriedRepeat <= 730
+          ? carriedRepeat
+          : 0
     });
     for (const item of superseded) {
       if (item.record.id === created.task.record.id) continue;
@@ -1079,6 +1397,13 @@ export class ClinicalService {
    * Re-points every record owned by `sourceId` at `targetId` and marks the
    * source as entered-in-error. Nothing is deleted, so a mistaken merge stays
    * auditable and the source note remains readable in the vault.
+   *
+   * Running it again for a merge that already finished into the same target
+   * sweeps up records that still name the retired source: ones another device
+   * wrote offline while the merge ran, delivered later by Sync. Such a record
+   * cannot be changed or discharged until it is re-pointed, and a task left
+   * naming the source disagrees with its re-pointed episode. Only records
+   * still carrying the source id are touched.
    */
   async mergePatients(sourceId: string, targetId: string): Promise<RecordWithPath<PatientRecord>> {
     if (sourceId === targetId) throw new Error("Select two different patients.");
@@ -1086,7 +1411,8 @@ export class ClinicalService {
       const source = await this.repository.findById<PatientRecord>("patient", sourceId);
       const target = await this.repository.findById<PatientRecord>("patient", targetId);
       if (!source || !target) throw new Error("One of the selected patients was not found.");
-      if (source.record.merged_into) throw new Error("This patient has already been merged.");
+      const sweep = source.record.merged_into === targetId;
+      if (source.record.merged_into && !sweep) throw new Error("This patient has already been merged.");
       if (
         target.record.status !== "active" ||
         target.record.merged_into ||
@@ -1100,20 +1426,23 @@ export class ClinicalService {
 
       // Persist intent before the first linked record changes. A mid-loop failure
       // is then visible to the integrity check and a retry can safely converge.
-      if (source.record.merge_in_progress !== targetId) {
+      // A sweep needs no marker: the source already names its target.
+      if (!sweep && source.record.merge_in_progress !== targetId) {
         await this.repository.update<PatientRecord>(source.path, { merge_in_progress: targetId });
       }
 
       // Fill any identity gap in the surviving record from the one being retired.
+      // A sweep skips it: the merge already filled the gaps, and the surviving
+      // record may have been corrected since.
       const fill: Record<string, string> = {};
-      if (!target.record.mrn && source.record.mrn) {
+      if (!sweep && !target.record.mrn && source.record.mrn) {
         fill.mrn = source.record.mrn;
         fill.mrn_status = mrnStatus(source.record.mrn);
       }
-      if (!target.record.patient_name && source.record.patient_name) {
+      if (!sweep && !target.record.patient_name && source.record.patient_name) {
         fill.patient_name = source.record.patient_name;
       }
-      if (!target.record.phone && source.record.phone) {
+      if (!sweep && !target.record.phone && source.record.phone) {
         fill.phone = source.record.phone;
         fill.phone_status = phoneStatus(source.record.phone);
       }
@@ -1124,20 +1453,39 @@ export class ClinicalService {
       const label = this.patientLinkLabel(merged.record);
       const link = wikilink(merged.path, label);
 
+      let repointed = 0;
       const episodes = await this.repository.list<EpisodeRecord>("episode");
       for (const episode of episodes) {
         if (episode.record.patient_id !== sourceId) continue;
         await this.repository.update<EpisodeRecord>(episode.path, { patient_id: targetId, patient: link });
+        repointed += 1;
       }
       const tasks = await this.repository.list<TaskRecord>("task");
       for (const task of tasks) {
         if (task.record.patient_id !== sourceId) continue;
         await this.repository.update<TaskRecord>(task.path, { patient_id: targetId, patient: link });
+        repointed += 1;
       }
       const procedures = await this.repository.list<ProcedureRecord>("procedure");
       for (const procedure of procedures) {
         if (procedure.record.patient_id !== sourceId) continue;
         await this.repository.update<ProcedureRecord>(procedure.path, { patient_id: targetId, patient: link });
+        repointed += 1;
+      }
+
+      if (sweep) {
+        if (repointed) {
+          await this.repository.createEvent({
+            action: "patient-merge-swept",
+            patientId: targetId,
+            targetId: sourceId,
+            targetEntity: "patient",
+            summary: "Records left under a merged patient re-pointed to the surviving patient",
+            previousState: `merged into ${targetId}`,
+            newState: `${repointed} record${repointed === 1 ? "" : "s"} re-pointed`
+          });
+        }
+        return merged;
       }
 
       await this.repository.update<PatientRecord>(source.path, {
@@ -1158,7 +1506,11 @@ export class ClinicalService {
     });
   }
 
-  async archiveEpisode(episodeId: string, outcome: string): Promise<RecordWithPath<EpisodeRecord>> {
+  async archiveEpisode(
+    episodeId: string,
+    outcome: string,
+    options: ArchiveEpisodeOptions = {}
+  ): Promise<ArchiveEpisodeResult> {
     const observed = await this.repository.findById<EpisodeRecord>("episode", episodeId);
     if (!observed) throw new Error("Episode was not found.");
     const expectedPatientId = observed.record.patient_id;
@@ -1179,7 +1531,7 @@ export class ClinicalService {
         ) {
           throw new Error("Episodes can only be archived for an active patient.");
         }
-        return this.archiveEpisodeUnlocked(episodeId, outcome);
+        return this.archiveEpisodeUnlocked(episodeId, outcome, options);
       })
     );
   }
@@ -1187,11 +1539,12 @@ export class ClinicalService {
   /** Caller must hold the patient-merge lock, then the Episode lifecycle lock. */
   private async archiveEpisodeUnlocked(
     episodeId: string,
-    outcome: string
-  ): Promise<RecordWithPath<EpisodeRecord>> {
+    outcome: string,
+    options: ArchiveEpisodeOptions
+  ): Promise<ArchiveEpisodeResult> {
     const episode = await this.repository.findById<EpisodeRecord>("episode", episodeId);
     if (!episode) throw new Error("Episode was not found.");
-    if (episode.record.status === "archived") return episode;
+    if (episode.record.status === "archived") return { ...episode, cancelledTasks: 0 };
 
     // An unreadable task note is outstanding work that `list()` cannot see.
     // Discharging past it would close an episode with live work attached, so
@@ -1206,6 +1559,10 @@ export class ClinicalService {
         `${relevantUnreadable.length} task note${relevantUnreadable.length === 1 ? "" : "s"} could not be read and may belong to this episode, so open work cannot be confirmed. Run the clinical data integrity check and repair unreadable task notes before discharging.`
       );
     }
+
+    const cancelledTasks = options.cancelOpenTasks
+      ? await this.cancelOpenTasksForDischarge(episode)
+      : 0;
 
     const tasks = (await this.repository.list<TaskRecord>("task")).map((item) => item.record);
     const decision = canArchiveEpisode(episode.record.status, tasks, episodeId);
@@ -1258,7 +1615,46 @@ export class ClinicalService {
       previousState: episode.record.status,
       newState: "archived"
     });
-    return updated;
+    return { ...updated, cancelledTasks };
+  }
+
+  /**
+   * Cancels the episode's open tasks as part of an explicitly requested
+   * discharge: each through the audited cancel path, then one reconcile.
+   * Nothing is archived yet, so an interruption leaves only cancelled tasks
+   * and a retry converges. Returns how many tasks this call cancelled.
+   *
+   * Caller must hold the patient-merge lock, then the Episode lifecycle lock,
+   * and must already have refused unreadable task notes.
+   */
+  private async cancelOpenTasksForDischarge(episode: RecordWithPath<EpisodeRecord>): Promise<number> {
+    // Refuse before cancelling anything when the archive itself would be
+    // refused: closing the work and then keeping the episode open helps no one.
+    const transition = canArchiveEpisode(episode.record.status, [], episode.record.id);
+    if (!transition.allowed) throw new Error(transition.reason);
+
+    const open = (await this.repository.list<TaskRecord>("task")).filter(
+      ({ record }) => record.episode_id === episode.record.id && taskIsOpen(record)
+    );
+    let cancelled = 0;
+    for (const item of open) {
+      await this.repository.withLock(`task-state:${item.record.id}`, async () => {
+        const latest = await this.repository.findById<TaskRecord>("task", item.record.id);
+        if (!latest) throw new Error("A task being closed at discharge was not found.");
+        // Work filed under another chart is not this discharge's to close.
+        if (
+          latest.record.patient_id !== episode.record.patient_id ||
+          latest.record.episode_id !== episode.record.id
+        ) {
+          throw new Error("The task context changed. Retry the operation.");
+        }
+        if (!taskIsOpen(latest.record)) return;
+        await this.cancelTaskUnlocked(latest, "Closed at discharge", false);
+        cancelled += 1;
+      });
+    }
+    if (open.length) await this.reconcileEpisodeAfterTaskChange(episode.record.id, "");
+    return cancelled;
   }
 
   /**
@@ -1270,33 +1666,59 @@ export class ClinicalService {
     const observed = await this.repository.findById<EpisodeRecord>("episode", episodeId);
     if (!observed) throw new Error("Episode was not found.");
     const expectedPatientId = observed.record.patient_id;
+    // The same (patient, case) lock createEpisode holds while it checks for a
+    // duplicate, so a restore and a new episode for that case cannot both win.
+    const caseKey = normalizeComparable(observed.record.case);
     return this.repository.withLock(`patient-merge:${expectedPatientId}`, () =>
-      this.repository.withLock(`episode-state:${episodeId}`, async () => {
-        const [latestEpisode, latestPatient] = await Promise.all([
-          this.repository.findById<EpisodeRecord>("episode", episodeId),
-          this.repository.findById<PatientRecord>("patient", expectedPatientId)
-        ]);
-        if (!latestEpisode || latestEpisode.record.patient_id !== expectedPatientId) {
-          throw new Error("The patient context changed. Retry the operation.");
-        }
-        if (
-          !latestPatient ||
-          latestPatient.record.status === "entered-in-error" ||
-          Boolean(latestPatient.record.merged_into) ||
-          Boolean(latestPatient.record.merge_in_progress)
-        ) {
-          throw new Error("Episodes can only be restored for an unmerged patient.");
-        }
-        return this.restoreEpisodeUnlocked(episodeId);
-      })
+      this.repository.withLock(`episode:${expectedPatientId}|${caseKey}`, () =>
+        this.repository.withLock(`episode-state:${episodeId}`, async () => {
+          const [latestEpisode, latestPatient] = await Promise.all([
+            this.repository.findById<EpisodeRecord>("episode", episodeId),
+            this.repository.findById<PatientRecord>("patient", expectedPatientId)
+          ]);
+          if (!latestEpisode || latestEpisode.record.patient_id !== expectedPatientId) {
+            throw new Error("The patient context changed. Retry the operation.");
+          }
+          if (normalizeComparable(latestEpisode.record.case) !== caseKey) {
+            throw new Error("The episode context changed. Retry the operation.");
+          }
+          if (
+            !latestPatient ||
+            latestPatient.record.status === "entered-in-error" ||
+            Boolean(latestPatient.record.merged_into) ||
+            Boolean(latestPatient.record.merge_in_progress)
+          ) {
+            throw new Error("Episodes can only be restored for an unmerged patient.");
+          }
+          return this.restoreEpisodeUnlocked(episodeId);
+        })
+      )
     );
   }
 
-  /** Caller must hold the patient-merge lock, then the Episode lifecycle lock. */
+  /**
+   * Caller must hold the patient-merge lock, the (patient, case) episode lock,
+   * then the Episode lifecycle lock.
+   */
   private async restoreEpisodeUnlocked(episodeId: string): Promise<RecordWithPath<EpisodeRecord>> {
     const episode = await this.repository.findById<EpisodeRecord>("episode", episodeId);
     if (!episode) throw new Error("Episode was not found.");
     if (episode.record.status !== "archived") return episode;
+
+    // createEpisode refuses a second active episode for the same case, and a
+    // restore must not create one by the back door (typically after the
+    // patient was readmitted under the same case).
+    const caseKey = normalizeComparable(episode.record.case);
+    const duplicate = (await this.repository.list<EpisodeRecord>("episode")).some(
+      ({ record }) =>
+        record.patient_id === episode.record.patient_id &&
+        record.id !== episodeId &&
+        !["archived", "cancelled", "entered-in-error"].includes(record.status) &&
+        normalizeComparable(record.case) === caseKey
+    );
+    if (duplicate) {
+      throw new Error("An active episode for this case already exists. Open it instead.");
+    }
 
     const tasks = (await this.repository.list<TaskRecord>("task")).map((item) => item.record);
     const pathway = pathwayAfterRestore(episode.record.pathway_before_archive);
@@ -1374,7 +1796,8 @@ export class ClinicalService {
         throw new Error("That episode does not belong to the selected patient.");
       }
 
-      const existing = (await this.repository.list<ProcedureRecord>("procedure")).find(
+      const procedures = await this.repository.list<ProcedureRecord>("procedure");
+      const existing = procedures.find(
         ({ record }) =>
           record.episode_id === input.episodeId &&
           record.idempotency_key === key &&
@@ -1382,7 +1805,21 @@ export class ClinicalService {
           normalizeText(record.procedure_date) === normalizedProcedureDate &&
           record.status === "completed"
       );
-      if (!existing && episode.record.pathway !== "or-booking") {
+      // Another procedure from the same operation, or a return to theatre, is
+      // logged on an episode whose first procedure already moved it off OR
+      // booking. The logbook needs one entry per procedure, so it is accepted
+      // as an addition: the pathway, status and next action the episode has
+      // now stay as they are, and only a requested follow-up adds work. Also
+      // decided this way on a retry, so a retry never re-runs the transition.
+      const additional =
+        episode.record.pathway !== "or-booking" &&
+        procedures.some(
+          ({ record }) =>
+            record.episode_id === input.episodeId &&
+            record.status === "completed" &&
+            record.id !== existing?.record.id
+        );
+      if (!existing && !additional && episode.record.pathway !== "or-booking") {
         throw new Error("Procedures can only be recorded from an OR booking episode.");
       }
       // A retry must never silently mix persisted and retry inputs. The
@@ -1449,7 +1886,7 @@ export class ClinicalService {
       // Returning early made a part-failed procedure permanently un-retryable:
       // the record existed, so every retry short-circuited and reported success
       // while the episode was never updated and the follow-up task never created.
-      const tasks = await this.repository.list<TaskRecord>("task");
+      const tasks = additional ? [] : await this.repository.list<TaskRecord>("task");
       for (const task of tasks) {
         if (
           task.record.episode_id === episode.record.id &&
@@ -1513,16 +1950,18 @@ export class ClinicalService {
 
       // Care setting is the clinician's to decide. A post-operative inpatient
       // is still an inpatient, so it is left exactly as recorded.
-      await this.repository.update<EpisodeRecord>(latestEpisode.path, {
-        pathway: pathwayAfterProcedure(followUp.required),
-        status: stillOpen ? "active" : "ready-to-close",
-        next_action: followUp.required
-          ? followUp.plan
-          : (nextOutstanding?.record.task ?? ""),
-        due_date: followUp.required
-          ? followUp.date
-          : (nextOutstanding?.record.due_date ?? "")
-      });
+      if (!additional) {
+        await this.repository.update<EpisodeRecord>(latestEpisode.path, {
+          pathway: pathwayAfterProcedure(followUp.required),
+          status: stillOpen ? "active" : "ready-to-close",
+          next_action: followUp.required
+            ? followUp.plan
+            : (nextOutstanding?.record.task ?? ""),
+          due_date: followUp.required
+            ? followUp.date
+            : (nextOutstanding?.record.due_date ?? "")
+        });
+      }
       if (followUp.required) {
         await this.createTaskUnlocked({
           patientId: patient.record.id,
@@ -1546,7 +1985,11 @@ export class ClinicalService {
           targetId: outcome.procedure.record.id,
           targetEntity: "procedure",
           summary: "Procedure completed",
-          newState: followUp.required ? "postoperative follow-up" : "ready to close"
+          newState: followUp.required
+            ? "postoperative follow-up"
+            : additional
+              ? "episode unchanged"
+              : "ready to close"
         });
         if (event) {
           return this.repository.update<ProcedureRecord>(outcome.procedure.path, {

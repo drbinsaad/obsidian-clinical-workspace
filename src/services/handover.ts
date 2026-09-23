@@ -2,14 +2,31 @@ import type { ClinicalSnapshot, EpisodeRecord, PatientRecord, TaskRecord } from 
 import {
   careSettingLabel,
   displayMrn,
+  normalizeIsoDate,
   normalizeText,
   pathwayLabel,
   priorityLabel,
   taskIsDueToday,
   taskIsOpen,
   taskIsOverdue,
+  taskIsUndated,
+  taskIsUpcoming,
   todayIso
 } from "../domain/schema";
+import { priorityRank } from "../domain/transitions";
+
+/**
+ * Priority-first order for a worklist read from the top: emergency, then
+ * urgent, then routine; within a priority the soonest due first and undated
+ * last; then the record id, so every device lists the same tasks identically.
+ */
+export function compareTasksByPriority(a: TaskRecord, b: TaskRecord): number {
+  return (
+    priorityRank(b.priority) - priorityRank(a.priority) ||
+    (normalizeIsoDate(a.due_date) || "9999").localeCompare(normalizeIsoDate(b.due_date) || "9999") ||
+    a.id.localeCompare(b.id)
+  );
+}
 
 /**
  * Builds an end-of-day ward handover note as Markdown.
@@ -20,6 +37,7 @@ import {
  */
 export function buildHandoverNote(snapshot: ClinicalSnapshot, today = todayIso()): string {
   const patientById = new Map(snapshot.patients.map((patient) => [patient.id, patient] as const));
+  const episodeById = new Map(snapshot.episodes.map((episode) => [episode.id, episode] as const));
   const label = (patient: PatientRecord | undefined): string =>
     patient
       ? `MRN ${displayMrn(patient.mrn)} · ${patient.patient_name || "Name not recorded"}`
@@ -28,7 +46,7 @@ export function buildHandoverNote(snapshot: ClinicalSnapshot, today = todayIso()
   const activeEpisodes = snapshot.episodes.filter(
     (episode) => !["archived", "cancelled", "entered-in-error"].includes(episode.status)
   );
-  const priorityRank: Record<string, string> = { emergency: "0", urgent: "1", routine: "2" };
+  const priorityRankKey: Record<string, string> = { emergency: "0", urgent: "1", routine: "2" };
   const episodeLine = (episode: EpisodeRecord): string => {
     const patient = patientById.get(episode.patient_id);
     const next = normalizeText(episode.next_action)
@@ -37,23 +55,46 @@ export function buildHandoverNote(snapshot: ClinicalSnapshot, today = todayIso()
     return `- **${label(patient)}** — ${episode.case || "Case not recorded"} · ${pathwayLabel(episode.pathway)} · ${priorityLabel(episode.priority)} · ${next}`;
   };
   const bySortKey = (a: EpisodeRecord, b: EpisodeRecord): number =>
-    `${priorityRank[a.priority] ?? "3"}|${a.due_date || "9999"}`.localeCompare(
-      `${priorityRank[b.priority] ?? "3"}|${b.due_date || "9999"}`
+    `${priorityRankKey[a.priority] ?? "3"}|${a.due_date || "9999"}`.localeCompare(
+      `${priorityRankKey[b.priority] ?? "3"}|${b.due_date || "9999"}`
     );
 
   const inpatients = activeEpisodes
     .filter((episode) => episode.care_setting === "inpatient")
     .sort(bySortKey);
 
+  // The covering team needs what is late, what is due, what starts first
+  // thing tomorrow, and the open work nobody dated (including a date that no
+  // longer parses) — each ranked by priority so an emergency is read first.
   const openTasks = snapshot.tasks.filter(taskIsOpen);
   const urgentToday = openTasks
     .filter((task) => taskIsOverdue(task, today) || taskIsDueToday(task, today))
-    .sort((a, b) => `${a.due_date || "9999"}`.localeCompare(`${b.due_date || "9999"}`));
+    .sort(compareTasksByPriority);
+  const dueTomorrow = openTasks
+    .filter((task) => taskIsUpcoming(task, 1, today))
+    .sort(compareTasksByPriority);
+  const undated = openTasks.filter(taskIsUndated).sort(compareTasksByPriority);
   const taskLine = (task: TaskRecord): string => {
     const patient = patientById.get(task.patient_id);
-    const state = taskIsOverdue(task, today) ? `overdue (${task.due_date})` : "due today";
-    return `- ${task.task || "Task not recorded"} — ${label(patient)} · ${state}`;
+    const caseName = episodeById.get(task.episode_id)?.case || "Case not recorded";
+    const due = normalizeIsoDate(task.due_date);
+    const state = !due
+      ? normalizeText(task.due_date)
+        ? "due date unreadable"
+        : "no date"
+      : taskIsOverdue(task, today)
+        ? `overdue (${due})`
+        : due === today
+          ? "due today"
+          : `due ${due}`;
+    return `- ${task.task || "Task not recorded"} — ${label(patient)} · ${caseName} · ${priorityLabel(task.priority)} · ${state}`;
   };
+  const section = (heading: string, tasks: TaskRecord[], empty: string): string[] => [
+    "",
+    `## ${heading} (${tasks.length})`,
+    "",
+    ...(tasks.length ? tasks.map(taskLine) : [`- ${empty}`])
+  ];
 
   const lines: string[] = [
     `# Ward handover — ${today}`,
@@ -67,10 +108,9 @@ export function buildHandoverNote(snapshot: ClinicalSnapshot, today = todayIso()
   lines.push(
     ...(inpatients.length ? inpatients.map(episodeLine) : ["- No active inpatient episodes."])
   );
-  lines.push("", `## Overdue and due today (${urgentToday.length})`, "");
-  lines.push(
-    ...(urgentToday.length ? urgentToday.map(taskLine) : ["- Nothing overdue or due today."])
-  );
+  lines.push(...section("Overdue and due today", urgentToday, "Nothing overdue or due today."));
+  lines.push(...section("Due tomorrow", dueTomorrow, "Nothing due tomorrow."));
+  lines.push(...section("No date set", undated, "No open task without a date."));
   const outpatientCount = activeEpisodes.length - inpatients.length;
   lines.push(
     "",

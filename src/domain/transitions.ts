@@ -1,6 +1,6 @@
 import type { EpisodeStatus, Pathway, TaskRecord, TaskStatus } from "./types";
-import { PATHWAYS } from "./types";
-import { taskIsOpen } from "./schema";
+import { PATHWAYS, PRIORITIES } from "./types";
+import { isoDateWithOffset, taskIsOpen } from "./schema";
 
 const ALLOWED_EPISODE_TRANSITIONS: Record<EpisodeStatus, readonly EpisodeStatus[]> = {
   active: ["on-hold", "ready-to-close", "archived", "cancelled", "entered-in-error"],
@@ -62,6 +62,27 @@ export function statusAfterTaskCompletion(
     (task) => task.episode_id === episodeId && task.id !== completedTaskId && taskIsOpen(task)
   );
   return remaining.length === 0 ? "ready-to-close" : null;
+}
+
+/** Higher is more urgent; an unrecognised value ranks below routine. */
+export function priorityRank(priority: string): number {
+  return (PRIORITIES as readonly string[]).indexOf(priority);
+}
+
+/**
+ * Due date of a recurring task's next occurrence: one interval after `seed`
+ * (the completed occurrence's due date), rolled forward by whole intervals
+ * until it is not in the past. The cadence is kept, but completing late no
+ * longer raises work that is already overdue. An occurrence due today stays.
+ */
+export function nextOccurrenceDate(seed: string, interval: number, today: string): string {
+  const next = isoDateWithOffset(interval, seed);
+  if (next >= today || interval <= 0) return next;
+  const behind = Math.round(
+    (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${next}T00:00:00Z`)) / (24 * 60 * 60 * 1000)
+  );
+  if (!Number.isFinite(behind)) return next;
+  return isoDateWithOffset(Math.ceil(behind / interval) * interval, next);
 }
 
 export function pathwayAfterProcedure(followUpRequired: boolean): Pathway {
