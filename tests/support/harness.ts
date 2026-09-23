@@ -26,7 +26,7 @@ export async function harness(): Promise<Harness> {
 }
 
 export const episodeInput = (overrides: Partial<NewEpisodeInput> = {}): NewEpisodeInput => ({
-  mrn: "5001",
+  mrn: "9000005001",
   patientName: "Test Patient",
   phone: "",
   caseName: "Test case",

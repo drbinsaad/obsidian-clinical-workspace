@@ -97,11 +97,11 @@ test("a blank name on either side, a spelling variant or a new phone still reuse
   assert.equal(blankTyped.patient.record.id, nameless.patient.record.id);
 
   const arabic = await h.service.createEpisode(
-    episodeInput({ mrn: "9000000103", patientName: "أحمد سالم", phone: "0551", caseName: "Case D" })
+    episodeInput({ mrn: "9000000103", patientName: "أحمد سالم", phone: "0500000000", caseName: "Case D" })
   );
   // Typed without hamza, with Arabic-Indic digits and a different phone.
   const variant = await h.service.createEpisode(
-    episodeInput({ mrn: "٩٠٠٠٠٠٠١٠٣", patientName: "احمد سالم", phone: "0552", caseName: "Case E" })
+    episodeInput({ mrn: "٩٠٠٠٠٠٠١٠٣", patientName: "احمد سالم", phone: "0500000001", caseName: "Case E" })
   );
   assert.equal(variant.reusedPatient, true);
   assert.equal(variant.patient.record.id, arabic.patient.record.id);

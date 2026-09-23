@@ -151,7 +151,7 @@ function searchSnapshot(patientNames: readonly string[]): ClinicalSnapshot {
     ...EMPTY_SNAPSHOT,
     patients: patientNames.map((patientName, index) => ({
       id: `patient-${index}`,
-      mrn: `MRN-${index}`,
+      mrn: `900000000${index}`,
       patient_name: patientName,
       status: "active"
     })) as ClinicalSnapshot["patients"]

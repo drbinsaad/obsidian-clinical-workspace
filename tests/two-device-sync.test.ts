@@ -291,7 +291,7 @@ test("a task added on each device at the same time never needs typed ADOPT", asy
     const converged = await local.plugin.parsedRecordInventory(ROOT);
     assert.equal(local.plugin.expectedManagedRecordCount, converged.total);
     assert.equal(local.plugin.expectedRecordDigest, converged.digest);
-    await assertWritable(local.repository, "5301");
+    await assertWritable(local.repository, "9000005301");
 
     // The persisted baseline is the converged set, so the other device sees
     // ordinary additive growth rather than a competing equal-count tuple.
@@ -327,7 +327,7 @@ test("the same concurrent addition reopens after a restart mid-delivery", async 
     assert.equal(restarted.baselineReviewRequired, false, "restart must not turn growth into a conflict");
     assert.equal(await restarted.retryExactRestoredRootRecovery(), true);
     assert.equal(restarted.migrationRecoveryBlocked, false);
-    await assertWritable(restartedRepository, "5302");
+    await assertWritable(restartedRepository, "9000005302");
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -357,7 +357,7 @@ test("a higher synced baseline that disk then exceeds still reopens", async () =
     assert.equal(local.plugin.migrationRecoveryBlocked, false, state(local.plugin));
     const converged = await local.plugin.parsedRecordInventory(ROOT);
     assert.equal(local.plugin.expectedManagedRecordCount, converged.total);
-    await assertWritable(local.repository, "5303");
+    await assertWritable(local.repository, "9000005303");
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -385,7 +385,7 @@ test("an older, lower data.json arriving after a staged higher one is ignored", 
     await deliverFile(local.plugin, local.app, remoteA);
     await deliverFile(local.plugin, local.app, remoteB);
     assert.equal(local.plugin.migrationRecoveryBlocked, false);
-    await assertWritable(local.repository, "5304");
+    await assertWritable(local.repository, "9000005304");
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -402,7 +402,7 @@ test("record files arriving before their data.json reopen once the files are com
     // trusted is missing, so the workspace stays usable.
     assert.equal(local.plugin.baselineReviewRequired, false);
     assert.equal(local.plugin.migrationRecoveryBlocked, false, state(local.plugin));
-    await assertWritable(local.repository, "5305");
+    await assertWritable(local.repository, "9000005305");
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -421,7 +421,7 @@ test("explicit Retry accepts growth that keeps every trusted record", async () =
     assert.equal(await local.plugin.retryPendingMigrationRecovery(), true);
     assert.equal(local.plugin.baselineReviewRequired, false);
     assert.equal(local.plugin.migrationRecoveryBlocked, false);
-    await assertWritable(local.repository, "5306");
+    await assertWritable(local.repository, "9000005306");
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -455,7 +455,7 @@ test("a trusted record that vanished still fails closed", async () => {
     assert.equal(await local.plugin.retryPendingMigrationRecovery(), false);
     assert.equal(local.plugin.migrationRecoveryBlocked, true, "a lost trusted record needs a human");
     await assert.rejects(
-      () => assertWritable(local.repository, "5307"),
+      () => assertWritable(local.repository, "9000005307"),
       /read-only/
     );
   } finally {
@@ -502,7 +502,7 @@ test("a review flag saved by an older version clears itself on restart when ever
     assert.equal(restarted.plugin.baselineReviewRequired, false, "nothing was lost, so no ADOPT");
     assert.equal(restarted.plugin.migrationRecoveryBlocked, false, state(restarted.plugin));
     assert.equal(persistedReviewFlag(local), false, "the cleared flag is what Sync carries to the other device");
-    await assertWritable(restarted.repository, "5308");
+    await assertWritable(restarted.repository, "9000005308");
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -528,7 +528,7 @@ test("a review flag delivered by a still-locked device clears itself once its re
     assert.equal(persistedReviewFlag(local), false);
     const converged = await local.plugin.parsedRecordInventory(ROOT);
     assert.equal(local.plugin.expectedManagedRecordCount, converged.total);
-    await assertWritable(local.repository, "5309");
+    await assertWritable(local.repository, "9000005309");
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -548,7 +548,7 @@ test("explicit Retry clears a saved review flag through the same membership proo
     assert.equal(await restarted.plugin.retryPendingMigrationRecovery(), true, state(restarted.plugin));
     assert.equal(restarted.plugin.baselineReviewRequired, false);
     assert.equal(restarted.plugin.migrationRecoveryBlocked, false);
-    await assertWritable(restarted.repository, "5310");
+    await assertWritable(restarted.repository, "9000005310");
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -576,7 +576,7 @@ test("a delivered review flag still needs ADOPT when a trusted record vanished",
     assert.equal(await local.plugin.retryPendingMigrationRecovery(), false);
     assert.equal(local.plugin.baselineReviewRequired, true);
     assert.equal(local.plugin.migrationRecoveryBlocked, true);
-    await assert.rejects(() => assertWritable(local.repository, "5311"), /read-only/);
+    await assert.rejects(() => assertWritable(local.repository, "9000005311"), /read-only/);
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -595,7 +595,7 @@ test("a review raised by unreadable safety metadata still needs typed ADOPT", as
     assert.equal(await restarted.plugin.retryPendingMigrationRecovery(), false);
     assert.equal(restarted.plugin.baselineReviewRequired, true, "metadata a scan cannot verify stays with ADOPT");
     assert.equal(restarted.plugin.migrationRecoveryBlocked, true);
-    await assert.rejects(() => assertWritable(restarted.repository, "5312"), /read-only/);
+    await assert.rejects(() => assertWritable(restarted.repository, "9000005312"), /read-only/);
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -622,7 +622,7 @@ test("a legacy journal without a membership witness stays on ADOPT once the disk
     assert.equal(restarted.plugin.expectedRecordIdentityDigests, null, "no witness to prove inclusion with");
     assert.equal(await restarted.plugin.retryExactRestoredRootRecovery(), false);
     assert.equal(restarted.plugin.baselineReviewRequired, true, "a digest alone cannot prove which ids it covered");
-    await assert.rejects(() => assertWritable(restarted.repository, "5313"), /read-only/);
+    await assert.rejects(() => assertWritable(restarted.repository, "9000005313"), /read-only/);
   } finally {
     setClinicalRoot(originalRoot);
   }
