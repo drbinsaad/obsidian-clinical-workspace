@@ -456,8 +456,11 @@ async function retiredRootFingerprint(root: string): Promise<string> {
  * clinicians: no Sync-recovery internals, only what changes for them.
  */
 export const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
-  "Fewer unnecessary read-only pauses: when Sync has delivered all your records, Clinical Workspace now unlocks editing by itself, with nothing to type.",
-  "If records really are missing or have changed, editing stays paused, even after a restart, until you have checked them."
+  "Export any patient type to a note or spreadsheet: Patients → Export list. Pick care setting, pathway, priority, or status.",
+  "Safer entry: if an MRN is already recorded under a different name, you are asked before anything is saved.",
+  "Complete now has Undo, and Discharge can close leftover tasks with one tick.",
+  "The ward round shows every inpatient, and tapping a patient opens their sheet.",
+  "If editing pauses, the workspace still opens read-only, with a Recheck now button."
 ];
 
 /** Obsidian autosaves while a note is typed into; one recheck covers the burst. */
