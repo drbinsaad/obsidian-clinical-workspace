@@ -78,6 +78,30 @@
   max-width: 100%;
 }
 
+.clinical-write-block-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-inline-start: 4px solid var(--text-warning);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+}
+
+.clinical-write-block-title {
+  flex: 1 0 100%;
+}
+
+.clinical-write-block-text {
+  flex: 1 1 100%;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .clinical-workspace-header {
   display: flex;
   align-items: center;

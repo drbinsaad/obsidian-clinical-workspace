@@ -214,8 +214,7 @@ test("workspace activation errors are shown instead of becoming unhandled reject
 });
 
 test("recovery notices are compact, accessible, responsive, and deduplicated", () => {
-  const fullMessage =
-    "Clinical Workspace is temporarily read-only because the configured folder is unavailable. After Sync finishes or the folder is restored, run “Retry pending folder move recovery” from the Command Palette.";
+  const fullMessage = CLINICAL_ROOT_UNAVAILABLE_MESSAGE;
   const plugin = new ClinicalWorkspacePlugin(new App(), {} as never) as unknown as {
     recoveryBlockMessage: string;
     showMigrationRecoveryNotice: (duration?: number, message?: string, background?: boolean) => void;
@@ -230,7 +229,7 @@ test("recovery notices are compact, accessible, responsive, and deduplicated", (
   const first = StubNotice.history[0];
   assert.ok(first);
   assert.ok(first.message.length < fullMessage.length);
-  assert.match(first.message, /Retry pending folder move recovery/);
+  assert.match(first.message, /Recheck records and unlock editing/);
   assert.equal(first.classes.has("clinical-workspace-recovery-notice"), true);
   assert.equal(first.attributes.get("aria-label"), fullMessage);
   assert.equal(first.attributes.get("title"), fullMessage);
@@ -271,15 +270,14 @@ test("the shared presenter styles and deduplicates recovery errors from open UI 
   assert.equal(formNotice.hidden, true, "the next UI surface must replace the prior recovery notice");
   assert.equal(actionNotice.classes.has("clinical-workspace-recovery-notice"), true);
   assert.equal(actionNotice.attributes.get("aria-label"), CLINICAL_ROOT_UNAVAILABLE_MESSAGE);
-  assert.match(actionNotice.message, /Retry pending folder move recovery/);
+  assert.match(actionNotice.message, /Recheck records and unlock editing/);
 
   hideClinicalRecoveryNotice();
   assert.equal(actionNotice.hidden, true);
 });
 
 test("a blocked integrity command uses the responsive recovery notice", async () => {
-  const fullMessage =
-    "Clinical Workspace is temporarily read-only because the configured folder is unavailable. After Sync finishes or the folder is restored, run “Retry pending folder move recovery” from the Command Palette.";
+  const fullMessage = CLINICAL_ROOT_UNAVAILABLE_MESSAGE;
   const plugin = new ClinicalWorkspacePlugin(new App(), {} as never) as unknown as {
     ensureStructure: () => Promise<void>;
     runIntegrityCheck: () => Promise<void>;

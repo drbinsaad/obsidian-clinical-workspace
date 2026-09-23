@@ -38,17 +38,26 @@ import {
 import { ClinicalSettingTab } from "./ui/settings-tab";
 import {
   CLINICAL_WORKSPACE_VIEW,
-  ClinicalWorkspaceView
+  ClinicalWorkspaceView,
+  type ClinicalWorkspaceRecoveryHost
 } from "./ui/workspace-view";
 import {
   CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE,
+  CLINICAL_BASELINE_CONFIRMING_MESSAGE,
   CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE,
+  CLINICAL_FOLDER_MOVE_OPEN_REFUSED_MESSAGE,
   CLINICAL_INITIALIZATION_CHANGED_MESSAGE,
   CLINICAL_INITIALIZATION_REQUIRED_MESSAGE,
   CLINICAL_INITIALIZATION_SAVE_FAILED_MESSAGE,
+  CLINICAL_RECORD_CHANGED_MESSAGE,
+  CLINICAL_RECORDS_RECHECK_MESSAGE,
+  CLINICAL_RECORDS_UNLOCKED_MESSAGE,
   CLINICAL_ROOT_UNAVAILABLE_MESSAGE,
+  CLINICAL_SETTINGS_APPLYING_MESSAGE,
   CLINICAL_SYNC_GROWTH_PENDING_MESSAGE,
+  CLINICAL_UNRECOGNIZED_RECORD_NOTES_MESSAGE,
   hideClinicalRecoveryNotice,
+  isClinicalRecoveryMessage,
   showClinicalNotice,
   showClinicalRecoveryNotice
 } from "./ui/notices";
@@ -173,6 +182,23 @@ function completeSafetyInventory(
   const total = counts.patient + counts.episode + counts.task + counts.procedure;
   if (total !== safety.expectedManagedRecordCount) return null;
   return { counts: { ...counts }, digest, identityDigests: [], total };
+}
+
+const ENTITY_COUNT_NOUNS: Record<keyof ExpectedEntityCounts, readonly [string, string]> = {
+  patient: ["patient", "patients"],
+  episode: ["episode", "episodes"],
+  task: ["task", "tasks"],
+  procedure: ["procedure", "procedures"]
+};
+
+function countLabel(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function describeEntityCounts(counts: ExpectedEntityCounts): string {
+  return (Object.keys(ENTITY_COUNT_NOUNS) as Array<keyof ExpectedEntityCounts>)
+    .map((entity) => countLabel(counts[entity], ...ENTITY_COUNT_NOUNS[entity]))
+    .join(", ");
 }
 
 function sameRecordInventory(left: RecordInventory, right: RecordInventory): boolean {
@@ -423,11 +449,19 @@ async function retiredRootFingerprint(root: string): Promise<string> {
   return sha256Hex(`clinical-workspace/retired-root/v1\0${normalizeFolderPath(root)}`);
 }
 
-/** Static, identifier-free highlights shown once after an update. */
-const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
-  "Complete workspaces can automatically recheck a stale synced manual-review flag using this device’s clean recovery journal; no ADOPT for this verified case.",
-  "Local integrity failures stay protected across restart; missing or replaced records and interrupted or unverifiable recovery still need review."
+/**
+ * Static, identifier-free highlights shown once after an update. Written for
+ * clinicians: no Sync-recovery internals, only what changes for them.
+ */
+export const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
+  "Fewer unnecessary read-only pauses: when Sync has delivered all your records, Clinical Workspace now unlocks editing by itself, with nothing to type.",
+  "If records really are missing or have changed, editing stays paused, even after a restart, until you have checked them."
 ];
+
+/** Obsidian autosaves while a note is typed into; one recheck covers the burst. */
+const MANAGED_RECORD_RECHECK_DELAY_MS = 1500;
+/** Brief Sync barriers clear within this window, so the banner does not flicker. */
+const WRITE_BLOCK_BANNER_DELAY_MS = 600;
 
 /**
  * Decides whether the what's-new window should appear. It shows only when a
@@ -454,6 +488,11 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   private migration!: MigrationService;
   private refreshTimer: number | null = null;
   private refreshMaxWaitTimer: number | null = null;
+  private managedRecordRecheckTimer: number | null = null;
+  private readonly managedRecordRecheckPaths = new Set<string>();
+  private writeBlockBannerTimer: number | null = null;
+  /** In memory only: an unchanged issue set is not re-shown by the open-time check. */
+  private lastOpenIntegritySignature: string | null = null;
   private structureReady = false;
   private integrityChecked = false;
   private pendingMigrationMarker: unknown = null;
@@ -574,7 +613,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
 
     this.repository = new ClinicalRepository(this.app);
     this.repository.setActor(auditActor(this.settings));
-    this.repository.setWriteBlock(
+    this.setRepositoryWriteBlock(
       this.migrationRecoveryBlocked ? this.recoveryBlockMessage : null
     );
     this.repository.setManagedRecordWriteObserver((paths) =>
@@ -588,7 +627,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.registerView(
       CLINICAL_WORKSPACE_VIEW,
       (leaf: WorkspaceLeaf) =>
-        new ClinicalWorkspaceView(leaf, this.repository, this.service, this.integrity, () => this.settings)
+        new ClinicalWorkspaceView(
+          leaf,
+          this.repository,
+          this.service,
+          this.integrity,
+          () => this.settings,
+          this.workspaceRecoveryHost()
+        )
     );
 
     this.addSettingTab(new ClinicalSettingTab(this.app, this, this.migration));
@@ -692,28 +738,34 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       id: "initialize-new-workspace",
       name: "Initialize new workspace",
       checkCallback: (checking) => {
-        if (!this.firstUseInitializationPending) return false;
+        // An approved initialization that has not finished is completed by
+        // opening the workspace too, so the command its guidance names stays
+        // available until then.
+        if (!this.firstUseInitializationPending && !this.initializationScaffoldApproved) {
+          return false;
+        }
         if (!checking) void this.openWorkspace();
         return true;
       }
     });
+    // The id predates the rename and stays stable for existing hotkeys.
     this.addCommand({
       id: "retry-folder-move-recovery",
-      name: "Retry pending folder move recovery",
+      name: "Recheck records and unlock editing",
       checkCallback: (checking) => {
-        if (!this.currentMigrationMarker() && !this.missingRootRecoveryBlocked) return false;
-        if (!checking) {
-          void this.retryPendingMigrationRecovery().catch(() => {
-            this.showMigrationRecoveryNotice(12000, this.recoveryBlockMessage, false);
-          });
-        }
+        if (!this.recoveryRecheckAvailable()) return false;
+        if (!checking) void this.recheckRecordsAndUnlock();
         return true;
       }
     });
     this.addCommand({
       id: "adopt-current-baseline",
       name: "Confirm current records as the recovery baseline",
-      callback: () => void this.adoptCurrentBaseline()
+      checkCallback: (checking) => {
+        if (!this.baselineAdoptionCommandAvailable()) return false;
+        if (!checking) void this.adoptCurrentBaseline();
+        return true;
+      }
     });
     this.addCommand({
       id: "remove-identifiers-from-generated-bodies",
@@ -810,6 +862,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   onunload(): void {
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     if (this.refreshMaxWaitTimer !== null) window.clearTimeout(this.refreshMaxWaitTimer);
+    if (this.managedRecordRecheckTimer !== null) {
+      window.clearTimeout(this.managedRecordRecheckTimer);
+    }
+    if (this.writeBlockBannerTimer !== null) window.clearTimeout(this.writeBlockBannerTimer);
     this.hideRecoveryNotice();
   }
 
@@ -1053,7 +1109,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         : this.pendingSyncedInventory
           ? CLINICAL_SYNC_GROWTH_PENDING_MESSAGE
         : this.missingRootRecoveryBlocked
-          ? CLINICAL_ROOT_UNAVAILABLE_MESSAGE
+          ? rootExists ? CLINICAL_RECORDS_RECHECK_MESSAGE : CLINICAL_ROOT_UNAVAILABLE_MESSAGE
           : CLINICAL_WRITES_BLOCKED_MESSAGE;
     this.workspaceSafetyNeedsPersistence =
       this.workspaceSafetyNeedsPersistence ||
@@ -1106,8 +1162,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.markerFreeRecoveryRevision += 1;
       // This is a temporary in-memory barrier, not evidence that the configured
       // folder is missing. A real recovery flag is armed below only after the
-      // delivered safety state and current root have been compared.
-      this.setMigrationRecoveryBlocked(true, this.recoveryBlockMessage);
+      // delivered safety state and current root have been compared. A healthy
+      // workspace says so rather than inheriting the folder-move default.
+      this.setMigrationRecoveryBlocked(
+        true,
+        this.migrationRecoveryBlocked ? this.recoveryBlockMessage : CLINICAL_SETTINGS_APPLYING_MESSAGE
+      );
       // Capture the snapshot at receipt, before an older queued application can
       // save over the data.json version that triggered this callback.
       const storedPromise = this.loadData() as Promise<unknown>;
@@ -1711,7 +1771,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     if (!this.repository) return;
     this.repository.setActor(auditActor(this.settings));
     this.structureReady = false;
-    this.integrityChecked = false;
+    // Every record the other device saves changes data.json. Only a new root
+    // deserves a fresh open-time integrity check; otherwise it would reappear
+    // after each peer save.
+    if (clinicalRootFolder() !== previousRoot) this.integrityChecked = false;
     await this.refreshOpenViews();
     restoreSupersededPathState();
   }
@@ -2223,7 +2286,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         return {
           ok: false,
           reason:
-            "Some previously confirmed records are missing or no longer readable. Wait for Sync to finish or restore your backup, then retry — or confirm the current records as the new baseline.",
+            "Some previously confirmed records are missing or no longer readable. Use “Run clinical data integrity check” to find notes that cannot be read. Wait for Sync to finish or restore your backup, then retry — or confirm the current records as the new baseline.",
           inventory: current
         };
       }
@@ -2397,7 +2460,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         : this.pendingSyncedInventory
           ? CLINICAL_SYNC_GROWTH_PENDING_MESSAGE
         : missingRootBlocked
-          ? CLINICAL_ROOT_UNAVAILABLE_MESSAGE
+          ? this.missingRootBlockMessage()
           : message;
     this.migrationRecoveryBlocked = effectiveBlocked;
     this.recoveryBlockMessage = effectiveBlocked
@@ -2407,10 +2470,44 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.missingRootRecoveryBlocked = false;
       this.missingRootRequiresRecords = false;
     }
-    if (this.repository) {
-      this.repository.setWriteBlock(effectiveBlocked ? effectiveMessage : null);
-    }
+    this.setRepositoryWriteBlock(effectiveBlocked ? effectiveMessage : null);
     if (!effectiveBlocked) this.hideRecoveryNotice();
+  }
+
+  /**
+   * Every repository barrier change goes through here so an open workspace
+   * view can show or clear its read-only banner. The banner update is
+   * deferred briefly: a Sync settings apply closes and reopens writes within
+   * moments, and redrawing on each toggle would only flicker.
+   */
+  private setRepositoryWriteBlock(reason: string | null): void {
+    if (!this.repository) return;
+    const changed = this.repository.getWriteBlockReason() !== reason;
+    this.repository.setWriteBlock(reason);
+    if (changed) this.scheduleWriteBlockBannerSync();
+  }
+
+  private scheduleWriteBlockBannerSync(): void {
+    const workspace = this.app?.workspace;
+    if (!workspace || this.writeBlockBannerTimer !== null) return;
+    this.writeBlockBannerTimer = window.setTimeout(() => {
+      this.writeBlockBannerTimer = null;
+      for (const leaf of workspace.getLeavesOfType(CLINICAL_WORKSPACE_VIEW)) {
+        if (leaf.view instanceof ClinicalWorkspaceView) leaf.view.syncWriteBlockBanner();
+      }
+    }, WRITE_BLOCK_BANNER_DELAY_MS);
+  }
+
+  /**
+   * "Folder unavailable" is reserved for a folder that is really missing. A
+   * present folder is being rechecked; a hand-edit barrier keeps its more
+   * specific wording for the rest of the episode.
+   */
+  private missingRootBlockMessage(): string {
+    if (!this.rootExists(clinicalRootFolder())) return CLINICAL_ROOT_UNAVAILABLE_MESSAGE;
+    return this.recoveryBlockMessage === CLINICAL_RECORD_CHANGED_MESSAGE
+      ? CLINICAL_RECORD_CHANGED_MESSAGE
+      : CLINICAL_RECORDS_RECHECK_MESSAGE;
   }
 
   private hideRecoveryNotice(): void {
@@ -2444,7 +2541,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   }
 
   private setMissingRootRecoveryBlocked(
-    requiresRecords = this.managedRecordsExpected
+    requiresRecords = this.managedRecordsExpected,
+    message?: string
   ): void {
     // This sentinel stays durable after recovery. If a later re-arm write
     // fails, the next launch still performs an exact inventory check rather
@@ -2461,7 +2559,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
     this.missingRootRecoveryBlocked = true;
     this.missingRootRequiresRecords = requiresRecords;
-    this.setMigrationRecoveryBlocked(true, CLINICAL_ROOT_UNAVAILABLE_MESSAGE);
+    this.setMigrationRecoveryBlocked(true, message ?? this.missingRootBlockMessage());
   }
 
   private setBaselineReviewBlocked(
@@ -2806,10 +2904,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.missingRootRecoveryBlocked = false;
     this.missingRootRequiresRecords = false;
     this.structureReady = false;
-    this.repository?.setWriteBlock(
+    this.setRepositoryWriteBlock(
       reviewRequired
         ? CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
-        : CLINICAL_ROOT_UNAVAILABLE_MESSAGE
+        : this.missingRootBlockMessage()
     );
     try {
       await this.persistPluginData();
@@ -3017,7 +3115,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     if (this.firstUseInitializationPromise) return this.firstUseInitializationPromise;
     if (this.currentMigrationMarker()) {
       showClinicalRecoveryNotice(
-        "A legacy folder move is still pending. Let synchronization finish, then use the recovery command before adopting the current workspace baseline.",
+        "A legacy folder move is still pending. Let synchronization finish, then run “Recheck records and unlock editing” before initializing the workspace.",
         12000
       );
       return Promise.resolve(false);
@@ -3029,7 +3127,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       const trustedSafety = this.isWorkspaceSafetyTrusted(safety, this.settings.rootFolder);
       if (trustedSafety || this.markerFrom(stored)) {
         await this.loadSettings();
-        this.repository.setWriteBlock(
+        this.setRepositoryWriteBlock(
           this.migrationRecoveryBlocked ? this.recoveryBlockMessage : null
         );
         return false;
@@ -3043,10 +3141,15 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       if (
         this.settings.rootFolder !== root ||
         this.markerFreeRecoveryRevision !== previewRevision ||
-        this.rootManagedRecordCount(root) !== recordCount ||
-        inventory.total !== recordCount
+        this.rootManagedRecordCount(root) !== recordCount
       ) {
         showClinicalRecoveryNotice(CLINICAL_INITIALIZATION_CHANGED_MESSAGE, 9000);
+        return false;
+      }
+      if (inventory.total !== recordCount) {
+        // Nothing changed between the two reads: a note that is not a record
+        // sits in a record folder, and waiting for Sync will never fix that.
+        showClinicalRecoveryNotice(CLINICAL_UNRECOGNIZED_RECORD_NOTES_MESSAGE, 12000);
         return false;
       }
       this.pendingAdoptionRoot = root;
@@ -3115,7 +3218,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         (JSON.stringify(latestAfterInventoryRead) ?? "undefined")
     ) {
       await this.loadSettings();
-      this.repository.setWriteBlock(
+      this.setRepositoryWriteBlock(
         this.migrationRecoveryBlocked ? this.recoveryBlockMessage : null
       );
       throw new Error(CLINICAL_INITIALIZATION_CHANGED_MESSAGE);
@@ -3166,12 +3269,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       }
       if (!this.commitTrustedInventoryJournal()) {
         this.setMissingRootRecoveryBlocked(this.managedRecordsExpected);
-        this.repository.setWriteBlock(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
+        this.setRepositoryWriteBlock(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
         throw new Error(CLINICAL_INITIALIZATION_SAVE_FAILED_MESSAGE);
       }
       this.migrationRecoveryBlocked = false;
       this.recoveryBlockMessage = CLINICAL_WRITES_BLOCKED_MESSAGE;
-      this.repository.setWriteBlock(null);
+      this.setRepositoryWriteBlock(null);
       this.pendingAdoptionRecordCount = null;
       this.pendingAdoptionRoot = null;
       this.pendingAdoptionDataFingerprint = null;
@@ -3189,7 +3292,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       }
       this.migrationRecoveryBlocked = true;
       this.recoveryBlockMessage = CLINICAL_INITIALIZATION_REQUIRED_MESSAGE;
-      this.repository.setWriteBlock(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
+      this.setRepositoryWriteBlock(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
       this.pendingAdoptionRecordCount = null;
       this.pendingAdoptionRoot = null;
       this.pendingAdoptionDataFingerprint = null;
@@ -3799,6 +3902,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       this.missingRootRequiresRecords = false;
     }
     this.setMigrationRecoveryBlocked(false);
+    this.integrityChecked = false;
     if (this.baselineReviewRequired) {
       this.showMigrationRecoveryNotice(
         12000,
@@ -3825,8 +3929,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         operationRecovered = await this.retryMissingRootRecoveryExplicitly();
         return operationRecovered;
       });
+      if (recovered) this.integrityChecked = false;
       if (wasMissingRootBlocked && recovered) {
-        new Notice("Clinical Workspace folder access was restored.", 7000);
+        new Notice(CLINICAL_RECORDS_UNLOCKED_MESSAGE, 7000);
       } else if (wasMissingRootBlocked && operationRecovered) {
         // A final delivery invalidated the scan. Explicit Retry still needs
         // guidance even when this episode's background popup was dismissed.
@@ -3845,6 +3950,62 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
     if (settled) await this.refreshOpenViews();
     return settled && !this.baselineReviewRequired;
+  }
+
+  /** True in every state whose guidance names “Recheck records and unlock editing”. */
+  private recoveryRecheckAvailable(): boolean {
+    if (this.currentMigrationMarker() || this.missingRootRecoveryBlocked) return true;
+    return !this.firstUseInitializationPending && !this.localMigrationRunning &&
+      (this.baselineReviewRequired || this.pendingSyncedInventory !== null);
+  }
+
+  /**
+   * Shared by the command palette and the workspace banner. Where the recheck
+   * cannot help (first use, a local move, a Sync apply still running) it
+   * repeats the current reason instead of starting a recovery pass.
+   */
+  private async recheckRecordsAndUnlock(): Promise<void> {
+    if (!this.recoveryRecheckAvailable()) {
+      if (this.migrationRecoveryBlocked) {
+        this.showMigrationRecoveryNotice(12000, this.recoveryBlockMessage, false);
+      }
+      return;
+    }
+    try {
+      await this.retryPendingMigrationRecovery();
+    } catch {
+      this.showMigrationRecoveryNotice(12000, this.recoveryBlockMessage, false);
+    }
+  }
+
+  /**
+   * Hidden only while the workspace is fully writable: every state whose
+   * guidance names this command keeps at least one of these flags set, and
+   * adoptCurrentBaseline explains itself in states where it must refuse.
+   */
+  private baselineAdoptionCommandAvailable(): boolean {
+    return this.migrationRecoveryBlocked || this.missingRootRecoveryBlocked ||
+      this.baselineReviewRequired || this.localTypedReviewRequired ||
+      this.baselineReviewRequiresSharedConfirmation || this.pendingSyncedInventory !== null ||
+      this.repository?.getWriteBlockReason() != null;
+  }
+
+  private workspaceRecoveryHost(): ClinicalWorkspaceRecoveryHost {
+    return {
+      recordsMayBeIncomplete: () => this.recordsMayBeIncomplete(),
+      recheck: () => this.recheckRecordsAndUnlock()
+    };
+  }
+
+  /** Identifier-free hint for the banner that the listed records may be partial. */
+  private recordsMayBeIncomplete(): boolean {
+    const root = clinicalRootFolder();
+    return Boolean(this.pendingMigrationMarker) ||
+      this.firstUseInitializationPending ||
+      this.pendingSyncedInventory !== null ||
+      !this.rootExists(root) ||
+      (this.managedRecordsExpected &&
+        this.rootManagedRecordCount(root) < this.expectedManagedRecordCount);
   }
 
   /** User retry accepts the exact trusted set or growth that kept it; loss/replacement needs typed ADOPT. */
@@ -3956,10 +4117,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       return false;
     }
     if (verified.inventory.total !== this.rootManagedRecordCount(root)) {
-      showClinicalRecoveryNotice(
-        "The managed record folders contain Markdown that is not a valid Clinical Workspace record. Move or repair those files, then retry; the recovery baseline was not changed.",
-        12000
-      );
+      showClinicalRecoveryNotice(CLINICAL_UNRECOGNIZED_RECORD_NOTES_MESSAGE, 12000);
       return false;
     }
     // A user pressing Retry after the final record file arrives uses the same
@@ -3988,10 +4146,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     const acceptedInventory = verified.inventory;
     const acceptedRawCount = this.rootManagedRecordCount(root);
     if (acceptedInventory.total !== acceptedRawCount) {
-      showClinicalRecoveryNotice(
-        "The managed record folders contain Markdown that is not a valid Clinical Workspace record. Move or repair those files, then retry; the recovery baseline was not changed.",
-        12000
-      );
+      showClinicalRecoveryNotice(CLINICAL_UNRECOGNIZED_RECORD_NOTES_MESSAGE, 12000);
       return false;
     }
     this.expectedEntityCounts = { ...acceptedInventory.counts };
@@ -4008,7 +4163,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.structureReady = false;
     // Keep the global flag and repository barrier armed until both the clear
     // save and a post-save exact scan have completed.
-    this.repository?.setWriteBlock(this.recoveryBlockMessage);
+    this.setRepositoryWriteBlock(this.recoveryBlockMessage);
     try {
       await this.persistPluginData();
     } catch {
@@ -4149,7 +4304,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.registerEvent(this.app.vault.on("modify", (file) => {
       this.repository.invalidatePath(file.path);
       this.observeManagedRecordDelivery(file.path);
-      this.retryMigrationForPath(file.path);
+      this.scheduleManagedRecordRecheck(file.path);
       this.scheduleRefresh(file.path);
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
@@ -4166,6 +4321,34 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         this.scheduleRefresh(oldPath);
       })
     );
+  }
+
+  /**
+   * The barrier was already armed synchronously by the event; only the scan
+   * that may reopen writes waits. Obsidian saves a note every few seconds
+   * while it is typed into, so without this each save would arm, persist,
+   * rescan and reopen on its own.
+   */
+  private scheduleManagedRecordRecheck(path: string): void {
+    const root = clinicalRootFolder();
+    if (
+      !this.currentMigrationMarker() &&
+      (this.missingRootRecoveryBlocked || this.markerFreeRecoveryOperations > 0) &&
+      (path === root || path.startsWith(`${root}/`))
+    ) {
+      // Invalidate an in-flight scan now, as an immediate retry would have.
+      this.markerFreeRecoveryRevision += 1;
+    }
+    this.managedRecordRecheckPaths.add(path);
+    if (this.managedRecordRecheckTimer !== null) {
+      window.clearTimeout(this.managedRecordRecheckTimer);
+    }
+    this.managedRecordRecheckTimer = window.setTimeout(() => {
+      this.managedRecordRecheckTimer = null;
+      const paths = [...this.managedRecordRecheckPaths];
+      this.managedRecordRecheckPaths.clear();
+      for (const pending of paths) this.retryMigrationForPath(pending);
+    }, MANAGED_RECORD_RECHECK_DELAY_MS);
   }
 
   /** Applies the safety-sensitive part of a vault rename synchronously. */
@@ -4207,6 +4390,18 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // either confirms the plugin write or the observer increments this
     // revision when it consumes the event as external.
     this.markerFreeRecoveryRevision += 1;
+    if (
+      deliveredRoot === activeRoot &&
+      this.firstUseInitializationPending &&
+      !this.initializationScaffoldApproved &&
+      this.readTrustedInventoryJournal().status === "missing"
+    ) {
+      // Nothing is trusted yet, so there is no anchor to protect, and the
+      // initialization confirmation freezes and re-verifies the record set.
+      // A tuple-less pending journal would instead read as an interrupted
+      // bootstrap on the next launch and demand a typed ADOPT.
+      return;
+    }
     if (this.armTrustedInventoryJournal() === null) {
       this.failClosedForTrustedInventoryJournal();
       return;
@@ -4234,7 +4429,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // A vault event does not reveal whether it came from Sync or another
     // plugin. Preserve the local tuple, persist a barrier, and let an exact
     // rescan clear benign edits and additive growth. Loss or replacement requires typed ADOPT.
-    this.setMissingRootRecoveryBlocked(this.managedRecordsExpected);
+    this.setMissingRootRecoveryBlocked(
+      this.managedRecordsExpected,
+      this.rootExists(activeRoot) ? CLINICAL_RECORD_CHANGED_MESSAGE : undefined
+    );
     void this.persistWorkspaceSafety();
   }
 
@@ -4270,7 +4468,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.setMigrationRecoveryBlocked(true);
     if (this.firstUseInitializationPending) {
       showClinicalRecoveryNotice(
-        "A legacy folder move was detected. Let synchronization finish, then use the recovery command before adopting the current workspace baseline.",
+        "A legacy folder move was detected. Let synchronization finish, then run “Recheck records and unlock editing” before initializing the workspace.",
         12000,
         { background: true }
       );
@@ -4303,7 +4501,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     ) {
       return;
     }
-    this.setMissingRootRecoveryBlocked(this.managedRecordsExpected || managedCountDropped);
+    this.setMissingRootRecoveryBlocked(
+      this.managedRecordsExpected || managedCountDropped,
+      path !== activeRoot && this.rootExists(activeRoot)
+        ? CLINICAL_RECORD_CHANGED_MESSAGE
+        : undefined
+    );
     void this.persistWorkspaceSafety();
     this.showMigrationRecoveryNotice();
   }
@@ -4344,7 +4547,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     } catch (error) {
       this.workspaceSafetyNeedsPersistence = true;
       showClinicalRecoveryNotice(
-        "Clinical Workspace could not save its folder-recovery state. Keep the plugin open and do not edit records.",
+        "Clinical Workspace could not save its recovery state. Keep the plugin open and do not edit records.",
         12000,
         { background: true }
       );
@@ -4427,13 +4630,23 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // the interrupted destination and reconciliation would then "find" it.
     if (this.pendingMigrationMarker) {
       const settled = await this.retryMigrationReconciliation();
-      if (!settled) throw new Error(CLINICAL_WRITES_BLOCKED_MESSAGE);
+      // Until the move settles, either root may hold only part of the records.
+      if (!settled && this.currentMigrationMarker()) {
+        throw new Error(CLINICAL_FOLDER_MOVE_OPEN_REFUSED_MESSAGE);
+      }
     }
     if (this.missingRootRecoveryBlocked) {
       await this.retryExactRestoredRootRecovery();
     }
-    if (this.migrationRecoveryBlocked) throw new Error(this.recoveryBlockMessage);
-    await this.ensureStructure();
+    if (this.migrationRecoveryBlocked) {
+      // Reading needs no write, so a blocked workspace opens read-only: the
+      // repository barrier refuses every mutation and the view shows why.
+      // ensureStructure is skipped because it creates folders.
+      const refusal = this.readOnlyOpenRefusal();
+      if (refusal) throw new Error(refusal);
+    } else {
+      await this.ensureStructure();
+    }
     const existing = this.app.workspace.getLeavesOfType(CLINICAL_WORKSPACE_VIEW)[0];
     const leaf = existing ?? this.app.workspace.getLeaf(true);
     if (!existing) {
@@ -4451,6 +4664,19 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
     await this.maybeShowWhatsNew();
     return view;
+  }
+
+  /** Null when the blocked workspace may still be opened for reading. */
+  private readOnlyOpenRefusal(): string | null {
+    if (this.currentMigrationMarker()) return CLINICAL_FOLDER_MOVE_OPEN_REFUSED_MESSAGE;
+    if (
+      this.localMigrationRunning ||
+      this.firstUseInitializationPending ||
+      !this.rootExists(clinicalRootFolder())
+    ) {
+      return this.recoveryBlockMessage;
+    }
+    return null;
   }
 
   private async openAddPatient(): Promise<void> {
@@ -4539,9 +4765,20 @@ export default class ClinicalWorkspacePlugin extends Plugin {
 
   private async runIntegrityCheck(options: { onlyWhenIssuesFound?: boolean } = {}): Promise<void> {
     try {
-      await this.ensureStructure();
+      // The report only reads. While writes are blocked it is the one place
+      // that may name the offending notes, so it must not depend on the
+      // folder scaffolding that a blocked workspace refuses to create.
+      if (!this.migrationRecoveryBlocked) await this.ensureStructure();
       const report = await this.integrity.report();
-      if (options.onlyWhenIssuesFound && !report.issues.length) return;
+      if (options.onlyWhenIssuesFound) {
+        if (!report.issues.length) return;
+        const signature = report.issues
+          .map((issue) => [issue.code, issue.path, issue.recordId, issue.message].join("\u0000"))
+          .sort()
+          .join("\u0001");
+        if (signature === this.lastOpenIntegritySignature) return;
+        this.lastOpenIntegritySignature = signature;
+      }
       // Results are rendered in the interface. They are never written to the
       // developer console, because the records they describe are identifiable.
       new IntegrityReportModal(
@@ -4574,7 +4811,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
     if (this.currentMigrationMarker()) {
       showClinicalRecoveryNotice(
-        "A folder move is still pending. Resolve it with the pending folder move recovery command before adopting a new baseline.",
+        "A folder move is still pending. Resolve it with “Recheck records and unlock editing” before adopting a new baseline.",
         9000
       );
       return;
@@ -4610,7 +4847,8 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         ? ["Manual confirmation is required by saved recovery information. Sync completion alone cannot clear this review. Only confirm if these are all the records you intend to keep."]
         : []),
       "The current records become the trusted recovery baseline, replacing the previous one. Do this only when the workspace is complete: synchronization has finished and any intentional deletions are accounted for.",
-      `Parsed records now on disk: ${inventory.counts.patient} patients, ${inventory.counts.episode} episodes, ${inventory.counts.task} tasks, ${inventory.counts.procedure} procedures.`,
+      `Parsed records now on disk: ${describeEntityCounts(inventory.counts)}.`,
+      ...this.previousBaselineComparison(inventory),
       "No note is created, changed, or deleted by this confirmation."
     ];
     new ConfirmMaintenanceModal(this.app, {
@@ -4622,7 +4860,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         if (!confirmed) return;
         void this.confirmCurrentBaselineAdoption(root, candidate)
           .then((adopted) => {
-            if (adopted) new Notice("The current records are now the recovery baseline.", 7000);
+            if (!adopted) return;
+            this.integrityChecked = false;
+            new Notice("The current records are now the recovery baseline.", 7000);
           })
           .catch((error) => {
             showClinicalNotice(
@@ -4632,6 +4872,60 @@ export default class ClinicalWorkspacePlugin extends Plugin {
           });
       }
     }).open();
+  }
+
+  /**
+   * Gives the typed confirmation something to compare against. Counts are
+   * identifier-free; the source is named because only the device-local
+   * journal is this device's own trusted record.
+   */
+  private previousBaselineComparison(current: RecordInventory): string[] {
+    const journal = this.readTrustedInventoryJournal();
+    const entry = journal.status === "valid" ? journal.journal.trustedInventory : undefined;
+    const lines: string[] = [];
+    let previous: ExpectedEntityCounts | null = null;
+    if (entry && entry.rootFingerprint === this.activeRootFingerprint) {
+      previous = entry.expectedEntityCounts;
+      lines.push(`Previously trusted on this device: ${describeEntityCounts(previous)}.`);
+    } else if (this.expectedEntityCounts) {
+      previous = this.expectedEntityCounts;
+      lines.push(
+        `Last baseline in the synced settings, possibly announced by another device: ${describeEntityCounts(previous)}.`
+      );
+    } else {
+      lines.push(
+        `Last baseline in the synced settings: ${countLabel(this.expectedManagedRecordCount, "record", "records")} in total; no per-type counts were saved.`
+      );
+    }
+    if (this.pendingSyncedInventory) {
+      lines.push(
+        `Announced by another device and not yet verified here: ${describeEntityCounts(this.pendingSyncedInventory.counts)}.`
+      );
+    }
+    const fewer: string[] = [];
+    const more: string[] = [];
+    if (previous) {
+      for (const [entity] of ENTITY_FOLDER_NAMES) {
+        const difference = current.counts[entity] - previous[entity];
+        const [singular, plural] = ENTITY_COUNT_NOUNS[entity];
+        if (difference < 0) fewer.push(`${countLabel(-difference, singular, plural)} fewer`);
+        if (difference > 0) more.push(`${countLabel(difference, singular, plural)} more`);
+      }
+    } else {
+      const difference = current.total - this.expectedManagedRecordCount;
+      if (difference < 0) fewer.push(`${countLabel(-difference, "record", "records")} fewer`);
+      if (difference > 0) more.push(`${countLabel(difference, "record", "records")} more`);
+    }
+    if (fewer.length) {
+      lines.push(
+        `Warning: fewer records than the previous baseline (${[...fewer, ...more].join(", ")}). If they were not removed on purpose, restore them from Sync version history or File recovery before adopting.`
+      );
+    } else if (more.length) {
+      lines.push(`Difference from the previous baseline: ${more.join(", ")}.`);
+    } else {
+      lines.push("The record counts match the previous baseline.");
+    }
+    return lines;
   }
 
   /** Freeze the exact record set represented by a typed confirmation modal. */
@@ -4765,7 +5059,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       true,
       wasBaselineReviewRequired
         ? CLINICAL_BASELINE_REVIEW_REQUIRED_MESSAGE
-        : CLINICAL_INITIALIZATION_REQUIRED_MESSAGE
+        : CLINICAL_BASELINE_CONFIRMING_MESSAGE
     );
     const recoveryRevision = this.markerFreeRecoveryRevision;
 
@@ -4826,7 +5120,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       return false;
     }
     if (acceptedInventory.total !== acceptedRawCount) {
-      const message = "The managed record folders contain Markdown that is not a valid Clinical Workspace record. Move or repair those files, then retry; the baseline was not changed.";
+      const message = CLINICAL_UNRECOGNIZED_RECORD_NOTES_MESSAGE;
       if (!wasMissingRootBlocked) {
         this.requestMarkerFreeRecoveryRelease();
         deferFailure(message, 12000);
@@ -4879,7 +5173,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.missingRootRecoveryBlocked = false;
     this.missingRootRequiresRecords = false;
     this.structureReady = false;
-    this.repository?.setWriteBlock(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
+    this.setRepositoryWriteBlock(CLINICAL_BASELINE_CONFIRMING_MESSAGE);
     try {
       await this.persistPluginData();
     } catch {
@@ -4947,15 +5241,21 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
     const folder = `${clinicalRootFolder()}/Patients`;
     const candidates: TFile[] = [];
-    for (const file of markdownFilesInFolder(this.app.vault, folder)) {
-      const content = await this.app.vault.cachedRead(file);
-      const record = parseClinicalRecord(content);
-      if (record?.entity !== "patient") continue;
-      // CRLF-normalized copies of the generated scaffold (a Windows sync or
-      // editor round-trip) are still unmistakably plugin text; matching only
-      // LF would report "Nothing to change" while identifiers remain.
-      const body = bodyAfterFrontmatter(content).replace(/\r\n/g, "\n");
-      if (LEGACY_PATIENT_BODY_PATTERN.test(body.trim() + "\n")) candidates.push(file);
+    try {
+      for (const file of markdownFilesInFolder(this.app.vault, folder)) {
+        const content = await this.app.vault.cachedRead(file);
+        const record = parseClinicalRecord(content);
+        if (record?.entity !== "patient") continue;
+        // CRLF-normalized copies of the generated scaffold (a Windows sync or
+        // editor round-trip) are still unmistakably plugin text; matching only
+        // LF would report "Nothing to change" while identifiers remain.
+        const body = bodyAfterFrontmatter(content).replace(/\r\n/g, "\n");
+        if (LEGACY_PATIENT_BODY_PATTERN.test(body.trim() + "\n")) candidates.push(file);
+      }
+    } catch {
+      // A read error can name the note, so it is never echoed.
+      new Notice("The patient notes could not be checked for generated bodies. Nothing was changed.", 9000);
+      return;
     }
     if (!candidates.length) {
       new Notice(
@@ -4984,40 +5284,53 @@ export default class ClinicalWorkspacePlugin extends Plugin {
             return;
           }
           let rewritten = 0;
-          await this.repository.withManagedRecordMutation(
-            candidates.map((file) => file.path),
-            async () => {
-              for (const file of candidates) {
-                try {
-                  await this.app.vault.process(file, (current) => {
-                    const rawBody = bodyAfterFrontmatter(current);
-                    // Re-check inside the transform: Sync may have delivered an
-                    // edited version since the preview was computed. The slice
-                    // offset uses the RAW body length; the CRLF normalization is
-                    // for pattern matching only.
-                    if (!LEGACY_PATIENT_BODY_PATTERN.test(rawBody.replace(/\r\n/g, "\n").trim() + "\n")) {
-                      return current;
-                    }
-                    const record = parseClinicalRecord(current);
-                    if (record?.entity !== "patient") return current;
-                    const frontmatterEnd = current.length - rawBody.length;
-                    rewritten += 1;
-                    return current.slice(0, frontmatterEnd) + recordBody(record);
-                  });
-                  this.repository.invalidatePath(file.path);
-                } catch {
-                  // Identifier-free by construction; the per-note failure is
-                  // recoverable by rerunning the command.
-                  console.warn("Clinical Workspace: a generated body could not be rewritten.");
+          try {
+            await this.repository.withManagedRecordMutation(
+              candidates.map((file) => file.path),
+              async () => {
+                for (const file of candidates) {
+                  try {
+                    await this.app.vault.process(file, (current) => {
+                      const rawBody = bodyAfterFrontmatter(current);
+                      // Re-check inside the transform: Sync may have delivered an
+                      // edited version since the preview was computed. The slice
+                      // offset uses the RAW body length; the CRLF normalization is
+                      // for pattern matching only.
+                      if (!LEGACY_PATIENT_BODY_PATTERN.test(rawBody.replace(/\r\n/g, "\n").trim() + "\n")) {
+                        return current;
+                      }
+                      const record = parseClinicalRecord(current);
+                      if (record?.entity !== "patient") return current;
+                      const frontmatterEnd = current.length - rawBody.length;
+                      rewritten += 1;
+                      return current.slice(0, frontmatterEnd) + recordBody(record);
+                    });
+                    this.repository.invalidatePath(file.path);
+                  } catch {
+                    // Identifier-free by construction; the per-note failure is
+                    // recoverable by rerunning the command.
+                    console.warn("Clinical Workspace: a generated body could not be rewritten.");
+                  }
                 }
               }
+            );
+            new Notice(
+              `${rewritten} generated bod${rewritten === 1 ? "y" : "ies"} rewritten without identifiers. Notes you have edited were not touched.`,
+              9000
+            );
+          } catch (error) {
+            // Sync can close writes after the preview. Report the partial
+            // result; only identifier-free recovery reasons are repeated.
+            new Notice(
+              `The rewrite stopped after ${rewritten} generated bod${rewritten === 1 ? "y" : "ies"}. The remaining notes were not changed; run the command again when editing is available.`,
+              9000
+            );
+            if (error instanceof Error && isClinicalRecoveryMessage(error.message)) {
+              this.showUserFacingNotice(error.message, 9000);
             }
-          );
-          new Notice(
-            `${rewritten} generated bod${rewritten === 1 ? "y" : "ies"} rewritten without identifiers. Notes you have edited were not touched.`,
-            9000
-          );
-          await this.refreshOpenViews();
+          } finally {
+            await this.refreshOpenViews().catch(() => undefined);
+          }
         })();
       }
     }).open();
