@@ -1243,6 +1243,13 @@
   min-width: 44px;
 }
 
+/* is-narrow makes every card button fill its grid cell. Here that made each
+   button as wide as the whole action box, pushing Open past the row edge on
+   phones and in narrow panes, so ward buttons keep their own width. */
+.clinical-workspace-view.is-narrow .clinical-ward-actions .clinical-card-button {
+  width: auto;
+}
+
 /* --- Logbook breakdown ----------------------------------------------------- */
 
 .clinical-table-wrap {

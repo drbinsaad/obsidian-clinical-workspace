@@ -56,8 +56,10 @@ import {
   CLINICAL_SETTINGS_APPLYING_MESSAGE,
   CLINICAL_SYNC_GROWTH_PENDING_MESSAGE,
   CLINICAL_UNRECOGNIZED_RECORD_NOTES_MESSAGE,
+  clinicalErrorNoticeText,
   hideClinicalRecoveryNotice,
   isClinicalRecoveryMessage,
+  showClinicalErrorNotice,
   showClinicalNotice,
   showClinicalRecoveryNotice
 } from "./ui/notices";
@@ -740,8 +742,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       checkCallback: (checking) => {
         // An approved initialization that has not finished is completed by
         // opening the workspace too, so the command its guidance names stays
-        // available until then.
-        if (!this.firstUseInitializationPending && !this.initializationScaffoldApproved) {
+        // available until then. A review raised after approval needs typed
+        // ADOPT instead, which opening only read-only cannot give.
+        if (
+          !this.firstUseInitializationPending &&
+          !(this.initializationScaffoldApproved && !this.baselineReviewRequired)
+        ) {
           return false;
         }
         if (!checking) void this.openWorkspace();
@@ -3290,9 +3296,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         this.initializationScaffoldApproved = false;
         this.workspaceInitialized = false;
       }
-      this.migrationRecoveryBlocked = true;
-      this.recoveryBlockMessage = CLINICAL_INITIALIZATION_REQUIRED_MESSAGE;
-      this.setRepositoryWriteBlock(CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
+      // The shared precedence names the real exit: a typed review raised by
+      // the final scan points to ADOPT, not back to this command.
+      this.setMigrationRecoveryBlocked(true, CLINICAL_INITIALIZATION_REQUIRED_MESSAGE);
       this.pendingAdoptionRecordCount = null;
       this.pendingAdoptionRoot = null;
       this.pendingAdoptionDataFingerprint = null;
@@ -4000,9 +4006,15 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   /** Identifier-free hint for the banner that the listed records may be partial. */
   private recordsMayBeIncomplete(): boolean {
     const root = clinicalRootFolder();
+    // A barrier over an unverified record set comes first: an unreadable,
+    // replaced or stray note leaves the raw file count unchanged while the
+    // parsed set the lists show is short.
     return Boolean(this.pendingMigrationMarker) ||
       this.firstUseInitializationPending ||
       this.pendingSyncedInventory !== null ||
+      this.missingRootRecoveryBlocked ||
+      this.baselineReviewRequired ||
+      this.localTypedReviewRequired ||
       !this.rootExists(root) ||
       (this.managedRecordsExpected &&
         this.rootManagedRecordCount(root) < this.expectedManagedRecordCount);
@@ -4331,10 +4343,16 @@ export default class ClinicalWorkspacePlugin extends Plugin {
    */
   private scheduleManagedRecordRecheck(path: string): void {
     const root = clinicalRootFolder();
+    const marker = this.currentMigrationMarker();
+    const touches = (candidate: string): boolean =>
+      path === candidate || path.startsWith(`${candidate}/`);
+    // The recheck only ever scans these roots (see retryMigrationForPath). A
+    // note saved anywhere else adds nothing to it and must not restart its
+    // delay, or a long unrelated Sync pull would keep editing paused.
+    if (marker ? !touches(marker.from) && !touches(marker.to) : !touches(root)) return;
     if (
-      !this.currentMigrationMarker() &&
-      (this.missingRootRecoveryBlocked || this.markerFreeRecoveryOperations > 0) &&
-      (path === root || path.startsWith(`${root}/`))
+      !marker &&
+      (this.missingRootRecoveryBlocked || this.markerFreeRecoveryOperations > 0)
     ) {
       // Invalidate an in-flight scan now, as an immediate retry would have.
       this.markerFreeRecoveryRevision += 1;
@@ -4618,7 +4636,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       await this.activateWorkspace();
     } catch (error) {
       this.showUserFacingNotice(
-        error instanceof Error ? error.message : "Clinical Workspace could not be opened.",
+        clinicalErrorNoticeText(error, "Clinical Workspace could not be opened."),
         7000
       );
     }
@@ -4658,7 +4676,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       throw new Error("Clinical Workspace view could not be opened.");
     }
     await view.refresh();
-    if (this.settings.runIntegrityOnStartup && !this.integrityChecked) {
+    // While editing is paused the records may be only partly delivered, and
+    // a report of their gaps would invite hand edits mid-Sync. The automatic
+    // check waits for the first writable open; the command still runs.
+    if (
+      this.settings.runIntegrityOnStartup &&
+      !this.integrityChecked &&
+      !this.migrationRecoveryBlocked
+    ) {
       this.integrityChecked = true;
       await this.runIntegrityCheck({ onlyWhenIssuesFound: true });
     }
@@ -4734,10 +4759,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       const view = await this.activateWorkspace();
       await action(view);
     } catch (error) {
-      this.showUserFacingNotice(
-        error instanceof Error ? error.message : fallbackMessage,
-        7000
-      );
+      this.showUserFacingNotice(clinicalErrorNoticeText(error, fallbackMessage), 7000);
     }
   }
 
@@ -4791,10 +4813,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         { scannedRecords: report.scannedRecords, checkFamilies: report.checkFamilies }
       ).open();
     } catch (error) {
-      this.showUserFacingNotice(
-        error instanceof Error ? error.message : "Integrity check failed.",
-        7000
-      );
+      this.showUserFacingNotice(clinicalErrorNoticeText(error, "Integrity check failed."), 7000);
     }
   }
 
@@ -4865,10 +4884,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
             new Notice("The current records are now the recovery baseline.", 7000);
           })
           .catch((error) => {
-            showClinicalNotice(
-              error instanceof Error ? error.message : "The baseline could not be adopted.",
-              9000
-            );
+            showClinicalErrorNotice(error, "The baseline could not be adopted.", 9000);
           });
       }
     }).open();
@@ -5052,6 +5068,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     const wasTypedReviewRequired = this.baselineReviewNeedsTypedAdoption;
     const wasSharedConfirmationRequired = this.baselineReviewRequiresSharedConfirmation;
     const requiresRecords = this.missingRootRequiresRecords || this.managedRecordsExpected;
+    const previousBlockMessage = this.recoveryBlockMessage;
+    // A refusal below ends the confirming scan. Put back the reason the
+    // barrier had before, so the banner and refused actions do not go on
+    // saying "try again in a few seconds" with nothing running.
+    const restoreRecoveryBlock = (): void => {
+      this.recoveryBlockMessage = previousBlockMessage;
+      this.setMissingRootRecoveryBlocked(requiresRecords);
+    };
     // Baseline adoption itself changes the trusted safety state. Block all
     // record writes for its scan/save/rescan window, even when it began from a
     // healthy workspace.
@@ -5072,6 +5096,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         this.requestMarkerFreeRecoveryRelease();
         deferFailure(message, 9000);
       } else {
+        restoreRecoveryBlock();
         showClinicalRecoveryNotice(message, 9000);
       }
       return false;
@@ -5125,6 +5150,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         this.requestMarkerFreeRecoveryRelease();
         deferFailure(message, 12000);
       } else {
+        restoreRecoveryBlock();
         showClinicalRecoveryNotice(message, 12000);
       }
       return false;
