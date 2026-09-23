@@ -87,14 +87,16 @@ jobs:
           # constants in the release verifier. Everything else must be listed
           # deliberately, so a real MRN pasted in while debugging fails the build.
           ALLOWED='^(9000[0-9]*|0009000000001|0012345|0500000000|0500000001|16777619|2166136261)$'
-          # Hex literals are algorithmic constants, not identifiers.
+          # Hex literals are algorithmic constants, not identifiers. `grep -a`
+          # keeps a stray binary byte from switching grep into "binary file
+          # matches" mode, which silently printed nothing and passed the gate.
           UNEXPECTED=$(git grep -hI '' -- \
                        src tests scripts docs README.md SECURITY.md CONTRIBUTING.md \
                        CHANGELOG.md CODE_OF_CONDUCT.md SUPPORT.md manifest.json versions.json \
                        .github/ISSUE_TEMPLATE .github/PULL_REQUEST_TEMPLATE.md \
                        ':(exclude)docs/assets/SHA256SUMS' \
                        | sed -E 's/0x[0-9a-fA-F]+//g' \
-                       | grep -oE '[0-9]{7,}' \
+                       | grep -aoE '[0-9]{7,}' \
                        | sort -u | grep -Ev "$ALLOWED" || true)
           if [ -n "$UNEXPECTED" ]; then
             echo "::error::Unapproved identifier-shaped literal(s) in source: $UNEXPECTED"
