@@ -44,7 +44,7 @@ interface InventoryRatchetWaiter {
  * folder names: it can reach Notices and the developer console.
  */
 export const CLINICAL_WRITES_BLOCKED_MESSAGE =
-  "Clinical Workspace is temporarily read-only while a synced folder move is being reconciled. After Sync finishes, run “Retry pending folder move recovery” from the Command Palette.";
+  "Clinical Workspace is temporarily read-only while a synced folder move is being reconciled. After Sync finishes, run “Recheck records and unlock editing” from the Command Palette.";
 
 export interface UnreadableRecordInfo {
   path: string;

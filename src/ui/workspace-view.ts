@@ -60,7 +60,7 @@ import {
   bidiIsolate,
   patientIdentityLabel
 } from "./modals";
-import { showClinicalNotice } from "./notices";
+import { compactClinicalRecoveryNotice, showClinicalNotice } from "./notices";
 
 export const CLINICAL_WORKSPACE_VIEW = "clinical-workspace-view";
 
@@ -86,6 +86,17 @@ export const CLINICAL_WORKSPACE_PANE_CLASSES = [
   "is-compact",
   "is-narrow"
 ] as const;
+
+/**
+ * Recovery hooks the plugin lends the view for its read-only banner. Both
+ * stay identifier-free: the banner text is the repository's barrier reason.
+ */
+export interface ClinicalWorkspaceRecoveryHost {
+  /** True while the listed records may be only part of what Sync will deliver. */
+  recordsMayBeIncomplete: () => boolean;
+  /** Runs the same recheck as the “Recheck records and unlock editing” command. */
+  recheck: () => Promise<void>;
+}
 
 export interface ClinicalWorkspacePaneHost {
   readWidth: () => number;
@@ -301,6 +312,7 @@ export class ClinicalWorkspaceView extends ItemView {
     scrollTop: number;
   } | null = null;
   private renderGeneration = 0;
+  private writeBlockSlot: HTMLElement | null = null;
 
   private tabId(tab: WorkspaceTab): string {
     return `clinical-workspace-${this.instanceId}-tab-${tab}`;
@@ -315,7 +327,8 @@ export class ClinicalWorkspaceView extends ItemView {
     private readonly repository: ClinicalRepository,
     private readonly service: ClinicalService,
     private readonly integrity: IntegrityService,
-    private readonly getSettings: () => ClinicalSettings = () => DEFAULT_SETTINGS
+    private readonly getSettings: () => ClinicalSettings = () => DEFAULT_SETTINGS,
+    private readonly recovery: ClinicalWorkspaceRecoveryHost | null = null
   ) {
     super(leaf);
   }
@@ -395,6 +408,8 @@ export class ClinicalWorkspaceView extends ItemView {
   }
 
   openAddPatient(seed?: Partial<NewEpisodeInput>): void {
+    // The workspace can open read-only; never collect input it cannot save.
+    if (!this.canOpenWriteForm()) return;
     const settings = this.getSettings();
     const defaults: Partial<NewEpisodeInput> = {
       careSetting: settings.defaultCareSetting,
@@ -574,6 +589,8 @@ export class ClinicalWorkspaceView extends ItemView {
     // content the way an absolutely positioned child of a scroller would.
     const scroller = root.createDiv({ cls: "clinical-workspace-scroll" });
     const shell = scroller.createDiv({ cls: "clinical-workspace-shell" });
+    this.writeBlockSlot = shell.createDiv({ cls: "clinical-write-block-slot" });
+    this.syncWriteBlockBanner();
     this.renderHeader(shell);
     const activeTab = this.renderTabs(shell);
     const panel = shell.createDiv({
@@ -608,6 +625,46 @@ export class ClinicalWorkspaceView extends ItemView {
     }
     this.restorePageContext(scroller);
     this.revealActiveTab(activeTab, scroller);
+  }
+
+  /**
+   * Redraws only the read-only banner, so a Sync barrier opening or closing
+   * never re-renders the lists or moves the reading position.
+   */
+  syncWriteBlockBanner(): void {
+    const slot = this.writeBlockSlot;
+    const recovery = this.recovery;
+    if (!slot || !recovery) return;
+    slot.empty();
+    const reason = this.repository.getWriteBlockReason();
+    if (!reason) return;
+    const banner = slot.createDiv({
+      cls: "clinical-write-block-banner",
+      attr: { role: "status" }
+    });
+    banner.createEl("strong", { text: "Editing is paused", cls: "clinical-write-block-title" });
+    banner.createEl("p", {
+      text: compactClinicalRecoveryNotice(reason),
+      cls: "clinical-write-block-text",
+      attr: { title: reason }
+    });
+    if (recovery.recordsMayBeIncomplete()) {
+      banner.createEl("p", {
+        text: "The records shown may be incomplete until this is resolved.",
+        cls: "clinical-write-block-text"
+      });
+    }
+    const button = banner.createEl("button", {
+      text: "Recheck now",
+      cls: "clinical-card-button clinical-write-block-action"
+    });
+    button.addEventListener("click", () => {
+      if (button.disabled) return;
+      button.disabled = true;
+      void recovery.recheck().finally(() => {
+        button.disabled = false;
+      });
+    });
   }
 
   private renderHeader(container: HTMLElement): void {

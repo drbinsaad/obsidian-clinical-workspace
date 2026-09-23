@@ -22,6 +22,7 @@ import {
 import { ClinicalService } from "../src/services/clinical-service";
 import {
   CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE,
+  CLINICAL_RECORDS_UNLOCKED_MESSAGE,
   compactClinicalRecoveryNotice,
   hideClinicalRecoveryNotice
 } from "../src/ui/notices";
@@ -993,7 +994,7 @@ test("deleting one managed child fails closed until the full healthy count retur
 
     await assert.rejects(
       () => service.createEpisode(episodeInput({ mrn: "6001" })),
-      new RegExp("configured folder is unavailable")
+      /a record note was added, edited, deleted or moved outside Clinical Workspace/
     );
     assert.equal(await plugin.retryPendingMigrationRecovery(), false);
 
@@ -1233,7 +1234,7 @@ test("startup validation blocks an equal-count replacement delivered before layo
       () => new ClinicalService(restartedRepository).createEpisode(
         episodeInput({ mrn: "5110", caseName: "Startup replacement must stay blocked" })
       ),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -1276,7 +1277,7 @@ test("startup validation catches a managed deletion before listeners and creates
     const filesBeforeEnsure = [...app.vault.files.keys()].sort();
     await assert.rejects(
       () => restarted.ensureStructure(),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
     assert.deepEqual([...app.vault.files.keys()].sort(), filesBeforeEnsure);
     assert.equal(
@@ -1481,7 +1482,7 @@ test("automatic and explicit recovery serialize while Sync changes a pending sav
       () => new ClinicalService(restartedRepository).createEpisode(
         episodeInput({ mrn: "5100", caseName: "Must stay blocked" })
       ),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
     releaseSave();
 
@@ -1613,7 +1614,7 @@ test("a failed dirty-pass re-arm remains blocked after restart", async () => {
       () => new ClinicalService(restartedRepository).createEpisode(
         episodeInput({ mrn: "5102", caseName: "Restart must stay blocked" })
       ),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -1710,7 +1711,7 @@ test("closed-app root loss persists exact validation before an equal-count chang
       () => new ClinicalService(secondRestartRepository).createEpisode(
         episodeInput({ mrn: "5104", caseName: "Changed closed-app restore" })
       ),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -1852,7 +1853,7 @@ test("a frozen baseline preview rejects record loss before typed confirmation co
       () => new ClinicalService(repository).createEpisode(
         episodeInput({ mrn: "5107", caseName: "Frozen-preview deletion must stay blocked" })
       ),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -2327,7 +2328,7 @@ test("a final-handoff delete and complete restore triggers a fresh exact recover
     );
     assert.equal(
       StubNotice.history.some((notice) =>
-        notice.message === "Clinical Workspace folder access was restored."
+        notice.message === CLINICAL_RECORDS_UNLOCKED_MESSAGE
       ),
       false,
       "no success Notice may be emitted before the fresh exact pass completes"
@@ -2541,7 +2542,7 @@ test("baseline adoption queues behind exact recovery and keeps writes blocked", 
       () => new ClinicalService(restartedRepository).createEpisode(
         episodeInput({ mrn: "5103", caseName: "Adoption barrier" })
       ),
-      /trusted baseline/
+      /confirms the current records as the recovery baseline/
     );
 
     releaseAdoptionSave();
@@ -2626,7 +2627,7 @@ test("automatic root recovery rejects a changed equal-count record set", async (
     assert.equal(restarted.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(episodeInput({ mrn: "5007" })),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -2665,7 +2666,7 @@ test("automatic root recovery stays blocked when its cleared state cannot be sav
     assert.equal(restarted.workspaceSafetyNeedsPersistence, true);
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(episodeInput({ mrn: "5008" })),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -6335,7 +6336,7 @@ test("moving a managed record out of the active root blocks writes, while an int
     assert.equal(blockedPlugin.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => second.service.createEpisode(episodeInput({ mrn: "7011" })),
-      new RegExp("configured folder is unavailable")
+      /a record note was added, edited, deleted or moved outside Clinical Workspace/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -6361,7 +6362,7 @@ test("moving a managed child folder out of the active root blocks writes", async
     assert.equal(plugin.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => service.createEpisode(episodeInput({ mrn: "7012" })),
-      new RegExp("configured folder is unavailable")
+      /a record note was added, edited, deleted or moved outside Clinical Workspace/
     );
   } finally {
     setClinicalRoot(originalRoot);
