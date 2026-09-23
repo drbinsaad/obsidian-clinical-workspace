@@ -176,7 +176,9 @@ function validateRootArgument(root, source = "--root") {
  * The clinical folder saved in the plugin's settings, so an export after a
  * folder move needs no --root. Only the vault's default config folder is
  * read. A folder move the plugin has not finished is refused: the records
- * could then be in either folder.
+ * could then be in either folder. So is a recovery check or review the
+ * plugin still requires (it keeps editing paused then): the records under
+ * that folder may be incomplete, for example while Sync is still delivering.
  */
 async function configuredRoot(vault) {
   const settingsFile = path.join(vault, ".obsidian", "plugins", "clinical-workspace", "data.json");
@@ -202,6 +204,18 @@ async function configuredRoot(vault) {
   if (settings.migrationInProgress !== undefined && settings.migrationInProgress !== null) {
     fail(
       "The plugin records a clinical folder move that has not finished. Finish or recover it in Obsidian first, or pass --root explicitly."
+    );
+  }
+  const safety = settings.workspaceSafety;
+  if (
+    isRecord(safety) &&
+    safety.version === 1 &&
+    (safety.rootRecoveryRequired === true ||
+      safety.recoveryValidationRequired === true ||
+      safety.baselineReviewRequired === true)
+  ) {
+    fail(
+      "The plugin records a recovery check or review that has not finished, so the records may be incomplete. Finish it in Obsidian first, or pass --root explicitly."
     );
   }
   if (typeof settings.rootFolder !== "string") return DEFAULT_ROOT;
@@ -404,6 +418,23 @@ function isTimestamp(value) {
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === canonical;
 }
 
+/**
+ * The plugin's normalizeMrn (src/domain/schema.ts): invisible and direction
+ * controls removed, Arabic-Indic and Persian digits read as ASCII, spaces and
+ * hyphens dropped. The in-app integrity check validates this form, so the
+ * exporter validates and writes it too; otherwise a hand-edited MRN would be
+ * refused here while the check the error points to finds nothing.
+ */
+function normalizeMrn(value) {
+  return value
+    .replace(/[\u061C\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/gu, "")
+    .replace(/[\u0660-\u0669\u06F0-\u06F9]/gu, (digit) => {
+      const code = digit.codePointAt(0) ?? 0;
+      return String(code - (code >= 0x06f0 ? 0x06f0 : 0x0660));
+    })
+    .replace(/[\s-]/gu, "");
+}
+
 /** Counts rejected values per property name for one kind of record. */
 class FieldRejections {
   constructor(order) {
@@ -496,13 +527,14 @@ function validateExportSchema(procedures, episodeById, patientById, identifiers)
   }
 
   for (const patient of joinedPatients.values()) {
-    const validMrn = isString(patient.mrn) && (patient.mrn === "" || /^\d+$/u.test(patient.mrn));
+    const mrn = isString(patient.mrn) ? normalizeMrn(patient.mrn) : null;
+    const validMrn = mrn !== null && (mrn === "" || /^\d+$/u.test(mrn));
     const validName = isString(patient.patient_name);
     if (!validMrn) patientFields.add("mrn");
     if (!validName) patientFields.add("patient_name");
     // The runtime permits MRN-only or name-only identities, but never neither.
     if (
-      !(validMrn && patient.mrn.length > 0) &&
+      !(validMrn && mrn.length > 0) &&
       !(validName && patient.patient_name.trim().length > 0)
     ) {
       patientFields.add("mrn or patient_name");
@@ -618,7 +650,7 @@ function csvFor(procedures, episodeById, patientById, identifiers) {
     ["logged_at", (procedure) => procedure.created_at],
     ...(identifiers
       ? [
-          ["mrn", (procedure, episode, patient) => patient.mrn],
+          ["mrn", (procedure, episode, patient) => normalizeMrn(patient.mrn)],
           ["patient_name", (procedure, episode, patient) => patient.patient_name]
         ]
       : [])

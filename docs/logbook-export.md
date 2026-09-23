@@ -80,6 +80,9 @@ guessing when:
 - the settings record a clinical-folder move that has not finished. Finish or
   recover the move in Obsidian first (see [Moving the clinical folder
   safely](folder-migration.md));
+- the settings record a recovery check or review that has not finished (while
+  Obsidian shows **Editing is paused**), so the records may be incomplete, for
+  example while Sync is still delivering them. Finish it in Obsidian first;
 - the settings file cannot be read, is not valid JSON, or resolves outside the
   vault. Pass `--root` explicitly.
 
@@ -159,7 +162,8 @@ npm run export:logbook -- "/path/to/vault" \
 This mode reads the Patients folder, adds `mrn` and `patient_name`, and prints a
 prominent identified-record warning before records are read. The flag is a
 technical gate, not authorization. The resulting CSV is an identified clinical
-record.
+record. An MRN is checked and written the way the plugin stores it: Arabic-Indic
+and Persian digits become 0–9, and spaces and hyphens are removed.
 
 ## Fail-closed validation and publication
 
