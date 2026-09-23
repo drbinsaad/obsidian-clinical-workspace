@@ -225,6 +225,7 @@ function titleCaseType(value: string): string {
 }
 
 const LIST_PAGE_LABELS: Record<string, string> = {
+  "today-ward": "Ward round",
   "today-overdue": "Overdue tasks",
   "today-due": "Today tasks",
   "today-upcoming": "Upcoming tasks",
@@ -237,6 +238,25 @@ const LIST_PAGE_LABELS: Record<string, string> = {
   "more-patients": "Patient records",
   "more-archive": "Archived episodes"
 };
+
+/**
+ * What identifies the control that held focus before a redraw, so the
+ * rebuilt copy of it can take focus back.
+ */
+interface FocusedControlKey {
+  id: string;
+  pageKey: string;
+  pageAction: string;
+  /** Lower-case tag name, such as "button", or "h4" for a focused card heading. */
+  tag: string;
+  name: string;
+  /** Which of the same-tag elements sharing this name it was. */
+  occurrence: number;
+}
+
+function controlName(control: Element): string {
+  return control.getAttribute("aria-label") ?? (control.textContent ?? "").trim();
+}
 
 export interface PageWindow<T> {
   items: T[];
@@ -295,7 +315,8 @@ export function quickEntryEpisodeChoices(
       return [{
         episode,
         patientLabel: patientIdentityLabel(patient.mrn, patient.patient_name),
-        isCurrent: episode.id === currentEpisodeId
+        isCurrent: episode.id === currentEpisodeId,
+        patientMrn: patient.mrn
       }];
     })
     .sort((a, b) => {
@@ -324,6 +345,8 @@ export class ClinicalWorkspaceView extends ItemView {
     key: string;
     action: "previous" | "next";
     scrollTop: number;
+    /** Enter or Space on the pager, as opposed to a tap or click. */
+    keyboard: boolean;
   } | null = null;
   private renderGeneration = 0;
   private writeBlockSlot: HTMLElement | null = null;
@@ -597,6 +620,7 @@ export class ClinicalWorkspaceView extends ItemView {
       : 0;
     const sameTab = this.lastRenderedTab === this.activeTab;
     this.lastRenderedTab = this.activeTab;
+    const focusKey = this.focusedControlKey(root);
     root.empty();
     // The scroller is nested inside the view so the floating action button can
     // be a sibling of it: pinned to the view, and not scrolling away with the
@@ -634,11 +658,68 @@ export class ClinicalWorkspaceView extends ItemView {
       cls: "mod-cta clinical-primary-action"
     });
     add.addEventListener("click", () => this.openAddPatient());
-    if (!this.pendingPageContext && sameTab && previousScrollTop > 0) {
+    const pageChange = this.pendingPageContext !== null;
+    if (!pageChange && sameTab && previousScrollTop > 0) {
       scroller.scrollTop = previousScrollTop;
     }
     this.restorePageContext(scroller);
     this.revealActiveTab(activeTab, scroller);
+    // A page change places focus itself; any other redraw hands focus back.
+    if (focusKey && !pageChange) this.restoreFocusedControl(focusKey);
+  }
+
+  /**
+   * Every vault or Sync event redraws the whole view, and the plugin's own
+   * writes arrive twice (the action's refresh, then the vault event). Each
+   * redraw destroyed the focused control and left keyboard and VoiceOver
+   * users at the top of the document. Null when focus is elsewhere, so a
+   * redraw never pulls focus out of the editor or an open form.
+   */
+  private focusedControlKey(root: HTMLElement): FocusedControlKey | null {
+    const ownerDocument = (root as HTMLElement & { ownerDocument?: Document }).ownerDocument;
+    const active = ownerDocument?.activeElement;
+    if (!active?.instanceOf(HTMLElement) || active === root || !root.contains(active)) return null;
+    const tag = active.tagName.toLowerCase();
+    const name = controlName(active);
+    const pager = active.closest(".clinical-pagination");
+    return {
+      id: active.getAttribute("id") ?? "",
+      pageKey: pager?.instanceOf(HTMLElement) ? pager.dataset.pageKey ?? "" : "",
+      pageAction: active.dataset.pageAction ?? "",
+      tag,
+      name,
+      occurrence: Math.max(0, this.namesakes(root, tag, name).indexOf(active))
+    };
+  }
+
+  /** Elements with this tag and accessible name, in document order. */
+  private namesakes(root: HTMLElement, tag: string, name: string): Element[] {
+    if (!tag || !name) return [];
+    return Array.from(root.querySelectorAll(tag)).filter((element) => controlName(element) === name);
+  }
+
+  private restoreFocusedControl(key: FocusedControlKey): void {
+    const root = this.contentEl;
+    const byId = key.id
+      ? Array.from(root.querySelectorAll("[id]")).find((element) => element.getAttribute("id") === key.id)
+      : undefined;
+    const byPage = key.pageKey && key.pageAction
+      ? this.pagerControl(key.pageKey, key.pageAction)
+      : undefined;
+    const sameName = this.namesakes(root, key.tag, key.name);
+    const target = byId ?? byPage ?? sameName[Math.min(key.occurrence, sameName.length - 1)];
+    if (target?.instanceOf(HTMLElement)) {
+      // A card heading is focusable only once paging has focused it.
+      if (key.tag !== "button" && target.getAttribute("tabindex") === null) {
+        target.setAttribute("tabindex", "-1");
+      }
+      target.focus({ preventScroll: true });
+      return;
+    }
+    // The control went with its record (a completed task): keep focus in the
+    // view rather than letting it fall to the document body.
+    const heading = root.querySelector(".clinical-workspace-title");
+    if (heading?.instanceOf(HTMLElement)) heading.focus({ preventScroll: true });
   }
 
   /**
@@ -786,9 +867,13 @@ export class ClinicalWorkspaceView extends ItemView {
 
   private renderToday(container: HTMLElement, snapshot: ClinicalSnapshot): void {
     const openTasks = snapshot.tasks.filter(taskIsOpen);
-    const todayTasks = openTasks.filter((task) => taskIsDueToday(task));
-    const overdueTasks = openTasks.filter((task) => taskIsOverdue(task));
-    const undatedTasks = openTasks.filter((task) => taskIsUndated(task));
+    // File order is effectively random and differs between devices, which
+    // could leave an emergency below routine work, or on page 2.
+    const byPriority = (a: TaskRecord, b: TaskRecord): number =>
+      this.priorityFirstTaskSortKey(a).localeCompare(this.priorityFirstTaskSortKey(b));
+    const todayTasks = openTasks.filter((task) => taskIsDueToday(task)).sort(byPriority);
+    const overdueTasks = openTasks.filter((task) => taskIsOverdue(task)).sort(byPriority);
+    const undatedTasks = openTasks.filter((task) => taskIsUndated(task)).sort(byPriority);
     const activeEpisodes = snapshot.episodes.filter((episode) => this.isActiveEpisode(episode));
     const inpatient = activeEpisodes.filter((episode) => episode.care_setting === "inpatient");
     const summary = container.createDiv({ cls: "clinical-summary-grid" });
@@ -802,9 +887,17 @@ export class ClinicalWorkspaceView extends ItemView {
       .slice()
       .sort((a, b) => this.episodeSortKey(a).localeCompare(this.episodeSortKey(b)));
     if (wardEpisodes.length) {
-      this.sectionHeader(container, "Ward round", `${wardEpisodes.length} inpatient${wardEpisodes.length === 1 ? "" : "s"}`);
+      this.sectionHeader(
+        container,
+        "Ward round",
+        `${wardEpisodes.length} inpatient${wardEpisodes.length === 1 ? "" : "s"}`,
+        "today-ward"
+      );
       const ward = container.createDiv({ cls: "clinical-ward-list" });
-      for (const episode of wardEpisodes.slice(0, 30)) {
+      // Paged like every other list: a fixed cut-off silently dropped the
+      // lowest-priority inpatients while the header still counted them.
+      const wardPage = this.pageFor("today-ward", wardEpisodes);
+      for (const episode of wardPage.items) {
         const patient = this.patientFor(snapshot, episode.patient_id);
         const row = ward.createDiv({ cls: "clinical-ward-row" });
         const text = row.createDiv({ cls: "clinical-ward-text" });
@@ -815,13 +908,22 @@ export class ClinicalWorkspaceView extends ItemView {
           }${episode.due_date ? ` (${episode.due_date})` : ""}`,
           cls: "clinical-card-meta"
         });
-        this.actionButton(row, "Open", () => this.openRecord("episode", episode.id), false, false, this.episodeContext(episode, patient));
+        const context = this.episodeContext(episode, patient);
+        const rowActions = row.createDiv({ cls: "clinical-ward-actions" });
+        // The patient sheet (episodes, open work with Complete and
+        // Reschedule, history) is what a round acts on; the raw note that
+        // "Open" shows has no clinical actions, so it comes second.
+        if (patient) {
+          this.actionButton(rowActions, "View", () => void this.openPatientDetail(patient), false, false, context);
+        }
+        this.actionButton(rowActions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
       }
+      this.renderPagination(container, "today-ward", wardPage);
     }
 
-    this.sectionHeader(container, "Overdue", overdueTasks.length ? "Needs attention" : "All clear");
+    this.sectionHeader(container, "Overdue", overdueTasks.length ? "Needs attention" : "All clear", "today-overdue");
     this.renderTaskList(container, overdueTasks, snapshot, "today-overdue");
-    this.sectionHeader(container, "Today", todayIso());
+    this.sectionHeader(container, "Today", todayIso(), "today-due");
     this.renderTaskList(container, todayTasks, snapshot, "today-due");
     // The coming week, so tomorrow's clinic is visible tonight without
     // leaving the Today view. Shown only when something is scheduled.
@@ -829,12 +931,12 @@ export class ClinicalWorkspaceView extends ItemView {
       .filter((task) => taskIsUpcoming(task))
       .sort((a, b) => this.taskSortKey(a).localeCompare(this.taskSortKey(b)));
     if (upcomingTasks.length) {
-      this.sectionHeader(container, "Next 7 days", `${upcomingTasks.length} scheduled`);
+      this.sectionHeader(container, "Next 7 days", `${upcomingTasks.length} scheduled`, "today-upcoming");
       this.renderTaskList(container, upcomingTasks, snapshot, "today-upcoming");
     }
     // Undated work is still outstanding; without this section Today under-reports.
     if (undatedTasks.length) {
-      this.sectionHeader(container, "No date set", `${undatedTasks.length} open`);
+      this.sectionHeader(container, "No date set", `${undatedTasks.length} open`, "today-undated");
       this.renderTaskList(container, undatedTasks, snapshot, "today-undated");
     }
   }
@@ -866,20 +968,54 @@ export class ClinicalWorkspaceView extends ItemView {
     const filtering = active.length !== allActive.length;
     const countNote = (shown: EpisodeRecord[], total: EpisodeRecord[]): string =>
       filtering ? `${shown.length} of ${total.length} shown` : `${total.length} active`;
-    const inpatient = active.filter((episode) => episode.care_setting === "inpatient");
-    const outpatient = active.filter((episode) => episode.care_setting !== "inpatient");
-    this.sectionHeader(
-      container,
-      "Inpatients",
-      countNote(inpatient, allActive.filter((episode) => episode.care_setting === "inpatient"))
+    const clearFilters = (): void => {
+      this.patientPathwayFilter = "all";
+      this.patientPriorityFilter = "all";
+    };
+    const groups = [
+      { title: "Inpatients", key: "patients-inpatient", inpatient: true },
+      { title: "Outpatients", key: "patients-outpatient", inpatient: false }
+    ];
+    for (const group of groups) {
+      const inSetting = (episode: EpisodeRecord): boolean =>
+        (episode.care_setting === "inpatient") === group.inpatient;
+      const shown = active.filter(inSetting);
+      const total = allActive.filter(inSetting);
+      this.sectionHeader(container, group.title, countNote(shown, total), group.key);
+      if (!shown.length && total.length) {
+        const noun = group.title.toLocaleLowerCase();
+        this.renderFilteredEmpty(container, `No ${noun} match these filters.`, clearFilters, `show every ${noun.replace(/s$/, "")}`);
+      } else {
+        this.renderEpisodeList(container, shown, snapshot, group.key);
+      }
+    }
+  }
+
+  /**
+   * A filter that hides a whole list says so and offers to clear it, rather
+   * than an empty state that reads as "nothing to do".
+   */
+  private renderFilteredEmpty(
+    container: HTMLElement,
+    message: string,
+    clear: () => void,
+    accessibleContext: string
+  ): void {
+    const list = container.createDiv({ cls: "clinical-list" });
+    const empty = list.createDiv({ cls: "clinical-empty" });
+    empty.createDiv({ text: message });
+    const actions = empty.createDiv({ cls: "clinical-empty-actions" });
+    this.actionButton(
+      actions,
+      "Clear filters",
+      () => {
+        clear();
+        return this.refresh();
+      },
+      false,
+      false,
+      accessibleContext
     );
-    this.renderEpisodeList(container, inpatient, snapshot, "patients-inpatient");
-    this.sectionHeader(
-      container,
-      "Outpatients",
-      countNote(outpatient, allActive.filter((episode) => episode.care_setting !== "inpatient"))
-    );
-    this.renderEpisodeList(container, outpatient, snapshot, "patients-outpatient");
   }
 
   /**
@@ -899,24 +1035,24 @@ export class ClinicalWorkspaceView extends ItemView {
       .filter((pathway) => pathway)
       .sort((a, b) => pathwayLabel(a).localeCompare(pathwayLabel(b)));
     if (pathwaysInUse.length > 1 || this.patientPathwayFilter !== "all") {
-      const pathwayRow = filters.createDiv({ cls: "clinical-chip-row" });
+      const pathwayRow = this.chipRow(filters, "Filter by pathway");
       this.filterChip(pathwayRow, "All pathways", this.patientPathwayFilter === "all", () => {
         this.patientPathwayFilter = "all";
-      }, "Show every pathway");
+      });
       for (const pathway of pathwaysInUse) {
         this.filterChip(pathwayRow, pathwayLabel(pathway), this.patientPathwayFilter === pathway, () => {
           this.patientPathwayFilter = this.patientPathwayFilter === pathway ? "all" : pathway;
-        }, `Filter patients by pathway ${pathwayLabel(pathway)}`);
+        });
       }
     }
-    const priorityRow = filters.createDiv({ cls: "clinical-chip-row" });
+    const priorityRow = this.chipRow(filters, "Filter by priority");
     this.filterChip(priorityRow, "All", this.patientPriorityFilter === "all", () => {
       this.patientPriorityFilter = "all";
-    }, "Show patients of every priority");
+    });
     for (const priority of PRIORITIES) {
       this.filterChip(priorityRow, priorityLabel(priority), this.patientPriorityFilter === priority, () => {
         this.patientPriorityFilter = this.patientPriorityFilter === priority ? "all" : priority;
-      }, `Filter patients by ${priority} priority`);
+      });
     }
     const exportRow = container.createDiv({ cls: "clinical-card-actions clinical-patient-list-actions" });
     this.actionButton(
@@ -946,8 +1082,15 @@ export class ClinicalWorkspaceView extends ItemView {
       filtered.length === open.length
         ? `${open.length} total`
         : `${filtered.length} of ${open.length} shown`;
-    this.sectionHeader(container, "Open tasks", filteredNote);
+    this.sectionHeader(container, "Open tasks", filteredNote, "tasks-open");
     this.renderTaskFilters(container, open);
+    if (!filtered.length && open.length) {
+      this.renderFilteredEmpty(container, "No open tasks match these filters.", () => {
+        this.taskPriorityFilter = "all";
+        this.taskTypeFilter = "all";
+      }, "show every open task");
+      return;
+    }
     this.renderTaskList(container, filtered, snapshot, "tasks-open");
   }
 
@@ -956,42 +1099,61 @@ export class ClinicalWorkspaceView extends ItemView {
     const filters = container.createDiv({ cls: "clinical-chip-rows" });
     const chip = this.filterChip.bind(this);
 
-    const priorityRow = filters.createDiv({ cls: "clinical-chip-row" });
+    const priorityRow = this.chipRow(filters, "Filter by priority");
     chip(priorityRow, "All", this.taskPriorityFilter === "all", () => {
       this.taskPriorityFilter = "all";
-    }, "Show every priority");
+    });
     for (const priority of PRIORITIES) {
       chip(priorityRow, priorityLabel(priority), this.taskPriorityFilter === priority, () => {
         this.taskPriorityFilter = this.taskPriorityFilter === priority ? "all" : priority;
-      }, `Filter tasks by ${priority} priority`);
+      });
     }
 
-    const typesInUse = [...new Set(open.map((task) => task.task_type))].sort();
-    if (typesInUse.length > 1) {
-      const typeRow = filters.createDiv({ cls: "clinical-chip-row" });
+    // A selected type keeps its chip after its last task closes, as the
+    // Patients pathway filter does; otherwise the filter went on hiding
+    // every task with no chip left to clear it.
+    const typesInUse = [
+      ...new Set([
+        ...open.map((task) => task.task_type),
+        ...(this.taskTypeFilter === "all" ? [] : [this.taskTypeFilter])
+      ])
+    ].sort();
+    if (typesInUse.length > 1 || this.taskTypeFilter !== "all") {
+      const typeRow = this.chipRow(filters, "Filter by task type");
       chip(typeRow, "All types", this.taskTypeFilter === "all", () => {
         this.taskTypeFilter = "all";
-      }, "Show every task type");
+      });
       for (const type of typesInUse) {
         chip(typeRow, titleCaseType(type), this.taskTypeFilter === type, () => {
           this.taskTypeFilter = this.taskTypeFilter === type ? "all" : type;
-        }, `Filter tasks by type ${type}`);
+        });
       }
     }
   }
 
-  /** One toggle chip in a filter row; selecting it redraws the current tab. */
+  /** A labelled group, so a screen reader says which filter a row of chips sets. */
+  private chipRow(container: HTMLElement, label: string): HTMLElement {
+    return container.createDiv({
+      cls: "clinical-chip-row",
+      attr: { role: "group", "aria-label": label }
+    });
+  }
+
+  /**
+   * One toggle chip in a filter row; selecting it redraws the current tab.
+   * Its visible label is its accessible name, so a Voice Control user can
+   * say what they see; aria-pressed and the row's label carry the rest.
+   */
   private filterChip(
     row: HTMLElement,
     label: string,
     active: boolean,
-    apply: () => void,
-    accessible: string
+    apply: () => void
   ): void {
     const button = row.createEl("button", {
       text: label,
       cls: `clinical-chip${active ? " is-active" : ""}`,
-      attr: { type: "button", "aria-pressed": String(active), "aria-label": accessible }
+      attr: { type: "button", "aria-pressed": String(active) }
     });
     button.addEventListener("click", () => {
       const ownerDocument = (
@@ -1005,7 +1167,7 @@ export class ClinicalWorkspaceView extends ItemView {
         if (
           ownedFocusAtStart &&
           clinicalActionFocusMayReturn(button, ownerDocument)
-        ) this.restoreActionFocus(accessible);
+        ) this.restoreActionFocus(label);
       });
     });
   }
@@ -1034,7 +1196,7 @@ export class ClinicalWorkspaceView extends ItemView {
     this.summaryCard(summary, asPrimary.length, "As primary");
     this.summaryCard(summary, bookings.length, "Awaiting OR");
 
-    this.sectionHeader(container, "OR booking", `${bookings.length} awaiting surgery`);
+    this.sectionHeader(container, "OR booking", `${bookings.length} awaiting surgery`, "surgery-bookings");
     const list = container.createDiv({ cls: "clinical-list" });
     if (!bookings.length) this.empty(list, "No active OR bookings.");
     const bookingPage = this.pageFor("surgery-bookings", bookings);
@@ -1043,7 +1205,8 @@ export class ClinicalWorkspaceView extends ItemView {
       const card = this.episodeCard(list, episode, patient);
       const context = this.episodeContext(episode, patient);
       const actions = card.createDiv({ cls: "clinical-card-actions" });
-      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
+      // The primary action comes first: on phones it fills the first row and
+      // the remaining buttons pair up beneath it without gaps.
       this.actionButton(
         actions,
         "Complete surgery",
@@ -1059,6 +1222,7 @@ export class ClinicalWorkspaceView extends ItemView {
         false,
         context
       );
+      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
     }
     this.renderPagination(container, "surgery-bookings", bookingPage);
 
@@ -1068,7 +1232,7 @@ export class ClinicalWorkspaceView extends ItemView {
     const procedures = [...completedProcedures].sort((a, b) =>
       this.text(b.procedure_date).localeCompare(this.text(a.procedure_date))
     );
-    this.sectionHeader(container, "Surgery logbook", `${procedures.length} completed`);
+    this.sectionHeader(container, "Surgery logbook", `${procedures.length} completed`, "surgery-logbook");
     const procedureList = container.createDiv({ cls: "clinical-list" });
     if (!procedures.length) this.empty(procedureList, "No completed procedures yet.");
     const procedurePage = this.pageFor("surgery-logbook", procedures);
@@ -1133,7 +1297,12 @@ export class ClinicalWorkspaceView extends ItemView {
     this.actionButton(databaseActions, "Tasks", () => this.openBase("Tasks"));
     this.actionButton(databaseActions, "Surgery", () => this.openBase("Surgery Logbook"));
 
-    this.sectionHeader(container, "Patient records", `${this.identifiablePatients(snapshot).length} on file`);
+    this.sectionHeader(
+      container,
+      "Patient records",
+      `${this.identifiablePatients(snapshot).length} on file`,
+      "more-patients"
+    );
     const patientList = container.createDiv({ cls: "clinical-list" });
     const patients = this.identifiablePatients(snapshot);
     if (!patients.length) this.empty(patientList, "No patient records yet.");
@@ -1141,7 +1310,7 @@ export class ClinicalWorkspaceView extends ItemView {
     for (const patient of patientPage.items) this.renderPatientCard(patientList, patient, snapshot);
     this.renderPagination(container, "more-patients", patientPage);
 
-    this.sectionHeader(container, "Archive", "Searchable and restorable");
+    this.sectionHeader(container, "Archive", "Searchable and restorable", "more-archive");
     const archived = snapshot.episodes
       .filter((episode) => episode.status === "archived")
       .sort((a, b) => this.text(b.closed_at).localeCompare(this.text(a.closed_at)));
@@ -1151,10 +1320,12 @@ export class ClinicalWorkspaceView extends ItemView {
     for (const episode of archivePage.items) {
       const patient = this.patientFor(snapshot, episode.patient_id);
       const card = this.episodeCard(archiveList, episode, patient);
-      if (episode.outcome) card.createEl("p", { text: `Outcome: ${episode.outcome}`, cls: "clinical-card-meta" });
+      if (episode.outcome) {
+        card.createEl("p", { text: `Outcome: ${bidiIsolate(episode.outcome)}`, cls: "clinical-card-meta" });
+      }
       const context = this.episodeContext(episode, patient);
       const actions = card.createDiv({ cls: "clinical-card-actions" });
-      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
+      // Primary first, so the phone grid has no half-empty row.
       this.actionButton(
         actions,
         "Restore",
@@ -1167,6 +1338,7 @@ export class ClinicalWorkspaceView extends ItemView {
         false,
         context
       );
+      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
     }
     this.renderPagination(container, "more-archive", archivePage);
 
@@ -1239,7 +1411,13 @@ export class ClinicalWorkspaceView extends ItemView {
           void this.runAction(async () => {
             await this.service.reopenTask(taskId);
             new Notice("Task reopened.");
-          })
+          }),
+        // The sheet closes first and the view's own actions run, so nothing
+        // acts on the sheet's snapshot after the record has changed.
+        {
+          complete: (task) => void this.completeTask(task),
+          reschedule: (task) => this.openReschedule(task)
+        }
       ).open();
     } catch (error) {
       showClinicalNotice(error instanceof Error ? error.message : "The patient view could not be opened.", 7000);
@@ -1250,7 +1428,16 @@ export class ClinicalWorkspaceView extends ItemView {
   async openSearch(): Promise<void> {
     try {
       const snapshot = await this.repository.snapshot();
-      new ClinicalSearchModal(this.app, snapshot, (entity, id) => this.openRecord(entity, id)).open();
+      new ClinicalSearchModal(this.app, snapshot, (entity, id) => {
+        // A patient opens the patient sheet (episodes, open work, history)
+        // rather than a note of properties. A merged or retired patient has
+        // no sheet of its own, so its note opens as before.
+        const patient = entity === "patient"
+          ? this.identifiablePatients(snapshot).find((item) => item.id === id)
+          : undefined;
+        if (patient) void this.openPatientDetail(patient);
+        else this.openRecord(entity, id);
+      }).open();
     } catch (error) {
       showClinicalNotice(error instanceof Error ? error.message : "Search could not be opened.", 7000);
     }
@@ -1377,7 +1564,7 @@ export class ClinicalWorkspaceView extends ItemView {
             await this.refresh();
           }
         ).open();
-      });
+      }, false, false, patientContext);
     }
   }
 
@@ -1547,38 +1734,14 @@ export class ClinicalWorkspaceView extends ItemView {
         this.badge(badges, overdueDays === 1 ? "Overdue 1 day" : `Overdue ${overdueDays} days`, "overdue");
       }
       if ((task.repeat_every_days ?? 0) > 0) this.badge(badges, "Repeats", "pathway");
-      if (task.owner) this.badge(badges, task.owner, "owner");
+      if (task.owner) this.badge(badges, task.owner, "owner", true);
       const context = this.taskContext(task, patient);
       const actions = card.createDiv({ cls: "clinical-card-actions" });
-      this.actionButton(actions, "Open", () => this.openRecord("task", task.id), false, false, context);
-      this.actionButton(
-        actions,
-        "Complete",
-        () =>
-          void this.runAction(async () => {
-            await this.service.completeTask(task.id);
-            new Notice("Task completed.");
-          }),
-        true,
-        false,
-        context
-      );
-      this.actionButton(actions, "Reschedule", () => {
-        if (!this.canOpenWriteForm()) return;
-        new RescheduleTaskModal(this.app, task, async (dueDate) => {
-          await this.service.rescheduleTask(task.id, dueDate);
-          new Notice(`Task moved to ${dueDate}.`);
-          await this.refresh();
-        }).open();
-      }, false, false, context);
-      this.actionButton(actions, "Cancel", () => {
-        if (!this.canOpenWriteForm()) return;
-        new CancelTaskModal(this.app, task, async (reason) => {
-          await this.service.cancelTask(task.id, reason);
-          new Notice("Task cancelled.");
-          await this.refresh();
-        }).open();
-      }, false, true, context);
+      // On phones card actions form a two-column grid in which the primary
+      // action fills a row. Complete first, then pairs, leaves no half-empty
+      // row, and keeps Complete and Cancel apart against a hurried mis-tap.
+      this.actionButton(actions, "Complete", () => void this.completeTask(task), true, false, context);
+      this.actionButton(actions, "Reschedule", () => this.openReschedule(task), false, false, context);
       if (episode) {
         this.actionButton(actions, "+ Task", () => {
           if (!this.canOpenWriteForm()) return;
@@ -1593,8 +1756,35 @@ export class ClinicalWorkspaceView extends ItemView {
           }).open();
         }, false, false, this.episodeContext(episode, patient));
       }
+      this.actionButton(actions, "Open", () => this.openRecord("task", task.id), false, false, context);
+      this.actionButton(actions, "Cancel", () => {
+        if (!this.canOpenWriteForm()) return;
+        new CancelTaskModal(this.app, task, async (reason) => {
+          await this.service.cancelTask(task.id, reason);
+          new Notice("Task cancelled.");
+          await this.refresh();
+        }).open();
+      }, false, true, context);
     }
     this.renderPagination(container, pageKey, page);
+  }
+
+  private completeTask(task: TaskRecord): Promise<void> {
+    return this.runAction(async () => {
+      await this.service.completeTask(task.id);
+      new Notice("Task completed.");
+    });
+  }
+
+  private openReschedule(task: TaskRecord): void {
+    if (!this.canOpenWriteForm()) return;
+    new RescheduleTaskModal(this.app, task, async (dueDate) => {
+      const result = await this.service.rescheduleTask(task.id, dueDate);
+      // The service leaves a same-date reschedule untouched; say so rather
+      // than announce a move that did not happen. Re-saving is not an error.
+      new Notice(result.record.updated_at === task.updated_at ? "Date unchanged." : `Task moved to ${dueDate}.`);
+      await this.refresh();
+    }).open();
   }
 
   private episodeCard(container: HTMLElement, episode: EpisodeRecord, patient: PatientRecord | undefined): HTMLElement {
@@ -1763,14 +1953,28 @@ export class ClinicalWorkspaceView extends ItemView {
     return `${task.due_date || "9999-99-99"}|${priority}|${this.text(task.task).toLocaleLowerCase()}`;
   }
 
+  /**
+   * Priority, then oldest due date, then wording, for lists where the date
+   * is shared or past (Overdue, Today, No date). The id breaks ties the same
+   * way on every device, so a page holds the same tasks after each refresh.
+   */
+  private priorityFirstTaskSortKey(task: TaskRecord): string {
+    const priority = { emergency: "0", urgent: "1", routine: "2" }[task.priority] ?? "3";
+    return `${priority}|${task.due_date || "9999-99-99"}|${this.text(task.task).toLocaleLowerCase()}|${task.id}`;
+  }
+
   private summaryCard(container: HTMLElement, value: number, label: string): void {
     const card = container.createDiv({ cls: "clinical-summary-card" });
     card.createSpan({ text: String(value), cls: "clinical-summary-value" });
     card.createSpan({ text: label, cls: "clinical-summary-label" });
   }
 
-  private sectionHeader(container: HTMLElement, title: string, note: string): void {
-    const header = container.createDiv({ cls: "clinical-section-header" });
+  /** `pageKey` names the paged list this header introduces. */
+  private sectionHeader(container: HTMLElement, title: string, note: string, pageKey = ""): void {
+    const header = container.createDiv({
+      cls: "clinical-section-header",
+      attr: pageKey ? { "data-page-section": pageKey } : {}
+    });
     header.createEl("h3", { text: title });
     header.createSpan({ text: note, cls: "clinical-section-note" });
   }
@@ -1801,7 +2005,10 @@ export class ClinicalWorkspaceView extends ItemView {
       }
     });
     previous.disabled = page.page === 0;
-    previous.addEventListener("click", () => this.selectListPage(key, page.page - 1, "previous"));
+    // A keyboard press on a button fires click with detail 0.
+    previous.addEventListener("click", (event) =>
+      this.selectListPage(key, page.page - 1, "previous", event.detail === 0)
+    );
     navigation.createSpan({
       text: `Page ${page.page + 1} of ${page.pages} · ${page.total} total`,
       cls: "clinical-section-note",
@@ -1816,42 +2023,67 @@ export class ClinicalWorkspaceView extends ItemView {
       }
     });
     next.disabled = page.page >= page.pages - 1;
-    next.addEventListener("click", () => this.selectListPage(key, page.page + 1, "next"));
+    next.addEventListener("click", (event) =>
+      this.selectListPage(key, page.page + 1, "next", event.detail === 0)
+    );
   }
 
   private selectListPage(
     key: string,
     page: number,
-    action: "previous" | "next"
+    action: "previous" | "next",
+    keyboard: boolean
   ): void {
     const scroller = this.contentEl.querySelector(".clinical-workspace-scroll");
     this.pendingPageContext = {
       key,
       action,
-      scrollTop: scroller instanceof HTMLElement ? scroller.scrollTop : 0
+      // instanceOf, not instanceof: a pop-out window has its own HTMLElement.
+      scrollTop: scroller?.instanceOf(HTMLElement) ? scroller.scrollTop : 0,
+      keyboard
     };
     this.listPages.set(key, page);
     void this.refresh();
   }
 
-  /** A page change redraws the view; retain the user's place and keyboard focus. */
+  private pagerNavigation(key: string): HTMLElement | undefined {
+    return Array.from(this.contentEl.querySelectorAll(".clinical-pagination")).find(
+      (item): item is HTMLElement => item.instanceOf(HTMLElement) && item.dataset.pageKey === key
+    );
+  }
+
+  /** The pager's Previous or Next button, or its other button when that one is disabled. */
+  private pagerControl(key: string, action: string): HTMLButtonElement | undefined {
+    const navigation = this.pagerNavigation(key);
+    const controls = navigation ? Array.from(navigation.querySelectorAll("button")) : [];
+    const control = controls.find((item) => item.dataset.pageAction === action);
+    return control && !control.disabled ? control : controls.find((item) => !item.disabled);
+  }
+
+  /** A page change redraws the view; place the reader, and focus, on the new page. */
   private restorePageContext(scroller: HTMLElement): void {
     const context = this.pendingPageContext;
     if (!context) return;
-    scroller.scrollTop = context.scrollTop;
-    const pagers = Array.from(this.contentEl.querySelectorAll(".clinical-pagination"));
-    const navigation = pagers.find(
-      (item): item is HTMLElement =>
-        item.instanceOf(HTMLElement) && item.dataset.pageKey === context.key
-    );
-    const controls = navigation
-      ? Array.from(navigation.querySelectorAll("button"))
-      : [];
-    const control = controls.find((item) => item.dataset.pageAction === context.action);
-    const focusTarget = control && !control.disabled
-      ? control
-      : controls.find((item) => !item.disabled);
-    focusTarget?.focus({ preventScroll: true });
+    const header = context.keyboard
+      ? undefined
+      : Array.from(this.contentEl.querySelectorAll("[data-page-section]")).find(
+          (item): item is HTMLElement =>
+            item.instanceOf(HTMLElement) && item.dataset.pageSection === context.key
+        );
+    const list = this.pagerNavigation(context.key)?.previousElementSibling;
+    const firstHeading = list?.querySelector("h4") ?? list?.querySelector("strong");
+    if (header && firstHeading?.instanceOf(HTMLElement) && typeof header.scrollIntoView === "function") {
+      // A tap on Next at the foot of a long list used to keep the old offset
+      // and land the reader at the end of the new page. Start the page at its
+      // heading instead, with focus on its first item.
+      header.scrollIntoView({ block: "start" });
+      firstHeading.setAttribute("tabindex", "-1");
+      firstHeading.focus({ preventScroll: true });
+    } else {
+      // From the keyboard, stay on the pager so repeated presses keep paging.
+      scroller.scrollTop = context.scrollTop;
+      this.pagerControl(context.key, context.action)?.focus({ preventScroll: true });
+    }
     // A click can land during an in-flight refresh. Preserve the context for
     // the queued final redraw; otherwise that second redraw would jump to top.
     if (!this.refreshQueued) this.pendingPageContext = null;
@@ -1861,9 +2093,14 @@ export class ClinicalWorkspaceView extends ItemView {
     container.createDiv({ text: message, cls: "clinical-empty" });
   }
 
-  private badge(container: HTMLElement, label: string, style: string): void {
+  /** `userText` marks free text, such as an owner's name, that may be Arabic. */
+  private badge(container: HTMLElement, label: string, style: string, userText = false): void {
     const safe = String(style).replace(/[^a-z0-9-]/gi, "") || "default";
-    container.createSpan({ text: label, cls: `clinical-badge is-${safe}` });
+    container.createSpan({
+      text: label,
+      cls: `clinical-badge is-${safe}`,
+      attr: userText ? { dir: "auto" } : {}
+    });
   }
 
   /**
