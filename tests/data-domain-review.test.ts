@@ -6,7 +6,8 @@
  * Synthetic data only; MRNs use the 9000 series.
  */
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { App, type TFile } from "obsidian";
@@ -648,15 +649,35 @@ test("the integrity check flags completed procedures the logbook exporter would 
 
 /* -------------------------------------------------- Source hygiene ----- */
 
-test("no tracked source file contains a literal NUL byte", () => {
+function sourceFilesWithNulByte(folders: string[]): string[] {
   const offenders: string[] = [];
   const visit = (folder: string): void => {
     for (const name of readdirSync(folder)) {
       const target = path.join(folder, name);
       if (statSync(target).isDirectory()) visit(target);
-      else if (/\.(ts|mjs|md)$/.test(name) && readFileSync(target).includes(0)) offenders.push(target);
+      else if (!name.startsWith("._") && /\.(ts|mjs|md)$/.test(name) && readFileSync(target).includes(0)) offenders.push(target);
     }
   };
-  for (const folder of ["src", "scripts", "tests"]) visit(folder);
-  assert.deepEqual(offenders, []);
+  for (const folder of folders) visit(folder);
+  return offenders;
+}
+
+test("no tracked source file contains a literal NUL byte", () => {
+  assert.deepEqual(sourceFilesWithNulByte(["src", "scripts", "tests"]), []);
+});
+
+test("the NUL-byte scan skips macOS AppleDouble sidecars like the other source gates", () => {
+  // A checkout on an exFAT or network volume gets a binary ._name sidecar
+  // beside any file with extended attributes. It is git-ignored, never
+  // tracked, and always starts with NUL bytes.
+  const root = mkdtempSync(path.join(os.tmpdir(), "clinical-nul-scan-"));
+  try {
+    mkdirSync(path.join(root, "src"));
+    writeFileSync(path.join(root, "src", "._quick-entry.ts"), Buffer.from([0x00, 0x05, 0x16, 0x07, 0x00, 0x02]));
+    writeFileSync(path.join(root, "src", "quick-entry.ts"), "export const clean = true;\n");
+    writeFileSync(path.join(root, "src", "broken.ts"), "export const broken = 1;\u0000\n");
+    assert.deepEqual(sourceFilesWithNulByte([path.join(root, "src")]), [path.join(root, "src", "broken.ts")]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
