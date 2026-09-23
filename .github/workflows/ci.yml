@@ -64,6 +64,17 @@ jobs:
           fi
           echo "No vault, .obsidian directory or .base file is tracked."
 
+      # A NUL byte makes git grep -I and editor search treat a file as binary,
+      # which silently drops it from the identifier-literal gate below.
+      - name: Assert no NUL bytes in tracked text
+        run: |
+          set -euo pipefail
+          if git grep -lP '\x00' -- src scripts tests docs ':(exclude)*.png'; then
+            echo "::error::NUL byte(s) in the files above. Use the \\u0000 escape instead."
+            exit 1
+          fi
+          echo "No tracked text file contains a NUL byte."
+
       # Long digit literals in source or public documentation are almost always
       # fixtures, but a real MRN pasted while debugging looks exactly the same.
       # Every permitted value is listed here, so adding one is a deliberate act

@@ -7,12 +7,34 @@ import { clinicalFolder, clinicalRootFolder } from "./paths";
  * reference is derived from the configured root so a migration can regenerate
  * them. Obsidian does not rewrite folder strings inside a base when a folder is
  * renamed, so these must be regenerated explicitly.
+ *
+ * Generated content is versioned. A base still byte-identical to any version
+ * this plugin shipped counts as untouched and is upgraded to the latest, so a
+ * released version must never be edited: add a new one instead.
  */
-function baseFor(sourceFolder: string, entity: string, body: string[]): string {
+type FolderQuote = (folder: string) => string;
+
+/**
+ * The folder sits inside a YAML single-quoted scalar, where an apostrophe must
+ * be doubled. Versions up to 0.6.9 wrote it raw, which made every base
+ * unparseable for a root such as "St John's Ward".
+ */
+export function quoteBaseFolder(folder: string): string {
+  return folder.replaceAll("'", "''");
+}
+
+const unquotedFolder: FolderQuote = (folder) => folder;
+
+/** The folder filter expression a generated base uses for `folder`. */
+export function baseFolderFilter(folder: string): string {
+  return `file.inFolder("${quoteBaseFolder(folder)}")`;
+}
+
+function baseFor(quote: FolderQuote, sourceFolder: string, entity: string, body: string[]): string {
   return [
     "filters:",
     "  and:",
-    `    - 'file.inFolder("${sourceFolder}")'`,
+    `    - 'file.inFolder("${quote(sourceFolder)}")'`,
     `    - 'file.ext == "md"'`,
     `    - 'entity == "${entity}"'`,
     ...body,
@@ -20,10 +42,89 @@ function baseFor(sourceFolder: string, entity: string, body: string[]): string {
   ].join("\n");
 }
 
+/** The latest generated bases for `root`. */
 export function baseFiles(root = clinicalRootFolder()): Record<string, string> {
+  return baseFilesV2(root, quoteBaseFolder);
+}
+
+/**
+ * Every set of bases this plugin has written for `root`, newest first, each
+ * exactly as it shipped. Used only to recognise untouched files.
+ */
+export function generatedBaseVersions(root: string): Record<string, string>[] {
+  return [baseFiles(root), baseFilesV1(root, unquotedFolder)];
+}
+
+/**
+ * Version 2: the Surgery logbook view lists completed procedures only, as the
+ * in-app counts and the CSV exporter do. Cancelled and entered-in-error
+ * entries move to their own view instead of silently inflating the logbook.
+ */
+function baseFilesV2(root: string, quote: FolderQuote): Record<string, string> {
+  const files = baseFilesV1(root, quote);
+  files[`${clinicalFolder("bases", root)}/Surgery Logbook.base`] = baseFor(
+    quote,
+    clinicalFolder("procedures", root),
+    "procedure",
+    [
+      "properties:",
+      "  patient:",
+      "    displayName: Patient",
+      "  procedure:",
+      "    displayName: Procedure",
+      "  procedure_date:",
+      "    displayName: Date",
+      "  role:",
+      "    displayName: Role",
+      "  status:",
+      "    displayName: Status",
+      "  follow_up_required:",
+      "    displayName: Follow-up required",
+      "  follow_up_date:",
+      "    displayName: Follow-up date",
+      "views:",
+      "  - type: table",
+      "    name: Surgery logbook",
+      "    filters:",
+      "      and:",
+      `        - 'status == "completed"'`,
+      "    order:",
+      "      - patient",
+      "      - procedure",
+      "      - procedure_date",
+      "      - role",
+      "      - outcome",
+      "      - follow_up_required",
+      "      - follow_up_date",
+      "    sort:",
+      "      - property: procedure_date",
+      "        direction: DESC",
+      "  - type: table",
+      "    name: Retracted",
+      "    filters:",
+      "      or:",
+      `        - 'status == "cancelled"'`,
+      `        - 'status == "entered-in-error"'`,
+      "    order:",
+      "      - patient",
+      "      - procedure",
+      "      - procedure_date",
+      "      - status",
+      "    sort:",
+      "      - property: procedure_date",
+      "        direction: DESC"
+    ]
+  );
+  return files;
+}
+
+/** Version 1: shipped from 0.2.0 through 0.6.9. Frozen. */
+function baseFilesV1(root: string, quote: FolderQuote): Record<string, string> {
   const bases = clinicalFolder("bases", root);
+  const baseFor1 = (sourceFolder: string, entity: string, body: string[]): string =>
+    baseFor(quote, sourceFolder, entity, body);
   return {
-    [`${bases}/Patients.base`]: baseFor(clinicalFolder("patients", root), "patient", [
+    [`${bases}/Patients.base`]: baseFor1(clinicalFolder("patients", root), "patient", [
       "properties:",
       "  patient_name:",
       "    displayName: Patient",
@@ -64,7 +165,7 @@ export function baseFiles(root = clinicalRootFolder()): Record<string, string> {
       "        direction: ASC"
     ]),
 
-    [`${bases}/Episodes.base`]: baseFor(clinicalFolder("episodes", root), "episode", [
+    [`${bases}/Episodes.base`]: baseFor1(clinicalFolder("episodes", root), "episode", [
       "properties:",
       "  patient:",
       "    displayName: Patient",
@@ -117,7 +218,7 @@ export function baseFiles(root = clinicalRootFolder()): Record<string, string> {
       "        direction: DESC"
     ]),
 
-    [`${bases}/Tasks.base`]: baseFor(clinicalFolder("tasks", root), "task", [
+    [`${bases}/Tasks.base`]: baseFor1(clinicalFolder("tasks", root), "task", [
       "properties:",
       "  patient:",
       "    displayName: Patient",
@@ -164,7 +265,7 @@ export function baseFiles(root = clinicalRootFolder()): Record<string, string> {
       "        direction: DESC"
     ]),
 
-    [`${bases}/Surgery Logbook.base`]: baseFor(clinicalFolder("procedures", root), "procedure", [
+    [`${bases}/Surgery Logbook.base`]: baseFor1(clinicalFolder("procedures", root), "procedure", [
       "properties:",
       "  patient:",
       "    displayName: Patient",
@@ -207,12 +308,22 @@ export function baseSourceFolders(root = clinicalRootFolder()): Record<string, s
   };
 }
 
-export function homeNote(root = clinicalRootFolder()): string {
+const HOME_OPEN_LINE =
+  "Run **Clinical Workspace: Open workspace** (or tap the stethoscope ribbon icon) for the mobile patient, task and surgery interface.";
+
+/**
+ * The opening line shipped up to 0.6.9. It named a command that does not
+ * exist; kept only so untouched home notes are still recognised and upgraded.
+ */
+export const LEGACY_HOME_OPEN_LINE =
+  "Use the **Open Clinical Workspace** command for the mobile patient, task and surgery interface.";
+
+export function homeNote(root = clinicalRootFolder(), openLine = HOME_OPEN_LINE): string {
   const bases = clinicalFolder("bases", root);
   return [
     "# Clinical Workspace",
     "",
-    "Use the **Open Clinical Workspace** command for the mobile patient, task and surgery interface.",
+    openLine,
     "",
     "## Database views",
     "",

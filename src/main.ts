@@ -2175,8 +2175,9 @@ export default class ClinicalWorkspacePlugin extends Plugin {
   /**
    * Parses every managed record under `root` and reduces it to an
    * identifier-free commitment: per-entity parsed counts and a SHA-256 over
-   * the sorted opaque record ids. Parsing is memoized by content, so this
-   * stays cheap on repeated calls.
+   * the sorted opaque record ids. Every note is re-read, so the commitment
+   * reflects exactly what is on disk; YAML is re-parsed only for a note whose
+   * content changed since the repository last parsed it.
    */
   private async parsedRecordInventory(root: string): Promise<RecordInventory> {
     const counts: ExpectedEntityCounts = { patient: 0, episode: 0, task: 0, procedure: 0 };
@@ -2184,7 +2185,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     for (const [entity, folderName] of ENTITY_FOLDER_NAMES) {
       for (const file of markdownFilesInFolder(this.app.vault, `${root}/${folderName}`)) {
         const content = await this.app.vault.cachedRead(file);
-        const record = parseClinicalRecord(content);
+        const record = this.repository.parseManagedContent(file.path, content);
         if (record?.entity !== entity) continue;
         counts[entity] += 1;
         ids.push(`${entity}:${record.id}`);
