@@ -403,6 +403,7 @@ test("recovery guidance names only real commands and stays identifier-free and p
       "add-patient-episode",
       "add-task-follow-up",
       "adopt-current-baseline",
+      "export-patient-list",
       "generate-handover-note",
       "initialize-new-workspace",
       "open-quick-entry",
