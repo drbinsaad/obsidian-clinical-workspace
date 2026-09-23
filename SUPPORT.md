@@ -6,12 +6,16 @@ deployment approval, or a guaranteed response time.
 
 ## Before opening a request
 
-1. Read the [README](README.md), [folder-migration guide](docs/folder-migration.md),
+1. Read the [README](README.md), [everyday-use guide](docs/user-guide.md)
+   (including [what to do when the workspace says
+   read-only](docs/user-guide.md#the-workspace-says-read-only--what-do-i-do)),
+   [folder-migration guide](docs/folder-migration.md),
    [logbook-export guide](docs/logbook-export.md), and [security boundary](SECURITY.md).
 2. Confirm the behavior in the latest published release using a disposable vault
    and synthetic records.
 3. Run **Clinical Workspace: Run clinical data integrity check** after a Sync
-   conflict or hand edit.
+   conflict or hand edit. Its **Show identifier-free summary** button gives
+   issue codes and counts that are safe to paste into a report.
 
 Use the repository's **Bug report** form for reproducible defects and **Feature
 request** form for proposed workflow changes. Security vulnerabilities must be
