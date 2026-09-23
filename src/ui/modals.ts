@@ -34,6 +34,17 @@ import {
   todayIso
 } from "../domain/schema";
 import type { TaskBundle } from "../data/templates";
+import {
+  PATIENT_LIST_FORMATS,
+  PATIENT_LIST_SCOPES,
+  normalizePatientListFilter,
+  patientListFormatLabel,
+  patientListScopeLabel,
+  type PatientListFilter,
+  type PatientListFormat,
+  type PatientListRequest,
+  type PatientListScope
+} from "../services/patient-list";
 import type { QuickEntryAction } from "../quick-entry";
 import { showClinicalNotice } from "./notices";
 
@@ -951,6 +962,107 @@ export class NewTaskModal extends ClinicalModal<NewTaskInput> {
 
   protected value(): NewTaskInput {
     return this.input;
+  }
+}
+
+/**
+ * Chooses which patients go into an exported list and in which format. The
+ * match count updates as the filters change, so the clinician sees what the
+ * file will hold before anything is written.
+ */
+export class PatientListModal extends ClinicalModal<PatientListRequest> {
+  private filter: PatientListFilter;
+  private format: PatientListFormat = "markdown";
+  private matchEl: HTMLElement | null = null;
+
+  constructor(
+    app: App,
+    private readonly countMatches: (filter: PatientListFilter) => { episodes: number; patients: number },
+    onSubmit: AsyncSubmit<PatientListRequest>,
+    seed?: Partial<PatientListFilter>
+  ) {
+    super(app, "Create patient list", onSubmit);
+    this.filter = normalizePatientListFilter(seed);
+  }
+
+  onOpen(): void {
+    const form = this.prepare(
+      "Export patient list",
+      "Choose any combination of care setting, pathway, priority, and episode status. The list is saved in the clinical documents folder and contains patient identifiers — delete it after use."
+    );
+    namedSetting(form, "Care setting").addDropdown((field) => {
+      field
+        .addOptions({ all: "Any care setting", ...CARE_SETTING_OPTIONS })
+        .setValue(this.filter.careSetting)
+        .onChange((value) => {
+          this.filter.careSetting = value as PatientListFilter["careSetting"];
+          this.updateMatches();
+        });
+    });
+    namedSetting(form, "Pathway").addDropdown((field) => {
+      field
+        .addOptions({ all: "Any pathway", ...PATHWAY_OPTIONS })
+        .setValue(this.filter.pathway)
+        .onChange((value) => {
+          this.filter.pathway = value as PatientListFilter["pathway"];
+          this.updateMatches();
+        });
+    });
+    namedSetting(form, "Priority").addDropdown((field) => {
+      field
+        .addOptions({ all: "Any priority", ...PRIORITY_OPTIONS })
+        .setValue(this.filter.priority)
+        .onChange((value) => {
+          this.filter.priority = value as PatientListFilter["priority"];
+          this.updateMatches();
+        });
+    });
+    namedSetting(form, "Episodes").addDropdown((field) => {
+      field
+        .addOptions(
+          Object.fromEntries(PATIENT_LIST_SCOPES.map((scope) => [scope, patientListScopeLabel(scope)]))
+        )
+        .setValue(this.filter.scope)
+        .onChange((value) => {
+          this.filter.scope = value as PatientListScope;
+          this.updateMatches();
+        });
+    });
+    namedSetting(form, "Format")
+      .setDesc("A note opens here in the vault. A spreadsheet file opens in your spreadsheet app.")
+      .addDropdown((field) => {
+        field
+          .addOptions(
+            Object.fromEntries(PATIENT_LIST_FORMATS.map((format) => [format, patientListFormatLabel(format)]))
+          )
+          .setValue(this.format)
+          .onChange((value) => {
+            this.format = value as PatientListFormat;
+          });
+      });
+    this.matchEl = form.createEl("p", {
+      cls: "clinical-section-note clinical-patient-list-matches",
+      attr: { "aria-live": "polite" }
+    });
+    this.updateMatches();
+    this.addActions(this.contentEl);
+  }
+
+  private updateMatches(): void {
+    if (!this.matchEl) return;
+    const { episodes, patients } = this.countMatches(this.filter);
+    this.matchEl.setText(
+      episodes
+        ? `${episodes} episode${episodes === 1 ? "" : "s"} for ${patients} patient${patients === 1 ? "" : "s"} match.`
+        : "No episodes match these filters yet."
+    );
+  }
+
+  protected value(): PatientListRequest {
+    if (!this.countMatches(this.filter).episodes) {
+      throw new Error("No episodes match these filters. Change a filter and try again.");
+    }
+    return { filter: { ...this.filter }, format: this.format };
   }
 }
 

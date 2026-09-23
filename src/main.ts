@@ -651,6 +651,16 @@ export default class ClinicalWorkspacePlugin extends Plugin {
         )
     });
     this.addCommand({
+      id: "export-patient-list",
+      name: "Export patient list",
+      icon: "table",
+      callback: () =>
+        void this.runWorkspaceEntry(
+          (view) => view.openPatientListExport(),
+          "Could not open the patient list export."
+        )
+    });
+    this.addCommand({
       id: "generate-handover-note",
       name: "Generate ward handover note",
       icon: "clipboard-list",

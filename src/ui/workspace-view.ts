@@ -4,6 +4,7 @@ import type {
   EpisodeRecord,
   EventRecord,
   NewEpisodeInput,
+  Pathway,
   PatientRecord,
   Priority,
   ProcedureRecord,
@@ -31,6 +32,15 @@ import {
 import { clinicalFolder } from "../data/paths";
 import { listTaskBundles, type TaskBundle } from "../data/templates";
 import { buildHandoverNote } from "../services/handover";
+import {
+  buildPatientListCsv,
+  buildPatientListMarkdown,
+  countDistinctPatients,
+  patientListFileBaseName,
+  selectPatientListRows,
+  type PatientListFilter,
+  type PatientListRequest
+} from "../services/patient-list";
 import type { ClinicalSettings } from "../domain/settings";
 import { DEFAULT_SETTINGS } from "../domain/settings";
 import { ClinicalRepository } from "../data/repository";
@@ -51,6 +61,7 @@ import {
   NewTaskModal,
   PatientDetailModal,
   PatientIdentityModal,
+  PatientListModal,
   ProcedureModal,
   QuickEntryEpisodeModal,
   QuickEntryModal,
@@ -292,6 +303,9 @@ export class ClinicalWorkspaceView extends ItemView {
   /** In-session filters for the Tasks tab; "all" shows everything. */
   private taskPriorityFilter: Priority | "all" = "all";
   private taskTypeFilter: TaskType | "all" = "all";
+  /** In-session filters for the Patients tab; "all" shows everything. */
+  private patientPathwayFilter: Pathway | "all" = "all";
+  private patientPriorityFilter: Priority | "all" = "all";
   private paneController: ClinicalWorkspacePaneController | null = null;
   private paneOwnerWindow: Window | null = null;
   private readonly listPages = new Map<string, number>();
@@ -783,15 +797,83 @@ export class ClinicalWorkspaceView extends ItemView {
     addPatient.createSpan({ text: "Add patient" });
     addPatient.addEventListener("click", () => this.openAddPatient());
 
-    const active = snapshot.episodes
-      .filter((episode) => this.isActiveEpisode(episode))
+    const allActive = snapshot.episodes.filter((episode) => this.isActiveEpisode(episode));
+    this.renderPatientFilters(container, allActive);
+    const active = allActive
+      .filter(
+        (episode) =>
+          (this.patientPathwayFilter === "all" || episode.pathway === this.patientPathwayFilter) &&
+          (this.patientPriorityFilter === "all" || episode.priority === this.patientPriorityFilter)
+      )
       .sort((a, b) => this.episodeSortKey(a).localeCompare(this.episodeSortKey(b)));
+    const filtering = active.length !== allActive.length;
+    const countNote = (shown: EpisodeRecord[], total: EpisodeRecord[]): string =>
+      filtering ? `${shown.length} of ${total.length} shown` : `${total.length} active`;
     const inpatient = active.filter((episode) => episode.care_setting === "inpatient");
     const outpatient = active.filter((episode) => episode.care_setting !== "inpatient");
-    this.sectionHeader(container, "Inpatients", `${inpatient.length} active`);
+    this.sectionHeader(
+      container,
+      "Inpatients",
+      countNote(inpatient, allActive.filter((episode) => episode.care_setting === "inpatient"))
+    );
     this.renderEpisodeList(container, inpatient, snapshot, "patients-inpatient");
-    this.sectionHeader(container, "Outpatients", `${outpatient.length} active`);
+    this.sectionHeader(
+      container,
+      "Outpatients",
+      countNote(outpatient, allActive.filter((episode) => episode.care_setting !== "inpatient"))
+    );
     this.renderEpisodeList(container, outpatient, snapshot, "patients-outpatient");
+  }
+
+  /**
+   * Pathway and priority chips for the Patients tab, plus an export action
+   * that starts from whatever the chips currently show.
+   */
+  private renderPatientFilters(container: HTMLElement, active: EpisodeRecord[]): void {
+    const filters = container.createDiv({ cls: "clinical-chip-rows" });
+    // A selected pathway stays visible even after its last episode closes, so
+    // a filter can never hide the list without a chip that clears it.
+    const pathwaysInUse = [
+      ...new Set([
+        ...active.map((episode) => episode.pathway),
+        ...(this.patientPathwayFilter === "all" ? [] : [this.patientPathwayFilter])
+      ])
+    ]
+      .filter((pathway) => pathway)
+      .sort((a, b) => pathwayLabel(a).localeCompare(pathwayLabel(b)));
+    if (pathwaysInUse.length > 1 || this.patientPathwayFilter !== "all") {
+      const pathwayRow = filters.createDiv({ cls: "clinical-chip-row" });
+      this.filterChip(pathwayRow, "All pathways", this.patientPathwayFilter === "all", () => {
+        this.patientPathwayFilter = "all";
+      }, "Show every pathway");
+      for (const pathway of pathwaysInUse) {
+        this.filterChip(pathwayRow, pathwayLabel(pathway), this.patientPathwayFilter === pathway, () => {
+          this.patientPathwayFilter = this.patientPathwayFilter === pathway ? "all" : pathway;
+        }, `Filter patients by pathway ${pathwayLabel(pathway)}`);
+      }
+    }
+    const priorityRow = filters.createDiv({ cls: "clinical-chip-row" });
+    this.filterChip(priorityRow, "All", this.patientPriorityFilter === "all", () => {
+      this.patientPriorityFilter = "all";
+    }, "Show patients of every priority");
+    for (const priority of PRIORITIES) {
+      this.filterChip(priorityRow, priorityLabel(priority), this.patientPriorityFilter === priority, () => {
+        this.patientPriorityFilter = this.patientPriorityFilter === priority ? "all" : priority;
+      }, `Filter patients by ${priority} priority`);
+    }
+    const exportRow = container.createDiv({ cls: "clinical-card-actions clinical-patient-list-actions" });
+    this.actionButton(
+      exportRow,
+      "Export list",
+      () =>
+        this.openPatientListExport({
+          pathway: this.patientPathwayFilter,
+          priority: this.patientPriorityFilter
+        }),
+      false,
+      false,
+      "save these patients to a note or CSV file"
+    );
   }
 
   private renderTasks(container: HTMLElement, snapshot: ClinicalSnapshot): void {
@@ -815,34 +897,7 @@ export class ClinicalWorkspaceView extends ItemView {
   /** Chip rows: one for priority, one for the task types actually in use. */
   private renderTaskFilters(container: HTMLElement, open: TaskRecord[]): void {
     const filters = container.createDiv({ cls: "clinical-chip-rows" });
-    const chip = (
-      row: HTMLElement,
-      label: string,
-      active: boolean,
-      apply: () => void,
-      accessible: string
-    ): void => {
-      const button = row.createEl("button", {
-        text: label,
-        cls: `clinical-chip${active ? " is-active" : ""}`,
-        attr: { type: "button", "aria-pressed": String(active), "aria-label": accessible }
-      });
-      button.addEventListener("click", () => {
-        const ownerDocument = (
-          button as HTMLButtonElement & { ownerDocument?: Document }
-        ).ownerDocument;
-        const ownedFocusAtStart = !ownerDocument || ownerDocument.activeElement === button;
-        apply();
-        // A filter change re-reads nothing it does not need; refresh() serves
-        // the redraw and keeps the scroll position like any other re-render.
-        void this.refresh().then(() => {
-          if (
-            ownedFocusAtStart &&
-            clinicalActionFocusMayReturn(button, ownerDocument)
-          ) this.restoreActionFocus(accessible);
-        });
-      });
-    };
+    const chip = this.filterChip.bind(this);
 
     const priorityRow = filters.createDiv({ cls: "clinical-chip-row" });
     chip(priorityRow, "All", this.taskPriorityFilter === "all", () => {
@@ -866,6 +921,36 @@ export class ClinicalWorkspaceView extends ItemView {
         }, `Filter tasks by type ${type}`);
       }
     }
+  }
+
+  /** One toggle chip in a filter row; selecting it redraws the current tab. */
+  private filterChip(
+    row: HTMLElement,
+    label: string,
+    active: boolean,
+    apply: () => void,
+    accessible: string
+  ): void {
+    const button = row.createEl("button", {
+      text: label,
+      cls: `clinical-chip${active ? " is-active" : ""}`,
+      attr: { type: "button", "aria-pressed": String(active), "aria-label": accessible }
+    });
+    button.addEventListener("click", () => {
+      const ownerDocument = (
+        button as HTMLButtonElement & { ownerDocument?: Document }
+      ).ownerDocument;
+      const ownedFocusAtStart = !ownerDocument || ownerDocument.activeElement === button;
+      apply();
+      // A filter change re-reads nothing it does not need; refresh() serves
+      // the redraw and keeps the scroll position like any other re-render.
+      void this.refresh().then(() => {
+        if (
+          ownedFocusAtStart &&
+          clinicalActionFocusMayReturn(button, ownerDocument)
+        ) this.restoreActionFocus(accessible);
+      });
+    });
   }
 
   private renderSurgery(container: HTMLElement, snapshot: ClinicalSnapshot): void {
@@ -1028,6 +1113,16 @@ export class ClinicalWorkspaceView extends ItemView {
     }
     this.renderPagination(container, "more-archive", archivePage);
 
+    this.sectionHeader(container, "Patient lists", "Export any patient type");
+    const lists = container.createDiv({ cls: "clinical-card" });
+    lists.createEl("h4", { text: "Export a patient list" });
+    lists.createEl("p", {
+      text: "Pick a care setting, pathway, priority, and episode status — for example every inpatient, every urgent follow-up, or everyone waiting for surgery — and save the matching patients as a note or a spreadsheet file in the documents folder. It contains identifiers; delete it after use.",
+      cls: "clinical-card-meta"
+    });
+    const listActions = lists.createDiv({ cls: "clinical-card-actions" });
+    this.actionButton(listActions, "Export patient list", () => this.openPatientListExport());
+
     this.sectionHeader(container, "Ward handover", "Generated from today's records");
     const handover = container.createDiv({ cls: "clinical-card" });
     handover.createEl("h4", { text: "End-of-day handover note" });
@@ -1102,6 +1197,58 @@ export class ClinicalWorkspaceView extends ItemView {
     } catch (error) {
       showClinicalNotice(error instanceof Error ? error.message : "Search could not be opened.", 7000);
     }
+  }
+
+  /**
+   * Opens the patient-list export form. `seed` pre-selects filters, for
+   * example the chips currently active on the Patients tab.
+   */
+  async openPatientListExport(seed?: Partial<PatientListFilter>): Promise<void> {
+    try {
+      const snapshot = await this.repository.snapshot();
+      const today = todayIso();
+      new PatientListModal(
+        this.app,
+        (filter) => {
+          const rows = selectPatientListRows(snapshot, filter, today);
+          return { episodes: rows.length, patients: countDistinctPatients(rows) };
+        },
+        (request) => this.writePatientList(request),
+        seed
+      ).open();
+    } catch (error) {
+      showClinicalNotice(error instanceof Error ? error.message : "The patient list could not be opened.", 7000);
+    }
+  }
+
+  /**
+   * Re-reads the records at submit time so the file reflects what is on disk
+   * now, not what the form was opened against.
+   */
+  private async writePatientList(request: PatientListRequest): Promise<void> {
+    const snapshot = await this.repository.snapshot();
+    const today = todayIso();
+    const rows = selectPatientListRows(snapshot, request.filter, today);
+    if (!rows.length) throw new Error("No episodes match these filters any more. Change a filter and try again.");
+    const baseName = patientListFileBaseName(request.filter, today);
+    const folder = clinicalFolder("documents");
+    const count = `${rows.length} episode${rows.length === 1 ? "" : "s"}`;
+    if (request.format === "csv") {
+      await this.repository.createLooseFile(folder, baseName, "csv", buildPatientListCsv(rows));
+      // Obsidian cannot display a CSV itself; say where it went instead.
+      new Notice(
+        `Patient list CSV (${count}) saved in the documents folder. Open it from your file manager or the Files app, and delete it after use.`,
+        9000
+      );
+      return;
+    }
+    const path = await this.repository.createLooseNote(
+      folder,
+      baseName,
+      buildPatientListMarkdown(rows, request.filter, today)
+    );
+    new Notice(`Patient list (${count}) created in the documents folder. Delete it after use.`, 7000);
+    await this.openPath(path);
   }
 
   /** Writes today's ward handover note into the Documents folder and opens it. */

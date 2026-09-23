@@ -957,7 +957,24 @@ export class ClinicalRepository {
    * writes. A name collision gets a numeric suffix rather than overwriting.
    */
   async createLooseNote(folder: string, baseName: string, content: string): Promise<string> {
-    return this.queue.run(`loose:${folder}/${baseName}`, async () => {
+    return this.createLooseFile(folder, baseName, "md", content);
+  }
+
+  /**
+   * Same contract as `createLooseNote` for the few generated non-note files
+   * (a patient-list CSV). Only known extensions are accepted, so a caller
+   * cannot turn this into a general-purpose vault writer.
+   */
+  async createLooseFile(
+    folder: string,
+    baseName: string,
+    extension: "md" | "csv",
+    content: string
+  ): Promise<string> {
+    if (extension !== "md" && extension !== "csv") {
+      throw new Error("That file type cannot be written by Clinical Workspace.");
+    }
+    return this.queue.run(`loose:${folder}/${baseName}.${extension}`, async () => {
       this.assertWritesAllowed();
       this.assertManagedMutationAdmissionOpen();
       const release = this.beginManagedMutation(
@@ -968,7 +985,7 @@ export class ClinicalRepository {
         await this.ensureFolder(folder);
         for (let attempt = 0; attempt < 50; attempt += 1) {
           const name = attempt === 0 ? baseName : `${baseName} ${attempt + 1}`;
-          const path = normalizePath(`${folder}/${name}.md`);
+          const path = normalizePath(`${folder}/${name}.${extension}`);
           if (this.app.vault.getAbstractFileByPath(path)) continue;
           this.assertWritesAllowed();
           await this.app.vault.create(path, content);

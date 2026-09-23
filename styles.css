@@ -1019,6 +1019,16 @@
   margin: 0 0 12px;
 }
 
+/* The Patients-tab export sits under the filter chips it starts from. */
+.clinical-card-actions.clinical-patient-list-actions {
+  margin: 0 0 12px;
+}
+
+.clinical-patient-list-actions .clinical-card-button {
+  flex: 0 1 auto;
+  min-height: 44px;
+}
+
 .clinical-chip-row,
 .clinical-date-chips {
   display: flex;
