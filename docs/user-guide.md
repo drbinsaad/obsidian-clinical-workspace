@@ -48,6 +48,9 @@ Changing a filter chip starts the list again at page 1.
 Each task card has **Complete**, **Reschedule**, **+ Task**, **Open**, and a
 red **Cancel**.
 
+On any episode card (Patients, Surgery, Archive), tap the patient line — the
+MRN and name with a small arrow — to open the same patient sheet.
+
 ## How do I add a patient?
 
 1. On iPhone, go to **Patients** and tap **Add patient**. On desktop, use the

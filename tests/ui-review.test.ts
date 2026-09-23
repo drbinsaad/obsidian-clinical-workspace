@@ -1063,3 +1063,43 @@ test("the template preview shows each item's type, priority and date, and the bu
     bundle.warnings
   );
 });
+
+test("an episode card's patient line opens the patient sheet without adding a button row", async () => {
+  const alpha = patient("PAT-alpha");
+  const merged = patient("PAT-merged", { mrn: MRN_BETA, patient_name: "Synthetic Merged", merged_into: "PAT-alpha" });
+  const snapshot = snapshotOf({
+    patients: [alpha, merged],
+    episodes: [
+      episode("EPI-alpha", "PAT-alpha", { case: "Synthetic clinic review" }),
+      episode("EPI-merged", "PAT-merged", { case: "Synthetic stray case" })
+    ]
+  });
+  const { root, view } = createView("patients", snapshot);
+  view.render(snapshot);
+  const links = root.findAll(".clinical-card-patient-link");
+  assert.equal(links.length, 1, "a merged-away patient has no sheet, so its line stays plain text");
+  const link = links[0];
+  assert.ok(link);
+  assert.equal(link.tagName, "button");
+  assert.match(link.attributes.get("aria-label") ?? "", /^MRN .+ — view patient$/, "the name starts with the visible text");
+  const card = link.closest(".clinical-card");
+  assert.ok(card);
+  assert.ok(
+    !card.find(".clinical-card-actions")?.findAll("button").some((button) => /view/i.test(button.textContent)),
+    "no extra View button in the card's action grid"
+  );
+
+  const sheets = captureOpen(PatientDetailModal);
+  try {
+    link.dispatch("click");
+    await flush();
+    assert.equal(sheets.opened.length, 1);
+    assert.equal((sheets.opened[0] as unknown as { data: { patient: PatientRecord } }).data.patient.id, "PAT-alpha");
+  } finally {
+    sheets.restore();
+  }
+
+  const rules = parseCssRules(await readFile(new URL("../styles.css", import.meta.url), "utf8"));
+  const mobile = computedDeclarations(rules, [".clinical-card-patient-link", ".is-mobile .clinical-card-patient-link"], { width: 390, height: 844 });
+  assert.equal(mobile.get("min-height"), "44px", "a touch-sized target on phones");
+});

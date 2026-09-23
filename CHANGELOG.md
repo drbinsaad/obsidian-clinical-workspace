@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Patients tab can be filtered by pathway and priority. Section counts
   show when a filter hides records, and **Export list** starts from the
   current filter.
+- The patient line on every episode card opens the patient sheet, so a
+  patient's episodes, open work and history are one tap away from the
+  Patients, Surgery and Archive lists.
 - **Check the MRN**: when the MRN typed in **Add patient** is already recorded
   for a patient with a different name, a dialog shows the stored patient
   before anything is filed. **Go back and check the MRN** (the default)

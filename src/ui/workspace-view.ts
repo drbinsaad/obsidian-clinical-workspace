@@ -2001,7 +2001,21 @@ export class ClinicalWorkspaceView extends ItemView {
     const top = card.createDiv({ cls: "clinical-card-top" });
     top.createEl("h4", { text: episode.case || "Case not recorded", attr: { dir: "auto" } });
     top.createSpan({ text: episode.due_date || "Not set", cls: "clinical-card-meta" });
-    card.createEl("p", { text: this.patientLabel(patient), cls: "clinical-card-meta" });
+    const label = this.patientLabel(patient);
+    if (patient && !patient.merged_into && !patient.merge_in_progress) {
+      // The patient line doubles as the way into the patient sheet: another
+      // action button would add a fourth row to every card on a phone.
+      const view = card.createEl("button", {
+        cls: "clinical-card-meta clinical-card-patient-link",
+        attr: { type: "button", "aria-label": `${label} — view patient` }
+      });
+      view.createSpan({ text: label });
+      const chevron = view.createSpan({ cls: "clinical-card-patient-chevron", attr: { "aria-hidden": "true" } });
+      setIcon(chevron, "chevron-right");
+      view.addEventListener("click", () => void this.openPatientDetail(patient));
+    } else {
+      card.createEl("p", { text: label, cls: "clinical-card-meta" });
+    }
     if (patient) card.createEl("p", { text: `Phone ${displayPhone(patient.phone)}`, cls: "clinical-card-meta" });
     if (episode.next_action) {
       const next = card.createEl("p", { cls: "clinical-card-review" });
