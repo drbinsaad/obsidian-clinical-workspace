@@ -26,7 +26,7 @@ export interface RecordProblem {
   message: string;
 }
 
-const PROCEDURE_STATUSES = ["completed", "cancelled", "entered-in-error"] as const;
+export const PROCEDURE_STATUSES = ["completed", "cancelled", "entered-in-error"] as const;
 
 /** Timestamp fields that must parse as a real instant when present. */
 const RECORD_TIMESTAMPS: Record<string, readonly string[]> = {
@@ -126,6 +126,20 @@ function validateTaskRecord(record: TaskRecord): RecordProblem[] {
   checkEnum(record.status, TASK_STATUSES, "status", problems);
   checkEnum(record.priority, PRIORITIES, "priority", problems);
   checkEnum(record.task_type, TASK_TYPES, "task type", problems);
+  // A quoted "7" still shows the Repeats badge but is not a whole number at
+  // completion time, so the next occurrence would silently never be raised.
+  const repeat: unknown = record.repeat_every_days;
+  if (
+    repeat !== undefined &&
+    repeat !== "" &&
+    !(typeof repeat === "number" && Number.isInteger(repeat) && repeat >= 0 && repeat <= 730)
+  ) {
+    problems.push({
+      code: "invalid-repeat-interval",
+      severity: "warning",
+      message: "The repeat interval is not a whole number of days from 0 to 730, so this task will not recur. Set repeat_every_days to an unquoted whole number."
+    });
+  }
   if (!normalizeText(record.idempotency_key)) {
     problems.push({
       code: "missing-idempotency-key",

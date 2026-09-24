@@ -26,6 +26,13 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
 import { parse } from "yaml";
+import {
+  CARE_SETTINGS,
+  EPISODE_STATUSES,
+  PATHWAYS,
+  PRIORITIES,
+  PROCEDURE_STATUSES
+} from "./export-logbook-enums.mjs";
 
 // Resolve the package root once from this script rather than from the caller's
 // working directory. Confidential exports must never be created anywhere in the
@@ -36,14 +43,25 @@ const SOURCE_CHECKOUT = await realpath(fileURLToPath(new URL("..", import.meta.u
 const USAGE = `
   Usage: npm run export:logbook -- "/path/to/vault" --out "/safe/location/logbook.csv" [options]
 
-    --out <file>     Required CSV destination outside the vault and source checkout
-    --root <folder>  Vault-relative clinical folder (default "Clinical Workspace")
-    --identifiers    Include MRN and patient name; reads the Patients folder
-    --force          Replace an existing regular CSV file
-    --help           Show this help
+    --out <file>        Required CSV destination outside the vault and source checkout
+    --root <folder>     Vault-relative clinical folder (default: the folder set in the
+                        plugin's settings, else "Clinical Workspace")
+    --from <YYYY-MM-DD> Only procedures on or after this date
+    --to <YYYY-MM-DD>   Only procedures on or before this date
+    --role <label>      Only procedures logged with this role (not case-sensitive)
+    --identifiers       Include MRN and patient name; reads the Patients folder
+    --force             Replace an existing regular CSV file
+    --help              Show this help
 
+  Every record is validated before the filters are applied.
   The default CSV is pseudonymized, not anonymous. It remains confidential.
 `;
+
+const DEFAULT_ROOT = "Clinical Workspace";
+
+/** Console errors stay aggregate; the in-app check links to each affected note. */
+const INTEGRITY_CHECK_HINT =
+  'Run "Clinical Workspace: Run clinical data integrity check" in Obsidian to find the affected notes.';
 
 class ExportError extends Error {
   constructor(message) {
@@ -57,7 +75,7 @@ function fail(message) {
 }
 
 function parseArguments(args) {
-  const valueOptions = new Set(["out", "root"]);
+  const valueOptions = new Set(["out", "root", "from", "to", "role"]);
   const booleanOptions = new Set(["identifiers", "force", "help"]);
   const values = new Map();
   const flags = new Set();
@@ -98,11 +116,22 @@ function parseArguments(args) {
   if (positionals.length !== 1) fail("Supply exactly one vault path.");
   if (!values.has("out")) fail("Option --out is required; no default output path is used.");
 
+  const from = values.get("from") ?? null;
+  const to = values.get("to") ?? null;
+  if (from !== null && !isDateOnly(from)) fail("--from must be a real calendar date written YYYY-MM-DD.");
+  if (to !== null && !isDateOnly(to)) fail("--to must be a real calendar date written YYYY-MM-DD.");
+  if (from !== null && to !== null && from > to) fail("--from must not be later than --to.");
+  const role = values.has("role") ? cleanText(values.get("role")) : null;
+  if (role === "") fail("--role must name a role.");
+
   return {
     help: false,
     vault: positionals[0],
     out: values.get("out"),
-    root: values.get("root") ?? "Clinical Workspace",
+    root: values.get("root") ?? null,
+    from,
+    to,
+    role,
     identifiers: flags.has("identifiers"),
     force: flags.has("force")
   };
@@ -135,11 +164,100 @@ async function existingDirectory(input, label) {
   }
 }
 
-function validateRootArgument(root) {
-  if (!root || path.isAbsolute(root)) fail("--root must be a non-empty vault-relative folder.");
+function validateRootArgument(root, source = "--root") {
+  if (!root || path.isAbsolute(root)) fail(`${source} must be a non-empty vault-relative folder.`);
   const segments = root.split(/[\\/]+/u);
   if (segments.some((segment) => segment === "..") || segments.every((segment) => segment === "." || segment === "")) {
-    fail("--root must name a child folder and may not contain traversal segments.");
+    fail(`${source} must name a child folder and may not contain traversal segments.`);
+  }
+}
+
+/**
+ * The clinical folder saved in the plugin's settings, so an export after a
+ * folder move needs no --root. Only the vault's default config folder is
+ * read. A folder move the plugin has not finished is refused: the records
+ * could then be in either folder. So is a recovery check or review the
+ * plugin still requires (it keeps editing paused then): the records under
+ * that folder may be incomplete, for example while Sync is still delivering.
+ * The per-type record counts the plugin last trusted are returned too, so a
+ * folder holding fewer records than that is refused as well.
+ */
+async function configuredRoot(vault) {
+  const settingsFile = path.join(vault, ".obsidian", "plugins", "clinical-workspace", "data.json");
+  let text;
+  try {
+    const canonical = await realpath(settingsFile);
+    if (!isInside(vault, canonical)) {
+      fail("The plugin settings file resolves outside the supplied vault. Pass --root explicitly.");
+    }
+    text = await readFile(canonical, "utf8");
+  } catch (error) {
+    if (error instanceof ExportError) throw error;
+    if (isRecord(error) && error.code === "ENOENT") return { root: DEFAULT_ROOT, expectedCounts: null };
+    fail("The plugin settings file could not be read. Pass --root explicitly.");
+  }
+  let settings;
+  try {
+    settings = JSON.parse(text);
+  } catch {
+    fail("The plugin settings file is not valid JSON. Pass --root explicitly.");
+  }
+  if (!isRecord(settings)) fail("The plugin settings file is not a settings object. Pass --root explicitly.");
+  if (settings.migrationInProgress !== undefined && settings.migrationInProgress !== null) {
+    fail(
+      "The plugin records a clinical folder move that has not finished. Finish or recover it in Obsidian first, or pass --root explicitly."
+    );
+  }
+  // recoveryValidationRequired is deliberately not read: the plugin sets it
+  // on every startup and never clears it, so a healthy workspace carries it.
+  const safety = settings.workspaceSafety;
+  if (
+    isRecord(safety) &&
+    safety.version === 1 &&
+    (safety.rootRecoveryRequired === true || safety.baselineReviewRequired === true)
+  ) {
+    fail(
+      "The plugin records a recovery check or review that has not finished, so the records may be incomplete. Finish it in Obsidian first, or pass --root explicitly."
+    );
+  }
+  const expectedCounts = committedEntityCounts(safety);
+  if (typeof settings.rootFolder !== "string") return { root: DEFAULT_ROOT, expectedCounts };
+  // The plugin's own normalisation: forward slashes, no repeated or edge separators.
+  const root = settings.rootFolder
+    .trim()
+    .replace(/\\/gu, "/")
+    .replace(/\/{2,}/gu, "/")
+    .replace(/^\/+|\/+$/gu, "")
+    .trim();
+  if (!root) return { root: DEFAULT_ROOT, expectedCounts };
+  validateRootArgument(root, "The clinical folder in the plugin settings");
+  return { root, expectedCounts };
+}
+
+/** Per-type counts from an initialized version-1 safety object, else null. */
+function committedEntityCounts(safety) {
+  if (!isRecord(safety) || safety.version !== 1 || safety.initialized !== true) return null;
+  const counts = safety.expectedEntityCounts;
+  if (!isRecord(counts)) return null;
+  const committed = {};
+  for (const entity of ["patient", "episode", "procedure"]) {
+    const value = counts[entity];
+    if (Number.isSafeInteger(value) && value >= 0) committed[entity] = value;
+  }
+  return committed;
+}
+
+/**
+ * Fewer records than the plugin last trusted means notes are missing or have
+ * not arrived yet. The plugin would pause editing on its next start; the
+ * export stops rather than writing a silently partial logbook.
+ */
+function assertNotBelowCommitted(expectedCounts, entity, count) {
+  const expected = expectedCounts?.[entity];
+  if (expected !== undefined && count < expected) {
+    fail(
+      "The clinical folder holds fewer records than the plugin last confirmed, so the workspace looks incomplete (for example, still syncing). Open the vault in Obsidian and let it finish, or pass --root explicitly. No CSV was written."
+    );
   }
 }
 
@@ -250,7 +368,7 @@ async function recordsIn(root, folderName, entity) {
   }
 
   if (invalid > 0) {
-    fail(`${invalid} Markdown record${invalid === 1 ? "" : "s"} in ${folderName} had invalid or unreadable frontmatter.`);
+    fail(`${invalid} Markdown record${invalid === 1 ? "" : "s"} in ${folderName} had invalid or unreadable frontmatter. ${INTEGRITY_CHECK_HINT}`);
   }
 
   const seen = new Set();
@@ -260,7 +378,7 @@ async function recordsIn(root, folderName, entity) {
     seen.add(record.id);
   }
   if (duplicates > 0) {
-    fail(`${folderName} contains duplicate record IDs (${duplicates} conflict${duplicates === 1 ? "" : "s"}).`);
+    fail(`${folderName} contains duplicate record IDs (${duplicates} conflict${duplicates === 1 ? "" : "s"}). ${INTEGRITY_CHECK_HINT}`);
   }
 
   return records;
@@ -299,31 +417,11 @@ function validateRelationships(procedures, episodes, patients) {
   }
 
   if (invalid > 0) {
-    fail(`Record integrity validation found ${invalid} invalid or mismatched relationship${invalid === 1 ? "" : "s"}. No CSV was written.`);
+    fail(`Record integrity validation found ${invalid} invalid or mismatched relationship${invalid === 1 ? "" : "s"}. No CSV was written. ${INTEGRITY_CHECK_HINT}`);
   }
 
   return { episodeById, patientById };
 }
-
-const CARE_SETTINGS = new Set(["inpatient", "outpatient"]);
-const PATHWAYS = new Set([
-  "assessment",
-  "or-booking",
-  "opd-follow-up",
-  "result-review",
-  "consultation",
-  "discharge-ready"
-]);
-const PRIORITIES = new Set(["routine", "urgent", "emergency"]);
-const EPISODE_STATUSES = new Set([
-  "active",
-  "on-hold",
-  "ready-to-close",
-  "archived",
-  "cancelled",
-  "entered-in-error"
-]);
-const PROCEDURE_STATUSES = new Set(["completed", "cancelled", "entered-in-error"]);
 
 function isString(value) {
   return typeof value === "string";
@@ -351,16 +449,70 @@ function isTimestamp(value) {
 }
 
 /**
+ * The plugin's normalizeMrn (src/domain/schema.ts): invisible and direction
+ * controls removed, Arabic-Indic and Persian digits read as ASCII, spaces and
+ * hyphens dropped. The in-app integrity check validates this form, so the
+ * exporter validates and writes it too; otherwise a hand-edited MRN would be
+ * refused here while the check the error points to finds nothing.
+ */
+function normalizeMrn(value) {
+  return value
+    .replace(/[\u061C\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/gu, "")
+    .replace(/[\u0660-\u0669\u06F0-\u06F9]/gu, (digit) => {
+      const code = digit.codePointAt(0) ?? 0;
+      return String(code - (code >= 0x06f0 ? 0x06f0 : 0x0660));
+    })
+    .replace(/[\s-]/gu, "");
+}
+
+/** Counts rejected values per property name for one kind of record. */
+class FieldRejections {
+  constructor(order) {
+    this.order = order;
+    this.counts = new Map();
+  }
+
+  add(field) {
+    this.counts.set(field, (this.counts.get(field) ?? 0) + 1);
+  }
+
+  get total() {
+    let total = 0;
+    for (const count of this.counts.values()) total += count;
+    return total;
+  }
+
+  /** Property names and counts only, so the breakdown can never identify a record. */
+  describe(noun) {
+    const total = this.total;
+    const parts = this.order
+      .filter((field) => this.counts.has(field))
+      .map((field) => `${field}: ${this.counts.get(field)}`);
+    return `${total} ${noun}${total === 1 ? "" : "s"} (${parts.join(", ")})`;
+  }
+}
+
+/**
  * Validate every value that can reach a CSV cell. Empty optional strings are
  * explicit and accepted; missing values, arrays, objects, and invalid enums are
  * not silently stringified. Error output is aggregate-only so it cannot expose
- * a filename, record ID, patient identifier, or clinical text.
+ * a filename, record ID, patient identifier, or clinical text: counts per
+ * property name, plus a pointer to the in-app integrity check, which does
+ * link to the affected notes.
  */
 function validateExportSchema(procedures, episodeById, patientById, identifiers) {
   let invalidProcedureStatuses = 0;
-  let invalidProcedureFields = 0;
-  let invalidEpisodeFields = 0;
-  let invalidPatientFields = 0;
+  const procedureFields = new FieldRejections([
+    "procedure",
+    "role",
+    "outcome",
+    "procedure_date",
+    "created_at",
+    "follow_up_required",
+    "follow_up_date"
+  ]);
+  const episodeFields = new FieldRejections(["case", "care_setting", "pathway", "priority", "status"]);
+  const patientFields = new FieldRejections(["mrn", "patient_name", "mrn or patient_name"]);
   const completed = [];
   const joinedEpisodes = new Map();
   const joinedPatients = new Map();
@@ -373,18 +525,17 @@ function validateExportSchema(procedures, episodeById, patientById, identifiers)
     if (procedure.status !== "completed") continue;
     completed.push(procedure);
 
-    const stringFields = [procedure.outcome];
-    const requiredFields = [procedure.procedure, procedure.role];
-    invalidProcedureFields += stringFields.filter((value) => !isString(value)).length;
-    invalidProcedureFields += requiredFields.filter((value) => !isNonEmptyString(value)).length;
-    if (!isDateOnly(procedure.procedure_date)) invalidProcedureFields += 1;
-    if (!isTimestamp(procedure.created_at)) invalidProcedureFields += 1;
-    if (typeof procedure.follow_up_required !== "boolean") invalidProcedureFields += 1;
+    if (!isNonEmptyString(procedure.procedure)) procedureFields.add("procedure");
+    if (!isNonEmptyString(procedure.role)) procedureFields.add("role");
+    if (!isString(procedure.outcome)) procedureFields.add("outcome");
+    if (!isDateOnly(procedure.procedure_date)) procedureFields.add("procedure_date");
+    if (!isTimestamp(procedure.created_at)) procedureFields.add("created_at");
+    if (typeof procedure.follow_up_required !== "boolean") procedureFields.add("follow_up_required");
     const followUpDateValid =
       isString(procedure.follow_up_date) &&
       (procedure.follow_up_date === "" || isDateOnly(procedure.follow_up_date));
     if (!followUpDateValid || (procedure.follow_up_required === true && procedure.follow_up_date === "")) {
-      invalidProcedureFields += 1;
+      procedureFields.add("follow_up_date");
     }
 
     const episodeId = requiredString(procedure, "episode_id");
@@ -396,28 +547,27 @@ function validateExportSchema(procedures, episodeById, patientById, identifiers)
   }
 
   for (const episode of joinedEpisodes.values()) {
-    if (!isNonEmptyString(episode.case)) invalidEpisodeFields += 1;
+    if (!isNonEmptyString(episode.case)) episodeFields.add("case");
     if (!isNonEmptyString(episode.care_setting) || !CARE_SETTINGS.has(episode.care_setting)) {
-      invalidEpisodeFields += 1;
+      episodeFields.add("care_setting");
     }
-    if (!isNonEmptyString(episode.pathway) || !PATHWAYS.has(episode.pathway)) invalidEpisodeFields += 1;
-    if (!isNonEmptyString(episode.priority) || !PRIORITIES.has(episode.priority)) invalidEpisodeFields += 1;
-    if (!isNonEmptyString(episode.status) || !EPISODE_STATUSES.has(episode.status)) invalidEpisodeFields += 1;
+    if (!isNonEmptyString(episode.pathway) || !PATHWAYS.has(episode.pathway)) episodeFields.add("pathway");
+    if (!isNonEmptyString(episode.priority) || !PRIORITIES.has(episode.priority)) episodeFields.add("priority");
+    if (!isNonEmptyString(episode.status) || !EPISODE_STATUSES.has(episode.status)) episodeFields.add("status");
   }
 
   for (const patient of joinedPatients.values()) {
-    const validMrn = isString(patient.mrn) && (patient.mrn === "" || /^\d+$/u.test(patient.mrn));
+    const mrn = isString(patient.mrn) ? normalizeMrn(patient.mrn) : null;
+    const validMrn = mrn !== null && (mrn === "" || /^\d+$/u.test(mrn));
     const validName = isString(patient.patient_name);
-    if (!validMrn) {
-      invalidPatientFields += 1;
-    }
-    if (!validName) invalidPatientFields += 1;
+    if (!validMrn) patientFields.add("mrn");
+    if (!validName) patientFields.add("patient_name");
     // The runtime permits MRN-only or name-only identities, but never neither.
     if (
-      !(validMrn && patient.mrn.length > 0) &&
+      !(validMrn && mrn.length > 0) &&
       !(validName && patient.patient_name.trim().length > 0)
     ) {
-      invalidPatientFields += 1;
+      patientFields.add("mrn or patient_name");
     }
   }
 
@@ -425,20 +575,33 @@ function validateExportSchema(procedures, episodeById, patientById, identifiers)
   if (invalidProcedureStatuses > 0) {
     errors.push(`${invalidProcedureStatuses} procedure status value${invalidProcedureStatuses === 1 ? "" : "s"}`);
   }
-  if (invalidProcedureFields > 0) {
-    errors.push(`${invalidProcedureFields} completed-procedure field value${invalidProcedureFields === 1 ? "" : "s"}`);
-  }
-  if (invalidEpisodeFields > 0) {
-    errors.push(`${invalidEpisodeFields} joined-episode field value${invalidEpisodeFields === 1 ? "" : "s"}`);
-  }
-  if (invalidPatientFields > 0) {
-    errors.push(`${invalidPatientFields} joined-patient identifier field value${invalidPatientFields === 1 ? "" : "s"}`);
-  }
+  if (procedureFields.total > 0) errors.push(procedureFields.describe("completed-procedure field value"));
+  if (episodeFields.total > 0) errors.push(episodeFields.describe("joined-episode field value"));
+  if (patientFields.total > 0) errors.push(patientFields.describe("joined-patient identifier field value"));
   if (errors.length > 0) {
-    fail(`Export schema validation rejected ${errors.join(", ")}. No CSV was written.`);
+    fail(`Export schema validation rejected ${errors.join("; ")}. No CSV was written. ${INTEGRITY_CHECK_HINT}`);
   }
 
   return completed;
+}
+
+/**
+ * Narrows validated completed procedures to the requested period and role.
+ * Runs only after every record passed validation, so a filter can never hide
+ * a damaged record from the checks.
+ */
+function applyFilters(completed, options) {
+  return completed.filter((procedure) => {
+    if (options.from !== null && procedure.procedure_date < options.from) return false;
+    if (options.to !== null && procedure.procedure_date > options.to) return false;
+    if (
+      options.role !== null &&
+      cleanText(procedure.role).toLocaleLowerCase() !== options.role.toLocaleLowerCase()
+    ) {
+      return false;
+    }
+    return true;
+  });
 }
 
 async function outputTarget(vault, requested, force) {
@@ -483,13 +646,13 @@ function cleanText(value) {
       return codePoint < 32 || codePoint === 127 ? " " : character;
     })
     .join("")
-    // Strip directionality controls (LRM/RLM, embeddings/overrides, isolates):
+    // Strip directionality controls (ALM/LRM/RLM, overrides, isolates):
     // an RLO smuggled into a cell can visually reorder neighbouring cells in a
     // spreadsheet — and this CSV is the one artifact meant to leave the vault.
     // ZWNJ/ZWJ are deliberately preserved: they are orthographically
     // significant in Persian and other Arabic-script text (see
-    // src/domain/schema.ts normalizeText, which applies the same class).
-    .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "");
+    // src/domain/schema.ts normalizeText, which strips the same controls).
+    .replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "");
   return withoutControls.replace(/\s+/gu, " ").trim();
 }
 
@@ -517,7 +680,7 @@ function csvFor(procedures, episodeById, patientById, identifiers) {
     ["logged_at", (procedure) => procedure.created_at],
     ...(identifiers
       ? [
-          ["mrn", (procedure, episode, patient) => patient.mrn],
+          ["mrn", (procedure, episode, patient) => normalizeMrn(patient.mrn)],
           ["patient_name", (procedure, episode, patient) => patient.patient_name]
         ]
       : [])
@@ -600,7 +763,11 @@ async function main() {
   }
 
   const vault = await existingDirectory(options.vault, "The supplied vault");
-  const root = await clinicalRoot(vault, options.root);
+  // Counts are compared only for the folder saved in the plugin's settings;
+  // an explicit --root is the operator's own decision.
+  const configured = options.root === null ? await configuredRoot(vault) : null;
+  const expectedCounts = configured?.expectedCounts ?? null;
+  const root = await clinicalRoot(vault, configured ? configured.root : options.root);
   const target = await outputTarget(vault, options.out, options.force);
 
   if (options.identifiers) {
@@ -610,19 +777,28 @@ async function main() {
   }
 
   const procedures = await recordsIn(root, "Procedures", "procedure");
+  assertNotBelowCommitted(expectedCounts, "procedure", procedures.length);
   if (procedures.length === 0) fail("No valid procedure records were found; no CSV was written.");
   const episodes = await recordsIn(root, "Episodes", "episode");
+  assertNotBelowCommitted(expectedCounts, "episode", episodes.length);
+  // Patients are read only for an identified export, so only then compared.
   const patients = options.identifiers ? await recordsIn(root, "Patients", "patient") : null;
+  if (patients) assertNotBelowCommitted(expectedCounts, "patient", patients.length);
   const { episodeById, patientById } = validateRelationships(procedures, episodes, patients);
   const completed = validateExportSchema(procedures, episodeById, patientById, options.identifiers);
-  const result = csvFor(completed, episodeById, patientById, options.identifiers);
+  const selected = applyFilters(completed, options);
+  const result = csvFor(selected, episodeById, patientById, options.identifiers);
 
   await atomicWrite(target, result.csv, options.force);
 
   console.log(`Exported ${result.completed} completed procedure record${result.completed === 1 ? "" : "s"}.`);
-  const skipped = procedures.length - result.completed;
+  const skipped = procedures.length - completed.length;
   if (skipped > 0) {
     console.log(`Excluded ${skipped} non-completed procedure record${skipped === 1 ? "" : "s"}.`);
+  }
+  const filtered = completed.length - selected.length;
+  if (filtered > 0) {
+    console.log(`Excluded ${filtered} completed procedure record${filtered === 1 ? "" : "s"} outside the requested dates or role.`);
   }
   console.log(
     options.identifiers

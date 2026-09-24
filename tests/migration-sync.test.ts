@@ -22,6 +22,7 @@ import {
 import { ClinicalService } from "../src/services/clinical-service";
 import {
   CLINICAL_BASELINE_CONFIRMATION_REQUIRED_MESSAGE,
+  CLINICAL_RECORDS_UNLOCKED_MESSAGE,
   compactClinicalRecoveryNotice,
   hideClinicalRecoveryNotice
 } from "../src/ui/notices";
@@ -560,7 +561,7 @@ async function assertInvalidTrustedJournalFailsClosed(journal: unknown): Promise
     );
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "5221", caseName: "Invalid journal stays read-only" })
+        episodeInput({ mrn: "9000005221", caseName: "Invalid journal stays read-only" })
       ),
       /synchronized recovery information conflicts/
     );
@@ -605,7 +606,7 @@ async function assertTrustedJournalArmFailureFailsClosed(
     assert.equal(plugin.workspaceSafetyNeedsPersistence, true);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5222", caseName: "Journal arm failure stays read-only" })
+        episodeInput({ mrn: "9000005222", caseName: "Journal arm failure stays read-only" })
       ),
       /synchronized recovery information conflicts/
     );
@@ -705,7 +706,7 @@ async function assertLegacyCountOnlyEqualCommitmentRequiresReview(
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
         episodeInput({
-          mrn: conflictingDisk ? "5211" : "5210",
+          mrn: conflictingDisk ? "9000005211" : "9000005210",
           caseName: "Legacy equal commitment needs typed review"
         })
       ),
@@ -755,7 +756,7 @@ test("marker-before-folder keeps source readable and blocks an already-open serv
   try {
     setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
     const { app, repository, service } = await harness();
-    await service.createEpisode(episodeInput({ patientName: "Private Name", mrn: "991122" }));
+    await service.createEpisode(episodeInput({ patientName: "Private Name", mrn: "9000991122" }));
     const marker: MigrationMarker = { from: "Clinical Workspace", to: "Ward Records" };
     let stored: unknown = { ...DEFAULT_SETTINGS, rootFolder: marker.to, migrationInProgress: marker };
     let saved: unknown = null;
@@ -769,11 +770,11 @@ test("marker-before-folder keeps source readable and blocks an already-open serv
     assert.equal(clinicalRootFolder(), marker.from);
     assert.equal((await repository.list<EpisodeRecord>("episode")).length, 1, "reads remain available");
     await assert.rejects(
-      () => service.createEpisode(episodeInput({ patientName: "Blocked Person", mrn: "884433" })),
+      () => service.createEpisode(episodeInput({ patientName: "Blocked Person", mrn: "9000884433" })),
       (error: unknown) => {
         assert.ok(error instanceof Error);
         assert.equal(error.message, CLINICAL_WRITES_BLOCKED_MESSAGE);
-        assert.doesNotMatch(error.message, /Private|Blocked|991122|884433|Ward Records/);
+        assert.doesNotMatch(error.message, /Private|Blocked|9000991122|9000884433|Ward Records/);
         return true;
       }
     );
@@ -794,7 +795,7 @@ test("marker-before-folder keeps source readable and blocks an already-open serv
       "count-only recovery remains closed until an explicit exact Retry"
     );
     assert.equal(await plugin.retryPendingMigrationRecovery(), true);
-    await service.createEpisode(episodeInput({ patientName: "Allowed Person", mrn: "773322" }));
+    await service.createEpisode(episodeInput({ patientName: "Allowed Person", mrn: "9000773322" }));
     assert.equal((await repository.list<EpisodeRecord>("episode")).length, 2);
   } finally {
     setClinicalRoot(originalRoot);
@@ -822,7 +823,7 @@ test("folder-before-marker with two populated roots stays read-only until only d
     assert.equal(clinicalRootFolder(), marker.to);
     assert.equal(plugin.migrationRecoveryBlocked, true);
     assert.equal(await plugin.retryPendingMigrationRecovery(), true);
-    await service.createEpisode(episodeInput({ mrn: "5002", caseName: "After convergence" }));
+    await service.createEpisode(episodeInput({ mrn: "9000005002", caseName: "After convergence" }));
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -843,7 +844,7 @@ test("source-only recovery remains conservative automatically and explicit retry
     assert.equal(await plugin.retryPendingMigrationRecovery(), true);
     assert.equal(clinicalRootFolder(), marker.from);
     assert.equal(plugin.pendingMigrationMarker, null);
-    await service.createEpisode(episodeInput({ mrn: "5003", caseName: "After rollback" }));
+    await service.createEpisode(episodeInput({ mrn: "9000005003", caseName: "After rollback" }));
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -913,7 +914,7 @@ test("folder rename arriving before settings fails closed synchronously and then
     assert.ok(saved);
     assert.equal(clinicalRootFolder(), "Ward Records");
     assert.equal(plugin.pendingMigrationMarker, null);
-    await service.createEpisode(episodeInput({ mrn: "5004", caseName: "After folder-first delivery" }));
+    await service.createEpisode(episodeInput({ mrn: "9000005004", caseName: "After folder-first delivery" }));
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -964,7 +965,7 @@ test("deleting the configured root blocks writes immediately", async () => {
     for (const folder of backedUpFolders) app.vault.folders.add(folder);
     for (const [path, content] of backedUpFiles) app.vault.writeRaw(path, content);
     assert.equal(await plugin.retryPendingMigrationRecovery(), true);
-    await service.createEpisode(episodeInput({ mrn: "5005", caseName: "Root delivered again" }));
+    await service.createEpisode(episodeInput({ mrn: "9000005005", caseName: "Root delivered again" }));
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -992,14 +993,14 @@ test("deleting one managed child fails closed until the full healthy count retur
     for (let index = 0; index < 4; index += 1) await Promise.resolve();
 
     await assert.rejects(
-      () => service.createEpisode(episodeInput({ mrn: "6001" })),
-      new RegExp("configured folder is unavailable")
+      () => service.createEpisode(episodeInput({ mrn: "9000006001" })),
+      /a record note was added, edited, deleted or moved outside Clinical Workspace/
     );
     assert.equal(await plugin.retryPendingMigrationRecovery(), false);
 
     app.vault.writeRaw(deletedPath, deletedContent);
     assert.equal(await plugin.retryPendingMigrationRecovery(), true);
-    await service.createEpisode(episodeInput({ mrn: "6002", caseName: "After child restore" }));
+    await service.createEpisode(episodeInput({ mrn: "9000006002", caseName: "After child restore" }));
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -1023,7 +1024,7 @@ test("deleting Events or unrelated files does not arm managed-root recovery", as
     plugin.blockIfActiveRootDisappeared("Unrelated note.md");
 
     assert.equal(plugin.migrationRecoveryBlocked, false);
-    await service.createEpisode(episodeInput({ mrn: "6003", caseName: "Unaffected" }));
+    await service.createEpisode(episodeInput({ mrn: "9000006003", caseName: "Unaffected" }));
   } finally {
     setClinicalRoot(originalRoot);
   }
@@ -1071,7 +1072,7 @@ test("persisted missing-root recovery survives restart and prevents empty scaffo
     assert.equal(safety?.rootRecoveryRequired, true);
     assert.equal(safety?.recoveryRequiresRecords, true);
     assert.ok(Number(safety?.expectedManagedRecordCount) > 0);
-    assert.doesNotMatch(JSON.stringify(safety), /Clinical Workspace|Ward Records|Test Patient|5001/);
+    assert.doesNotMatch(JSON.stringify(safety), /Clinical Workspace|Ward Records|Test Patient|9000005001/);
 
     const restartedRepository = new ClinicalRepository(app as unknown as App);
     const restarted = makePlugin(app, restartedRepository, () => stored);
@@ -1166,7 +1167,7 @@ test("an exact trusted root restored before listeners register clears the stale 
 
     const restoredService = new ClinicalService(restartedRepository);
     await restoredService.createEpisode(
-      episodeInput({ mrn: "5006", caseName: "After exact startup restore" })
+      episodeInput({ mrn: "9000005006", caseName: "After exact startup restore" })
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -1231,9 +1232,9 @@ test("startup validation blocks an equal-count replacement delivered before layo
     assert.equal(restarted.missingRootRecoveryBlocked, true);
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "5110", caseName: "Startup replacement must stay blocked" })
+        episodeInput({ mrn: "9000005110", caseName: "Startup replacement must stay blocked" })
       ),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -1276,7 +1277,7 @@ test("startup validation catches a managed deletion before listeners and creates
     const filesBeforeEnsure = [...app.vault.files.keys()].sort();
     await assert.rejects(
       () => restarted.ensureStructure(),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
     assert.deepEqual([...app.vault.files.keys()].sort(), filesBeforeEnsure);
     assert.equal(
@@ -1464,7 +1465,7 @@ test("automatic and explicit recovery serialize while Sync changes a pending sav
     const beforeGrowth = new Set(managedRecordPaths(app, DEFAULT_SETTINGS.rootFolder));
     const syncRepository = new ClinicalRepository(app as unknown as App);
     await new ClinicalService(syncRepository).createEpisode(
-      episodeInput({ mrn: "5099", caseName: "Synced growth" })
+      episodeInput({ mrn: "9000005099", caseName: "Synced growth" })
     );
     const deliveredPath = managedRecordPaths(app, DEFAULT_SETTINGS.rootFolder)
       .find((path) => !beforeGrowth.has(path));
@@ -1479,9 +1480,9 @@ test("automatic and explicit recovery serialize while Sync changes a pending sav
     assert.equal(explicitSettled, false, "the explicit command queues behind automatic recovery");
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "5100", caseName: "Must stay blocked" })
+        episodeInput({ mrn: "9000005100", caseName: "Must stay blocked" })
       ),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
     releaseSave();
 
@@ -1611,9 +1612,9 @@ test("a failed dirty-pass re-arm remains blocked after restart", async () => {
     assert.equal(restarted.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "5102", caseName: "Restart must stay blocked" })
+        episodeInput({ mrn: "9000005102", caseName: "Restart must stay blocked" })
       ),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -1708,9 +1709,9 @@ test("closed-app root loss persists exact validation before an equal-count chang
     assert.equal(secondRestart.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => new ClinicalService(secondRestartRepository).createEpisode(
-        episodeInput({ mrn: "5104", caseName: "Changed closed-app restore" })
+        episodeInput({ mrn: "9000005104", caseName: "Changed closed-app restore" })
       ),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -1850,9 +1851,9 @@ test("a frozen baseline preview rejects record loss before typed confirmation co
     assert.equal(guidance.hidden, false);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5107", caseName: "Frozen-preview deletion must stay blocked" })
+        episodeInput({ mrn: "9000005107", caseName: "Frozen-preview deletion must stay blocked" })
       ),
-      /configured folder is unavailable/
+      /rechecks its record notes/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -1939,7 +1940,7 @@ test("externally strengthened safety invalidates an open baseline preview before
     assert.equal(guidance.hidden, false);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5108", caseName: "External safety must stay blocked" })
+        episodeInput({ mrn: "9000005108", caseName: "External safety must stay blocked" })
       ),
       /synchronized recovery information conflicts/
     );
@@ -2020,7 +2021,7 @@ test("a persisted baseline-review barrier clears through the membership proof an
     assert.equal(await restarted.retryExactRestoredRootRecovery(), true);
     assert.equal(restarted.migrationRecoveryBlocked, false);
     await new ClinicalService(restartedRepository).createEpisode(
-      episodeInput({ mrn: "5109", caseName: "Writable after reviewed baseline restart" })
+      episodeInput({ mrn: "9000005109", caseName: "Writable after reviewed baseline restart" })
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -2134,7 +2135,7 @@ test("typed ADOPT stays in review when its shared save succeeds but the local jo
     assert.equal(reviewing.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => new ClinicalService(reviewingRepository).createEpisode(
-        episodeInput({ mrn: "5224", caseName: "Post-ADOPT journal failure blocked" })
+        episodeInput({ mrn: "9000005224", caseName: "Post-ADOPT journal failure blocked" })
       ),
       /synchronized recovery information conflicts/
     );
@@ -2155,7 +2156,7 @@ test("typed ADOPT stays in review when its shared save succeeds but the local jo
     assert.equal(restarted.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "5225", caseName: "Restart after failed ADOPT journal blocked" })
+        episodeInput({ mrn: "9000005225", caseName: "Restart after failed ADOPT journal blocked" })
       ),
       /synchronized recovery information conflicts/
     );
@@ -2248,7 +2249,7 @@ test("typed adoption can deliberately accept a lower record baseline and restart
     assert.equal(restarted.missingRootRecoveryBlocked, false);
     assert.equal(restarted.migrationRecoveryBlocked, false);
     await new ClinicalService(restartedRepository).createEpisode(
-      episodeInput({ mrn: "5214", caseName: "Writable after deliberate lower baseline" })
+      episodeInput({ mrn: "9000005214", caseName: "Writable after deliberate lower baseline" })
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -2327,7 +2328,7 @@ test("a final-handoff delete and complete restore triggers a fresh exact recover
     );
     assert.equal(
       StubNotice.history.some((notice) =>
-        notice.message === "Clinical Workspace folder access was restored."
+        notice.message === CLINICAL_RECORDS_UNLOCKED_MESSAGE
       ),
       false,
       "no success Notice may be emitted before the fresh exact pass completes"
@@ -2360,7 +2361,7 @@ test("late valid growth invalidates baseline-adoption success and stays fail-clo
     const beforeGrowth = new Set(managedRecordPaths(app, DEFAULT_SETTINGS.rootFolder));
     const syncRepository = new ClinicalRepository(app as unknown as App);
     await new ClinicalService(syncRepository).createEpisode(
-      episodeInput({ mrn: "5105", caseName: "Final-handoff baseline growth" })
+      episodeInput({ mrn: "9000005105", caseName: "Final-handoff baseline growth" })
     );
     const growthFiles = managedRecordPaths(app, DEFAULT_SETTINGS.rootFolder)
       .filter((path) => !beforeGrowth.has(path))
@@ -2429,7 +2430,7 @@ test("late valid growth invalidates baseline-adoption success and stays fail-clo
     assert.equal(plugin.expectedManagedRecordCount, deliveredInventory.total);
     assert.equal(plugin.expectedRecordDigest, deliveredInventory.digest);
     await new ClinicalService(repository).createEpisode(
-      episodeInput({ mrn: "5106", caseName: "Writable after late additive growth" })
+      episodeInput({ mrn: "9000005106", caseName: "Writable after late additive growth" })
     );
 
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
@@ -2456,7 +2457,7 @@ test("late valid growth invalidates baseline-adoption success and stays fail-clo
     assert.equal(await restarted.retryExactRestoredRootRecovery(), true);
     assert.equal(restarted.migrationRecoveryBlocked, false);
     await new ClinicalService(restartedRepository).createEpisode(
-      episodeInput({ mrn: "5212", caseName: "Writable after restart" })
+      episodeInput({ mrn: "9000005212", caseName: "Writable after restart" })
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -2539,9 +2540,9 @@ test("baseline adoption queues behind exact recovery and keeps writes blocked", 
     );
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "5103", caseName: "Adoption barrier" })
+        episodeInput({ mrn: "9000005103", caseName: "Adoption barrier" })
       ),
-      /trusted baseline/
+      /confirms the current records as the recovery baseline/
     );
 
     releaseAdoptionSave();
@@ -2625,8 +2626,8 @@ test("automatic root recovery rejects a changed equal-count record set", async (
     assert.equal(await restarted.retryExactRestoredRootRecovery(), false);
     assert.equal(restarted.migrationRecoveryBlocked, true);
     await assert.rejects(
-      () => new ClinicalService(restartedRepository).createEpisode(episodeInput({ mrn: "5007" })),
-      /configured folder is unavailable/
+      () => new ClinicalService(restartedRepository).createEpisode(episodeInput({ mrn: "9000005007" })),
+      /rechecks its record notes/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -2664,8 +2665,8 @@ test("automatic root recovery stays blocked when its cleared state cannot be sav
     assert.equal(restarted.migrationRecoveryBlocked, true);
     assert.equal(restarted.workspaceSafetyNeedsPersistence, true);
     await assert.rejects(
-      () => new ClinicalService(restartedRepository).createEpisode(episodeInput({ mrn: "5008" })),
-      /configured folder is unavailable/
+      () => new ClinicalService(restartedRepository).createEpisode(episodeInput({ mrn: "9000005008" })),
+      /rechecks its record notes/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -2806,7 +2807,7 @@ test("initialization approval journals the exact baseline before a restart can t
     assert.equal(restarted.baselineReviewRequired, true);
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "5220", caseName: "Replacement after approval stays blocked" })
+        episodeInput({ mrn: "9000005220", caseName: "Replacement after approval stays blocked" })
       ),
       /synchronized recovery information conflicts/
     );
@@ -2865,7 +2866,7 @@ test("first-use approval stays blocked when its shared save succeeds but its loc
     assert.equal(approving.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5226", caseName: "First-use journal failure blocked" })
+        episodeInput({ mrn: "9000005226", caseName: "First-use journal failure blocked" })
       ),
       /needs a trusted baseline/
     );
@@ -2917,7 +2918,7 @@ test("first-use approval stays blocked when its shared save succeeds but its loc
 
     await restarted.ensureStructure();
     await new ClinicalService(restartedRepository).createEpisode(
-      episodeInput({ mrn: "5227", caseName: "Writable after exact approval recovery" })
+      episodeInput({ mrn: "9000005227", caseName: "Writable after exact approval recovery" })
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -3477,7 +3478,7 @@ test("a benign external settings read blocks writes until its callback fully app
     assert.equal(callbackSettled, false);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5201", caseName: "Blocked during external settings read" })
+        episodeInput({ mrn: "9000005201", caseName: "Blocked during external settings read" })
       ),
       /temporarily read-only/
     );
@@ -3486,7 +3487,7 @@ test("a benign external settings read blocks writes until its callback fully app
     await callback;
     assert.equal(plugin.migrationRecoveryBlocked, false);
     await new ClinicalService(repository).createEpisode(
-      episodeInput({ mrn: "5202", caseName: "Writable after benign external settings" })
+      episodeInput({ mrn: "9000005202", caseName: "Writable after benign external settings" })
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -3625,7 +3626,7 @@ test("an initialization-approved higher incomplete snapshot cannot weaken a trus
     assert.equal(plugin.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5213", caseName: "Incomplete initialization snapshot blocked" })
+        episodeInput({ mrn: "9000005213", caseName: "Incomplete initialization snapshot blocked" })
       ),
       /synchronized recovery information conflicts/
     );
@@ -3715,7 +3716,7 @@ test("startup rejects a noncanonical retired-root fingerprint commitment", async
     );
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "5223", caseName: "Malformed tombstone commitment" })
+        episodeInput({ mrn: "9000005223", caseName: "Malformed tombstone commitment" })
       ),
       /synchronized recovery information conflicts/
     );
@@ -3886,7 +3887,7 @@ test("a device-local trusted inventory survives interruption before conflict rev
     );
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "5219", caseName: "Interrupted conflict stays read-only" })
+        episodeInput({ mrn: "9000005219", caseName: "Interrupted conflict stays read-only" })
       ),
       /synchronized recovery information conflicts/
     );
@@ -4280,7 +4281,7 @@ test("additive same-root Sync survives duplicate data-first callbacks and restar
     assert.equal(plugin.baselineReviewRequired, false);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5203", caseName: "Record has not synced yet" })
+        episodeInput({ mrn: "9000005203", caseName: "Record has not synced yet" })
       ),
       /newly synchronized records are verified/
     );
@@ -4322,7 +4323,7 @@ test("additive same-root Sync survives duplicate data-first callbacks and restar
     assert.equal(restarted.expectedRecordDigest, localInventory.digest);
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "5204", caseName: "Durable additive Sync barrier" })
+        episodeInput({ mrn: "9000005204", caseName: "Durable additive Sync barrier" })
       ),
       /newly synchronized records are verified/
     );
@@ -4502,7 +4503,7 @@ test("replacement plus growth cannot masquerade as an automatically trusted high
     assert.equal(await plugin.retryPendingMigrationRecovery(), false);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5205", caseName: "Replacement plus growth needs review" })
+        episodeInput({ mrn: "9000005205", caseName: "Replacement plus growth needs review" })
       ),
       /synchronized recovery information conflicts/
     );
@@ -4624,7 +4625,7 @@ test("a newer external commitment wins when an older root verification is still 
     });
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5206", caseName: "Newer queued commitment remains blocked" })
+        episodeInput({ mrn: "9000005206", caseName: "Newer queued commitment remains blocked" })
       ),
       /read-only/
     );
@@ -4989,7 +4990,7 @@ test("a suspended local migration reconciliation cannot overwrite a newer ambigu
     );
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5215", caseName: "Newer ambiguous marker remains blocked" })
+        episodeInput({ mrn: "9000005215", caseName: "Newer ambiguous marker remains blocked" })
       ),
       /read-only/
     );
@@ -5053,7 +5054,7 @@ test("a rejected marker-clear save restores retryable recovery without opening w
     // This attempt begins while marker clearing is waiting for durability. It
     // must observe the recovery barrier, not the tentative in-memory root.
     const writeAttempt = new ClinicalService(repository).createEpisode(
-      episodeInput({ mrn: "5216", caseName: "Blocked during marker-clear save" })
+      episodeInput({ mrn: "9000005216", caseName: "Blocked during marker-clear save" })
     ).then(
       () => ({ status: "resolved" as const }),
       (error: unknown) => ({ status: "rejected" as const, error })
@@ -5113,7 +5114,7 @@ test("a rejected marker-clear save restores retryable recovery without opening w
       undefined
     );
     await new ClinicalService(repository).createEpisode(
-      episodeInput({ mrn: "5217", caseName: "Writable after marker-clear retry" })
+      episodeInput({ mrn: "9000005217", caseName: "Writable after marker-clear retry" })
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -5158,7 +5159,7 @@ test("a local folder move keeps writes blocked until its marker-clear save succe
 
     const blockedDuringMarkerClear = plugin.migrationRecoveryBlocked;
     const writeAttempt = new ClinicalService(repository).createEpisode(
-      episodeInput({ mrn: "5218", caseName: "Blocked during local marker clear" })
+      episodeInput({ mrn: "9000005218", caseName: "Blocked during local marker clear" })
     ).then(
       () => ({ status: "resolved" as const }),
       (error: unknown) => ({ status: "rejected" as const, error })
@@ -5322,7 +5323,7 @@ test("a failed local-move journal rebind restores the marker and keeps writes bl
     assert.equal(plugin.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5222", caseName: "Blocked after local journal failure" })
+        episodeInput({ mrn: "9000005222", caseName: "Blocked after local journal failure" })
       ),
       /read-only|recovery information conflicts/i
     );
@@ -5452,7 +5453,7 @@ test("a delivery after failed-move journal restoration cannot reopen writes", as
     assert.equal(plugin.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => service.createEpisode(
-        episodeInput({ mrn: "5227", caseName: "Blocked after failed move race" })
+        episodeInput({ mrn: "9000005227", caseName: "Blocked after failed move race" })
       ),
       /read-only|recovery information conflicts/i
     );
@@ -5610,7 +5611,7 @@ test("a failed external-reconciliation journal rebind preserves its marker and w
     assert.equal(plugin.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5223", caseName: "Blocked after external journal failure" })
+        episodeInput({ mrn: "9000005223", caseName: "Blocked after external journal failure" })
       ),
       /read-only|recovery information conflicts/i
     );
@@ -5706,7 +5707,7 @@ test("a stale marker callback cannot contaminate a newer marker-free snapshot", 
     assert.equal(persisted.workspaceSafety?.baselineReviewRequired, false);
 
     await new ClinicalService(repository).createEpisode(
-      episodeInput({ mrn: "5210", caseName: "Newer marker-free snapshot remains writable" })
+      episodeInput({ mrn: "9000005210", caseName: "Newer marker-free snapshot remains writable" })
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -5799,7 +5800,7 @@ test("a queued lower external snapshot cannot weaken a captured higher commitmen
     assert.equal(persistedSafety?.baselineReviewRequired, false);
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "5207", caseName: "Stale callback cannot weaken the floor" })
+        episodeInput({ mrn: "9000005207", caseName: "Stale callback cannot weaken the floor" })
       ),
       /newly synchronized records are verified/
     );
@@ -5875,7 +5876,7 @@ test("higher incomplete commitments stay in durable review after either root rec
       await assert.rejects(
         () => new ClinicalService(repository).createEpisode(
           episodeInput({
-            mrn: withMarker ? "5208" : "5209",
+            mrn: withMarker ? "9000005208" : "9000005209",
             caseName: "Incomplete higher commitment remains under review"
           })
         ),
@@ -6018,7 +6019,7 @@ test("marker delivery accepts only a complete destination record set", async () 
           marker
         );
         await assert.rejects(
-          () => service.createEpisode(episodeInput({ mrn: `700${retainedCount}` })),
+          () => service.createEpisode(episodeInput({ mrn: `900000700${retainedCount}` })),
           new RegExp("temporarily read-only")
         );
       } else {
@@ -6314,7 +6315,7 @@ test("moving a managed record out of the active root blocks writes, while an int
     safePlugin.handleVaultRename(internallyRenamed, internalOldPath);
     assert.equal(await safePlugin.retryPendingMigrationRecovery(), true);
     assert.equal(safePlugin.migrationRecoveryBlocked, false);
-    await first.service.createEpisode(episodeInput({ mrn: "7010" }));
+    await first.service.createEpisode(episodeInput({ mrn: "9000007010" }));
 
     setClinicalRoot(DEFAULT_SETTINGS.rootFolder);
     const second = await harness();
@@ -6334,8 +6335,8 @@ test("moving a managed record out of the active root blocks writes, while an int
 
     assert.equal(blockedPlugin.migrationRecoveryBlocked, true);
     await assert.rejects(
-      () => second.service.createEpisode(episodeInput({ mrn: "7011" })),
-      new RegExp("configured folder is unavailable")
+      () => second.service.createEpisode(episodeInput({ mrn: "9000007011" })),
+      /a record note was added, edited, deleted or moved outside Clinical Workspace/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -6360,8 +6361,8 @@ test("moving a managed child folder out of the active root blocks writes", async
 
     assert.equal(plugin.migrationRecoveryBlocked, true);
     await assert.rejects(
-      () => service.createEpisode(episodeInput({ mrn: "7012" })),
-      new RegExp("configured folder is unavailable")
+      () => service.createEpisode(episodeInput({ mrn: "9000007012" })),
+      /a record note was added, edited, deleted or moved outside Clinical Workspace/
     );
   } finally {
     setClinicalRoot(originalRoot);
@@ -6388,7 +6389,7 @@ test("managed delivery provenance ignores plugin-owned creates but journals exte
     await plugin.noteManagedRecordWrite();
 
     await service.createEpisode(episodeInput({
-      mrn: "5224",
+      mrn: "9000005224",
       caseName: "Plugin-owned provenance"
     }));
     const afterPluginCreate = app.loadLocalStorage(
@@ -6572,7 +6573,7 @@ test("an external same-path replacement during a plugin-owned create cannot be t
     };
 
     await service.createEpisode(episodeInput({
-      mrn: "5225",
+      mrn: "9000005225",
       caseName: "Concurrent create provenance"
     })).catch(() => undefined);
 
@@ -6878,7 +6879,7 @@ test("a retired root remains watched after restart for a late managed delivery",
     assert.equal(restarted.migrationRecoveryBlocked, true);
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "7013", caseName: "Restarted retired-root race" })
+        episodeInput({ mrn: "9000007013", caseName: "Restarted retired-root race" })
       ),
       /temporarily read-only|recovery information conflicts/i
     );
@@ -6931,7 +6932,7 @@ test("a rejected late retired-root safety save stays blocked without an unhandle
     assert.equal(journal?.pending, true, "the device-local recovery barrier remains durable");
     await assert.rejects(
       () => new ClinicalService(repository).createEpisode(
-        episodeInput({ mrn: "7015", caseName: "Blocked after rejected safety save" })
+        episodeInput({ mrn: "9000007015", caseName: "Blocked after rejected safety save" })
       ),
       /read-only|recovery information conflicts/i
     );
@@ -7019,7 +7020,7 @@ test("a retired root restored while closed prevents exact startup release", asyn
     );
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "7014", caseName: "Closed-app retired-root race" })
+        episodeInput({ mrn: "9000007014", caseName: "Closed-app retired-root race" })
       ),
       /temporarily read-only|recovery information conflicts/i
     );
@@ -7110,7 +7111,7 @@ test("a same-root settings delivery unions tombstones and catches an earlier old
     );
     await assert.rejects(
       () => service.createEpisode(
-        episodeInput({ mrn: "7015", caseName: "External tombstone merge race" })
+        episodeInput({ mrn: "9000007015", caseName: "External tombstone merge race" })
       ),
       /temporarily read-only|recovery information conflicts/i
     );
@@ -7226,7 +7227,7 @@ test("a crash before a tombstone union save cannot forget the local retired root
     );
     await assert.rejects(
       () => new ClinicalService(restartedRepository).createEpisode(
-        episodeInput({ mrn: "7016", caseName: "Crash-lost tombstone remains blocked" })
+        episodeInput({ mrn: "9000007016", caseName: "Crash-lost tombstone remains blocked" })
       ),
       /synchronized recovery information conflicts/
     );
@@ -7302,7 +7303,7 @@ test("legacy clean tombstone journals upgrade, but interrupted legacy journals f
     assert.equal(blockedLegacyJournal.localTypedReviewRequired, true);
     await assert.rejects(
       () => new ClinicalService(pendingRestartRepository).createEpisode(
-        episodeInput({ mrn: "7017", caseName: "Legacy pending journal stays blocked" })
+        episodeInput({ mrn: "9000007017", caseName: "Legacy pending journal stays blocked" })
       ),
       /synchronized recovery information conflicts/
     );
@@ -7517,7 +7518,7 @@ test("an external replacement during the post-create inventory scan cannot advan
     };
 
     await service.createEpisode(episodeInput({
-      mrn: "5226",
+      mrn: "9000005226",
       caseName: "Post-create scan provenance"
     })).catch(() => undefined);
 
@@ -8607,7 +8608,7 @@ test("a transferred verified create rejected by an untrusted owner requires type
       return confirmed;
     };
 
-    const ownerUpdate = repository.update<PatientRecord>(ownerPath, { phone: "123" });
+    const ownerUpdate = repository.update<PatientRecord>(ownerPath, { phone: "0500000001" });
     await ownerVerificationRead;
     const transferredCreate = repository.create(transferred);
     let transferredSettled = false;
@@ -8795,7 +8796,7 @@ test("same-path update and managed maintenance cannot both resolve after clobber
       await tick();
     };
 
-    const update = repository.update(path, { phone: "123" });
+    const update = repository.update(path, { phone: "0500000001" });
     await updateCaptured;
 
     const marker = "MANAGED_MAINTENANCE_EFFECT";
@@ -8835,7 +8836,7 @@ test("same-path update and managed maintenance cannot both resolve after clobber
     const [updateResult, maintenanceResult] = await Promise.allSettled([update, maintenance]);
     const finalContent = app.vault.files.get(path) ?? "";
     if (updateResult.status === "fulfilled" && maintenanceResult.status === "fulfilled") {
-      assert.match(finalContent, /^phone:\s*["']?123["']?\s*$/m);
+      assert.match(finalContent, /^phone:\s*["']?0500000001["']?\s*$/m);
       assert.match(
         finalContent,
         new RegExp(marker),

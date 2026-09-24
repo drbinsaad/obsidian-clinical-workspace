@@ -44,6 +44,17 @@ for (const file of ["LICENSE", "SECURITY.md", "CHANGELOG.md", "README.md", "vers
   else fail(`${file} is missing`);
 }
 
+// Without its own section, the release would ship with the previous
+// version's notes as its only description.
+if (await exists("CHANGELOG.md")) {
+  const changelog = await readFile(url("CHANGELOG.md"), "utf8");
+  if (changelog.split(/\r?\n/).some((line) => line.startsWith(`## [${pkg.version}]`))) {
+    ok(`CHANGELOG.md has a section for ${pkg.version}`);
+  } else {
+    fail(`CHANGELOG.md has no "## [${pkg.version}]" section`);
+  }
+}
+
 // --- Release artefacts ------------------------------------------------------
 const artefacts = ["dist/main.js", "dist/manifest.json", "dist/styles.css"];
 for (const file of artefacts) {
@@ -81,6 +92,7 @@ if (await exists("dist/main.js")) {
   if (digits.length) fail(`dist/main.js contains identifier-shaped literals: ${[...new Set(digits)].join(", ")}`);
   else ok("dist/main.js contains no identifier-shaped literals");
 
+  let sandboxed = true;
   for (const [pattern, description] of [
     [/\bfetch\s*\(/, "a fetch call"],
     [/XMLHttpRequest/, "XMLHttpRequest"],
@@ -89,9 +101,12 @@ if (await exists("dist/main.js")) {
     [/\.innerHTML\s*=/, "an innerHTML assignment"],
     [/\beval\s*\(/, "eval"]
   ]) {
-    if (pattern.test(bundle)) fail(`dist/main.js contains ${description}`);
+    if (pattern.test(bundle)) {
+      fail(`dist/main.js contains ${description}`);
+      sandboxed = false;
+    }
   }
-  ok("dist/main.js contains no network, eval or innerHTML usage");
+  if (sandboxed) ok("dist/main.js contains no network, eval or innerHTML usage");
 }
 
 // --- Shipped stylesheet -----------------------------------------------------

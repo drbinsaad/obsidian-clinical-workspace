@@ -7,6 +7,267 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-24
+
+### Upgrade notes
+
+- **Customised Surgery Logbook Base.** If you edited
+  `Bases/Surgery Logbook.base`, it is left exactly as you made it, so it does
+  not get the new "completed only" filter or the **Retracted** view. Add the
+  filter yourself as shown in [Generated database
+  views](docs/data-model.md#generated-database-views), or rename your copy and
+  restart Obsidian to get a fresh generated one. Untouched Bases and home notes
+  are upgraded automatically.
+- **Quote MRN and phone when editing a note by hand.** Write
+  `mrn: "0090000077"`, not `mrn: 0090000077`. Without quotes YAML reads a
+  number and drops the leading zeros. Run **Run clinical data integrity
+  check**: the new `text-stored-as-number` warning points to every property
+  that needs quotes and a check of its value.
+- **Renamed command.** "Retry pending folder move recovery" is now **Recheck
+  records and unlock editing**. Its id (`retry-folder-move-recovery`) is
+  unchanged, so hotkeys and mobile-toolbar buttons keep working; update any
+  personal notes or shortcuts that use the old name.
+
+### Added
+
+- **Export patient list**: save the patients of any type — any combination of
+  care setting, pathway, priority, and episode status — to a Markdown note or
+  a formula-safe CSV spreadsheet in the clinical `Documents` folder. The form
+  previews the match count before writing. Available from **Patients → Export
+  list**, **More → Export patient list**, and the command palette. The list
+  holds exactly what the Patients tab shows, including hand-edited statuses
+  and care settings; in the CSV, MRNs and phones that start with 0 or are 12
+  or more digits long get a leading `'` so spreadsheets keep every digit;
+  clinical text stays literal in the note; and
+  an episode still filed under a merged patient is listed under the surviving
+  patient and counted once.
+- The Patients tab can be filtered by pathway and priority. Section counts
+  show when a filter hides records, and **Export list** starts from the
+  current filter.
+- The patient line on every episode card opens the patient sheet, so a
+  patient's episodes, open work and history are one tap away from the
+  Patients, Surgery and Archive lists.
+- **Check the MRN**: when the MRN typed in **Add patient** is already recorded
+  for a patient with a different name, a dialog shows the stored patient
+  before anything is filed. **Go back and check the MRN** (the default)
+  returns to the filled form; **Use this patient** adds the episode there and
+  keeps the stored name. If Sync moved the MRN to another patient meanwhile,
+  the dialog asks again about that patient.
+- **Undo after Complete**: completing a task shows "Task completed." with an
+  **Undo** button for about 9 seconds, from any tab. For a repeating task the
+  notice says whether the next occurrence was withdrawn or, because it had
+  been changed, left open. A task that was already completed, for example on
+  the other device, says so instead and offers no Undo.
+- **Discharge with open tasks**: Discharge lists the episode's open tasks and
+  offers one explicit tick, off by default, to cancel them with the reason
+  "Closed at discharge". **Archive episode** stays unavailable until it is
+  ticked or the tasks are closed, and work added while the form was open
+  refuses the discharge. So does a task filed under a different patient,
+  before any task is cancelled. Episode cards show "N open tasks".
+- **Add another procedure**: an episode that has moved on after surgery can log
+  a further procedure from its newest Surgery logbook entry or from **Quick
+  entry → Record procedure**. Each form adds its own entry, even with the same
+  procedure and date as an earlier one, and retrying the same form unchanged
+  after an error never adds a second. The episode's pathway stays as it is and
+  no OR-booking task is completed; turning on follow-up adds a follow-up task,
+  which becomes the next action if it is due first.
+- **Read-only banner**: while editing is paused the workspace shows **Editing
+  is paused**, the reason in plain words, a warning when the list may be
+  incomplete, and a **Recheck now** button. It clears by itself.
+- The patient sheet can complete and reschedule open tasks. Ward-round rows
+  have **View** (the patient sheet) beside **Open**, and choosing a patient in
+  Search opens the sheet.
+- Date fields gain **Today**, **+1d** and **+2d** chips, and a due or
+  follow-up date in the past is named before saving.
+- The ward handover note adds **Due tomorrow** and **No date set** sections;
+  every task section lists emergency work first, and each task line shows its
+  case and priority.
+- A **Retracted** view in the generated Surgery Logbook Base lists cancelled
+  and entered-in-error procedures.
+- Integrity check findings for text stored as a number, invalid repeat
+  intervals, records left under a merged patient, open episodes under an
+  archived or entered-in-error patient, completed procedures the logbook
+  exporter would refuse, a procedure whose save stopped part-way (the finding
+  says what to check, and suggests **Complete surgery** only when that
+  finishes the saved entry), and database views still filtering on a
+  previous clinical folder. The report now covers 24 check families. See
+  [Integrity check findings](docs/data-model.md#integrity-check-findings).
+- Task template previews show each task's type, priority and due date, and list
+  anything that was skipped or defaulted under "Check this template:".
+- Logbook exporter: `--from`, `--to` and `--role` filters, applied only after
+  every record has been validated.
+- An everyday-use guide, [docs/user-guide.md](docs/user-guide.md), with
+  step-by-step recipes and a table of every command.
+
+### Changed
+
+- A workspace whose editing is paused now opens read-only instead of refusing
+  to open, from the ribbon, commands, Quick entry and links. It still refuses
+  while a synced folder move is unfinished, while the clinical folder is
+  missing, and before first-use initialization. Forms that would write refuse
+  up front with the reason.
+- **Retry pending folder move recovery** is renamed **Recheck records and
+  unlock editing** and is also offered while a baseline review or verification
+  of newly synced records is pending. **Confirm current records as the recovery
+  baseline** is listed only while editing is paused or a review is pending.
+  **Initialize new workspace** stays listed until an approved initialization
+  has finished, unless a baseline review then needs typed `ADOPT`.
+- Recovery notices say what happened in plain words and name only commands
+  that are available at that moment. A successful recheck says "Clinical
+  Workspace rechecked its records. Editing is available again." instead of
+  "folder access was restored". The What's new window uses plain language too.
+- After a hand edit to a record note, editing still pauses at once, but the
+  recheck runs about 1.5 seconds after the last autosave instead of after
+  every autosave. Notes saved outside the clinical folder do not delay it.
+- **Run clinical data integrity check** works while editing is paused, and
+  notices about unreadable or unrecognised notes point to it. The automatic
+  check on first open waits until editing is available, and is not shown
+  again for an unchanged set of issues in the same session.
+- The `ADOPT` confirmation shows the previously trusted counts beside the
+  current ones and warns when any count dropped.
+- Return moves to the next form field and saves only from the form's last
+  field when that is a text field (or with Ctrl/Cmd+Return), so **Add
+  patient** and **Update** no longer save from **Next action** before **Due
+  date** is reached. The iPhone keyboard shows next/done to match.
+- Task notices no longer repeat the task's wording: "Task added.", "Task
+  already exists." and "No task added: that task was already completed…".
+  When an action fails with an error that names a file or folder path, the
+  notice shows a fixed message instead; a form still shows the full reason.
+- A repeating task completed late comes back on the first date on or after
+  today, on the same cadence, instead of already overdue.
+- **Update**: changing only the date of the next action moves that task and
+  keeps its type, owner, priority and repeat; rewording it keeps the type,
+  owner and repeat unless the pathway changed too. The episode's next action
+  and due date always show the soonest open task and are blank when nothing is
+  open. Raising the episode priority raises lower-priority open tasks. The
+  notice reports a moved task and how many tasks were raised.
+- **Add patient**: an MRN nobody holds yet, typed for a name already recorded
+  without an MRN, now offers that chart in **Possible duplicate patient** and
+  records the MRN on it if chosen. Duplicate names match across Arabic spelling
+  variants. Cancelling the dialog returns to the filled form.
+- A new task's due date starts at today, or the episode's later planned date.
+  Reschedule starts at tomorrow and says "Date unchanged." when nothing moved.
+- Today's Overdue, Today and No date set lists sort by priority first. The ward
+  round pages like other lists. Card buttons put **Complete** first and pair
+  the rest; **Discharge** and **Cancel** have a red border.
+- Search and the episode picker match Arabic spelling variants, Arabic-Indic
+  digits and MRNs with or without leading zeros. A patient search also finds
+  that patient's episodes, tasks and procedures, each row names its patient,
+  and a capped group says "+N more — refine your search".
+- A filter that hides every item keeps its chip and offers **Clear filters**.
+  Tapping **Next** or **Previous** starts the new page at its heading.
+- The generated Surgery Logbook Base lists completed procedures only. Generated
+  Bases are versioned, and untouched ones are upgraded when the workspace opens
+  and after a folder move.
+- The generated home note names the real command: **Clinical Workspace: Open
+  workspace** (or the stethoscope ribbon icon).
+- Audit history in the patient sheet and episode history shows local time.
+- MRN, name, phone and owner fields turn off autocorrect and autofill; text
+  fields follow the direction of the text typed.
+- Task templates ignore capital letters and surrounding spaces in `task_type`,
+  `priority`, `pathway` and `clinical_template`, and `due_in_days` accepts
+  quoted numbers and Arabic-Indic digits.
+- Logbook exporter: without `--root` it reads the clinical folder from the
+  plugin's `data.json` in the vault (falling back to `Clinical Workspace`) and
+  refuses while that file records an unfinished folder move, recovery check or
+  review. Validation errors give counts per property and point to the in-app
+  integrity check. With `--identifiers` an MRN is read and written the way the
+  plugin stores it: Arabic-Indic and Persian digits as 0–9, without spaces or
+  hyphens.
+- **Settings → Privacy and capabilities** lists exactly what `data.json` keeps,
+  including the current and up to 64 previous clinical-folder names and the
+  source and destination names during a move.
+
+### Fixed
+
+- A hand-typed unquoted number or `true`/`false` in a text property (MRN,
+  phone, name, case, task, and similar) no longer breaks adding tasks or
+  episodes or Search; it is read as text and reported by the integrity check.
+- A clinical folder name containing an apostrophe no longer produces broken
+  Bases; untouched Bases broken by earlier versions are repaired.
+- Restoring an archived episode can no longer create a second active episode
+  for the same case.
+- A second procedure on an episode that already had one was refused.
+- Undoing a repeating task's completion left its automatically created next
+  occurrence open, so the series ran twice.
+- Changing only the date in **Update** ended a repeating series and dropped the
+  task's owner and type.
+- An episode could show a due date that no open task tracked.
+- The ward round stopped at 30 inpatients while its heading counted them all.
+- In a narrow pane or on a small phone, **View** and **Open** squeezed each
+  ward-round row to a word per line and could split an MRN across lines. They
+  now move under the row's text when space runs short.
+- A task-type filter could hide every task with no chip left to clear it.
+- Changing a filter chip, or **Clear filters**, kept the page you were on, so
+  the highest-priority matches could sit unseen on an earlier page. The list
+  now starts again at page 1.
+- A quick double tap on **Complete**, **Restore** or **Generate handover**
+  could run it twice.
+- A redraw, including one caused by Sync, no longer drops keyboard or
+  VoiceOver focus to the top of the view.
+- Modal footers no longer add the iPhone bottom safe area twice, and shrink
+  while the keyboard is open.
+- On a new device, a plain note inside a record folder is reported as "not a
+  valid Clinical Workspace record" with a pointer to the integrity check, and
+  records that Sync delivered before initialization no longer force a typed
+  `ADOPT` after a restart.
+- The integrity check on first open no longer reappears after every settings
+  save from the other device.
+- **Remove identifiers from generated note bodies** stops, and reports how
+  many notes it rewrote, when Sync pauses editing partway through, instead of
+  rewriting the rest or failing silently.
+- The Arabic Letter Mark (U+061C) is stripped from entered text and logbook CSV
+  cells like the other direction-control characters.
+- Danger buttons and error text meet AA contrast with the default light and
+  dark themes.
+- Editing a record note while the workspace was re-checking itself after an
+  earlier change could let editing resume before the new change was checked.
+- Submitting **Complete surgery** again for a procedure already logged on the
+  same date re-ran the operating-room step, overwriting the episode's pathway
+  and bringing back a completed follow-up task. It is now refused with a clear
+  message, which points to **Add another procedure** for a second procedure
+  with the same name and date.
+- Undo or Reopen on the last task of an episode that was on hold made the
+  episode active; it now goes back on hold.
+- Undo or Reopen on a repeating task is refused once a later occurrence was
+  already completed, so the series cannot end up with two open copies.
+- A task reopened after its episode's priority was raised came back at its old
+  priority; it now takes the episode's priority, and the audit trail says so.
+  A task you filed below its episode's priority comes back unchanged.
+- Raising an episode's priority could lower a task whose priority was typed by
+  hand (for example `Emergency`) to routine. The **Update** form also keeps a
+  hand-typed priority, care setting or pathway instead of resetting it.
+- Saving an episode that has a task filed under a different patient left the
+  change half-applied; it is now refused before anything is saved.
+- If **Discharge** fails after closing the open tasks, the message says the
+  tasks were already cancelled and to retry, and the retry keeps an on-hold
+  status for restore.
+- The ward handover note keeps `%%`, `#`, `[[` and other Obsidian syntax in
+  clinical text as plain text, and lists work still filed under a merged
+  patient under the surviving patient.
+- Without `--root`, the logbook exporter refuses when the clinical folder holds
+  fewer records than the plugin last confirmed, for example while still
+  syncing, instead of exporting a partial logbook.
+- On iPhone, Return (the **done** key) in the Discharge outcome or Cancel task
+  reason field only hides the keyboard; the button or Ctrl/Cmd+Enter submits.
+  Forms open at their title on small phones.
+- Completing a repeating task no longer moves keyboard or VoiceOver focus onto
+  the next occurrence's **Complete** button, and **Recheck now** keeps focus
+  when the read-only banner redraws.
+- The ward round's **View** no longer opens a sheet for merged or merging
+  patients, the sheet shows the patient's current details, and a double tap
+  on a card's patient line opens one sheet.
+- Ward round, Patients and Tasks pages hold the same records on every device
+  when records tie on priority, date and wording.
+- Pathway and task-type chips appear only for recognised values, so **Export
+  list** matches the filtered list and a hand-typed type cannot show as a
+  second, identical chip. Task types read "Book OR" and "Post-op Follow-Up".
+- On phones, patient-sheet status and date labels no longer wrap one letter per
+  line, a card's single action button fills its row, and the discharge "cancel
+  open tasks" checkbox keeps its square shape.
+- The CI identifier check now catches record numbers split by invisible
+  characters and also scans `styles.css` and the root config files.
+
 ## [0.6.9] - 2026-09-20
 
 ### Fixed

@@ -8,19 +8,33 @@ import type {
   RecordWithPath,
   TaskRecord
 } from "../domain/types";
-import { isIsoDate, mrnMatchKey, normalizeComparable, normalizeText, taskIsOpen } from "../domain/schema";
+import {
+  isIsoDate,
+  mrnMatchKey,
+  normalizeComparable,
+  normalizeText,
+  procedureIdempotencyKey,
+  taskIsOpen
+} from "../domain/schema";
 import { validateRecord } from "../domain/validate";
+import { storedValueKindsOf } from "../data/markdown";
 import { ClinicalRepository } from "../data/repository";
+
+/** Separates the parts of a composite duplicate key; ordinary note text never contains it. */
+const KEY_SEP = "\u0000";
 
 /** Families of configured checks, counted for honest result wording. */
 export const INTEGRITY_CHECK_FAMILIES = [
   "missing managed folders",
+  "database view folders",
   "unreadable notes",
   "duplicate MRNs",
   "unidentified patients",
   "orphaned records",
   "broken merge links",
   "half-finished merges",
+  "records left under merged patients",
+  "open episodes under inactive patients",
   "duplicate active episodes",
   "duplicate open tasks",
   "duplicate internal ids",
@@ -28,12 +42,157 @@ export const INTEGRITY_CHECK_FAMILIES = [
   "open tasks on closed episodes",
   "invalid dates and timestamps",
   "unexpected field values",
+  "text stored as numbers",
+  "logbook export readiness",
   "schema versions",
   "idempotency keys",
   "follow-up contradictions",
   "episode next-action agreement",
   "audit-trail coverage"
 ] as const;
+
+/**
+ * Why scripts/export-logbook.mjs would reject this completed procedure. The
+ * exporter reads the raw YAML and is stricter than the workspace (which
+ * reads an empty value as "" and a date-time as its day), so these rules
+ * mirror its validateExportSchema. Keep the two in step.
+ */
+function exportBlockers(record: ProcedureRecord): string[] {
+  const kinds = storedValueKindsOf(record);
+  const values = record as unknown as Record<string, unknown>;
+  const storedAsText = (field: string): boolean =>
+    typeof values[field] === "string" && !["number", "boolean", "null"].includes(kinds.get(field) ?? "");
+  const nonEmptyText = (field: string): boolean =>
+    storedAsText(field) && String(values[field]).trim().length > 0;
+  const plainDate = (field: string): boolean =>
+    storedAsText(field) &&
+    kinds.get(field) !== "date-time" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(String(values[field])) &&
+    isIsoDate(values[field]);
+
+  const blockers: string[] = [];
+  if (!nonEmptyText("procedure")) blockers.push("procedure (must not be empty)");
+  if (!nonEmptyText("role")) blockers.push("role (must not be empty)");
+  if (!storedAsText("outcome")) blockers.push('outcome (use "" when there is none)');
+  if (!plainDate("procedure_date")) blockers.push("procedure_date (must be YYYY-MM-DD with no time)");
+  if (!isExportTimestamp(record.created_at)) blockers.push("created_at (must be a UTC timestamp ending in Z)");
+  if (typeof record.follow_up_required !== "boolean") blockers.push("follow_up_required (must be true or false)");
+  const followUpDateValid =
+    storedAsText("follow_up_date") &&
+    (record.follow_up_date === "" ? record.follow_up_required !== true : plainDate("follow_up_date"));
+  if (!followUpDateValid) {
+    blockers.push('follow_up_date (must be YYYY-MM-DD with no time, or "" when no follow-up is required)');
+  }
+  return blockers;
+}
+
+/** What else is on a procedure's episode, for judging an unfinished save. */
+interface EpisodeActivity {
+  tasks: TaskRecord[];
+  procedures: ProcedureRecord[];
+  /** When each audit event about the episode record itself was written. */
+  episodeEventTimes: string[];
+}
+
+const UNFINISHED_PROCEDURE_COMPLETE_SURGERY =
+  "This procedure is in the Surgery logbook, but saving it stopped part-way: its audit entry was never written and the episode is still on OR booking. To finish it, find the episode under Surgery → OR booking, tap Complete surgery and enter the same procedure, date and follow-up. That finishes this entry instead of adding a second one.";
+
+/**
+ * The finding for a completed procedure still marked audit_pending with no
+ * completion event, or null when nothing but that audit entry can be
+ * missing (it is then an ordinary missing-audit-event, which agrees with the
+ * "clinical action succeeded" notice the clinician saw).
+ *
+ * Complete surgery is suggested only where it finishes this entry: a
+ * Complete surgery form saved it (its key has no Add another procedure form
+ * id, so Complete surgery finds it again), the episode is still on OR
+ * booking, and nothing was logged, added or updated on the episode since. An
+ * added entry's key carries its form id, so Complete surgery would write a
+ * second entry and complete the episode's current booking; and an episode
+ * that was moved on and then re-booked would have that new booking completed
+ * before its surgery. Neither may be suggested.
+ */
+function unfinishedProcedureMessage(
+  record: ProcedureRecord,
+  episode: EpisodeRecord | undefined,
+  activity: EpisodeActivity
+): string | null {
+  const savedAt = Date.parse(String(record.created_at));
+  // An unreadable time counts as "since the save": the Complete surgery
+  // suggestion must never rest on a guess.
+  const since = (value: unknown): boolean => !(Date.parse(String(value)) < savedAt);
+  const savedByCompleteSurgery =
+    record.idempotency_key ===
+    procedureIdempotencyKey(record.episode_id, record.procedure, record.procedure_date);
+  const onBooking =
+    episode?.pathway === "or-booking" &&
+    !["archived", "cancelled", "entered-in-error"].includes(episode.status);
+  const otherLogged = activity.procedures.filter(
+    (item) => item.id !== record.id && item.status === "completed"
+  );
+  if (
+    savedByCompleteSurgery &&
+    onBooking &&
+    otherLogged.length === 0 &&
+    !activity.tasks.some((task) => since(task.created_at)) &&
+    !activity.episodeEventTimes.some(since)
+  ) {
+    return UNFINISHED_PROCEDURE_COMPLETE_SURGERY;
+  }
+
+  // A Complete surgery save owes the move off OR booking and the booking
+  // task's completion; one that is still on OR booking, or still has an open
+  // booking task, may not have had them. An added entry owes neither.
+  const episodeUnsettled =
+    savedByCompleteSurgery &&
+    (onBooking || activity.tasks.some((task) => task.task_type === "book-or" && taskIsOpen(task)));
+  const followUpMissing =
+    record.follow_up_required === true &&
+    !activity.tasks.some(
+      (task) =>
+        normalizeComparable(task.task) === normalizeComparable(record.follow_up_plan) &&
+        normalizeText(task.due_date) === normalizeText(record.follow_up_date)
+    );
+  // A form cancelled after an error and entered again is a second entry by
+  // design; it may also be a genuine second procedure, so this only asks.
+  const loggedAgain = otherLogged.some(
+    (item) =>
+      normalizeComparable(item.procedure) === normalizeComparable(record.procedure) &&
+      normalizeText(item.procedure_date) === normalizeText(record.procedure_date) &&
+      since(item.created_at)
+  );
+  if (!episodeUnsettled && !followUpMissing && !loggedAgain) return null;
+
+  const parts = [
+    "This procedure is in the Surgery logbook, but its audit entry was never written, so saving it may have stopped part-way."
+  ];
+  if (episodeUnsettled) {
+    parts.push(
+      "The episode may not have been moved on for it: open the episode and check its pathway, next action and tasks."
+    );
+  }
+  if (followUpMissing) {
+    parts.push(
+      "No follow-up task matching the one it asked for is on the episode: add it with + Task if it is still needed."
+    );
+  }
+  parts.push(
+    loggedAgain
+      ? "The same procedure on the same date was logged on this episode after it: if that entry re-entered this one after an error, set status to entered-in-error on this note so the logbook counts it once."
+      : "Check the Surgery logbook before logging the procedure again: a new form adds a second entry."
+  );
+  return parts.join(" ");
+}
+
+/** The exporter's timestamp rule: strict UTC, and a real instant. */
+function isExportTimestamp(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{3}))?Z$/.exec(value);
+  if (!match) return false;
+  const canonical = `${match[1]}.${match[2] ?? "000"}Z`;
+  const parsed = new Date(canonical);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === canonical;
+}
 
 export interface IntegrityReport {
   issues: IntegrityIssue[];
@@ -95,6 +254,18 @@ export class IntegrityService {
         path: folder
       });
     }
+    // A customised database view is kept as-is through a folder move, so its
+    // filters go on naming the old folders and it silently lists nothing —
+    // which can pass for "no such patients".
+    for (const path of await this.repository.misdirectedBasePaths()) {
+      issues.push({
+        code: "stale-base-folder",
+        severity: "warning",
+        message: "This database view filters on a clinical folder outside the configured folder, so it shows no records. A customised view is never rewritten automatically: edit its file.inFolder(...) lines to name the current folder.",
+        recordId: "",
+        path
+      });
+    }
 
     // A note that cannot be parsed disappears from every list, so nothing else
     // in this scan can see it. It has to be reported here or not at all.
@@ -118,6 +289,18 @@ export class IntegrityService {
         for (const problem of validateRecord(item.record)) {
           issues.push({
             ...problem,
+            recordId: item.record.id,
+            path: item.path
+          });
+        }
+        // Parsing turns an unquoted `mrn: 0012345` into text so the workflow
+        // keeps working, but the digits YAML already dropped are gone.
+        for (const [field, kind] of storedValueKindsOf(item.record)) {
+          if (kind !== "number" && kind !== "boolean") continue;
+          issues.push({
+            code: "text-stored-as-number",
+            severity: "warning",
+            message: `The "${field}" property is stored as a number or true/false rather than text, so leading zeros may have been lost. Check the value and put it in quotes.`,
             recordId: item.record.id,
             path: item.path
           });
@@ -199,6 +382,42 @@ export class IntegrityService {
       }
     }
 
+    // --- Records under retired patients -------------------------------------
+    // A merge moves every linked record, and archiving a last episode archives
+    // its patient, but Sync can deliver a record written offline on another
+    // device afterwards. The workspace refuses to change records of a merged
+    // or inactive patient, so these would otherwise sit stuck — and an open
+    // task among them blocks discharging the surviving patient's episode.
+    const patientById = new Map(patients.map((item) => [item.record.id, item.record] as const));
+    for (const list of [episodes, tasks, procedures] as const) {
+      for (const item of list) {
+        if (!patientById.get(item.record.patient_id)?.merged_into) continue;
+        issues.push({
+          code: "record-linked-to-merged-patient",
+          severity: "error",
+          message: `This ${item.record.entity} is still filed under a patient that was merged into another record, so the workspace cannot change it. Set its patient_id to the merged_into value shown on that patient's note, and its patient link to the same patient.`,
+          recordId: item.record.id,
+          path: item.path
+        });
+      }
+    }
+    for (const episode of episodes) {
+      if (["archived", "cancelled", "entered-in-error"].includes(episode.record.status)) continue;
+      const patient = patientById.get(episode.record.patient_id);
+      if (!patient || patient.merged_into) continue;
+      if (patient.status !== "archived" && patient.status !== "entered-in-error") continue;
+      issues.push({
+        code: "active-episode-under-inactive-patient",
+        severity: "error",
+        message:
+          patient.status === "archived"
+            ? "This episode is still open, but its patient is archived, so the episode cannot be updated, given tasks or discharged. Set the patient note's status back to active, then continue or discharge the episode as usual."
+            : "This episode is still open, but its patient is marked entered in error, so the episode cannot be updated or discharged. If the patient is real, set the patient note's status back to active; otherwise set this episode's status to entered-in-error too.",
+        recordId: episode.record.id,
+        path: episode.path
+      });
+    }
+
     // --- Episodes -----------------------------------------------------------
     const openTasksByEpisode = new Map<string, TaskRecord[]>();
     for (const task of tasks) {
@@ -266,7 +485,7 @@ export class IntegrityService {
         });
       }
       if (!isClosedStatus) {
-        const key = `${episode.record.patient_id} ${normalizeText(episode.record.case).toLocaleLowerCase()}`;
+        const key = `${episode.record.patient_id}${KEY_SEP}${normalizeText(episode.record.case).toLocaleLowerCase()}`;
         const current = activeEpisodeKeys.get(key) ?? [];
         current.push(episode);
         activeEpisodeKeys.set(key, current);
@@ -332,7 +551,7 @@ export class IntegrityService {
         });
       }
       if (taskIsOpen(task.record)) {
-        const identity = `${task.record.episode_id} ${normalizeText(task.record.task).toLocaleLowerCase()} ${task.record.due_date}`;
+        const identity = `${task.record.episode_id}${KEY_SEP}${normalizeText(task.record.task).toLocaleLowerCase()}${KEY_SEP}${task.record.due_date}`;
         const current = activeTaskKeys.get(identity) ?? [];
         current.push(task);
         activeTaskKeys.set(identity, current);
@@ -381,14 +600,77 @@ export class IntegrityService {
           path: procedure.path
         });
       }
+      // The CSV exporter only reports aggregate counts, by design, so this is
+      // where a clinician can find the note that would block the export.
+      const blockers = procedure.record.status === "completed" ? exportBlockers(procedure.record) : [];
+      if (blockers.length > 0) {
+        issues.push({
+          code: "not-exportable",
+          severity: "warning",
+          message: `The logbook CSV export will refuse this completed procedure until these properties are fixed: ${blockers.join("; ")}.`,
+          recordId: procedure.record.id,
+          path: procedure.path
+        });
+      }
     }
 
     // --- Audit-trail coverage -----------------------------------------------
+    // A completed procedure still marked audit_pending with no completion
+    // event did not finish saving. Retrying the form that saved it finishes
+    // it; once that form is gone, a new Add another procedure form is a
+    // separate entry by design, and Complete surgery finishes it only in the
+    // narrow case unfinishedProcedureMessage checks for. So the finding says
+    // what to check, or is left to missing-audit-event below when nothing but
+    // the audit entry can be missing. A pending flag beside a written
+    // completion event only means clearing the flag failed after the workflow
+    // ran to its end, so that is not reported.
+    const unfinished = procedures.filter(
+      ({ record }) =>
+        record.status === "completed" &&
+        record.audit_pending === true &&
+        !actionsByTarget.get(record.id)?.has("procedure-completed")
+    );
+    const unfinishedProcedurePaths = new Set<string>();
+    if (unfinished.length > 0) {
+      const activityByEpisode = new Map<string, EpisodeActivity>();
+      const activityOf = (episodeId: string): EpisodeActivity => {
+        let activity = activityByEpisode.get(episodeId);
+        if (!activity) {
+          activity = { tasks: [], procedures: [], episodeEventTimes: [] };
+          activityByEpisode.set(episodeId, activity);
+        }
+        return activity;
+      };
+      for (const task of tasks) activityOf(task.record.episode_id).tasks.push(task.record);
+      for (const procedure of procedures) {
+        activityOf(procedure.record.episode_id).procedures.push(procedure.record);
+      }
+      for (const event of events) {
+        if (event.record.target_entity !== "episode") continue;
+        activityOf(event.record.target_id).episodeEventTimes.push(event.record.created_at);
+      }
+      for (const procedure of unfinished) {
+        const message = unfinishedProcedureMessage(
+          procedure.record,
+          episodeById.get(procedure.record.episode_id)?.record,
+          activityOf(procedure.record.episode_id)
+        );
+        if (!message) continue;
+        unfinishedProcedurePaths.add(procedure.path);
+        issues.push({
+          code: "unfinished-procedure",
+          severity: "warning",
+          message,
+          recordId: procedure.record.id,
+          path: procedure.path
+        });
+      }
+    }
     // Event writes never fail the clinical action; the cost of that choice is
     // that a lost event must be found here, or it is lost silently forever.
     for (const list of [patients, episodes, tasks, procedures] as const) {
       for (const item of list) {
-        if (eventTargets.has(item.record.id)) continue;
+        if (eventTargets.has(item.record.id) || unfinishedProcedurePaths.has(item.path)) continue;
         issues.push({
           code: "missing-audit-event",
           severity: "warning",

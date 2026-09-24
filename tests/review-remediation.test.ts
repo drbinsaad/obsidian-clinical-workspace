@@ -214,8 +214,7 @@ test("workspace activation errors are shown instead of becoming unhandled reject
 });
 
 test("recovery notices are compact, accessible, responsive, and deduplicated", () => {
-  const fullMessage =
-    "Clinical Workspace is temporarily read-only because the configured folder is unavailable. After Sync finishes or the folder is restored, run “Retry pending folder move recovery” from the Command Palette.";
+  const fullMessage = CLINICAL_ROOT_UNAVAILABLE_MESSAGE;
   const plugin = new ClinicalWorkspacePlugin(new App(), {} as never) as unknown as {
     recoveryBlockMessage: string;
     showMigrationRecoveryNotice: (duration?: number, message?: string, background?: boolean) => void;
@@ -230,7 +229,7 @@ test("recovery notices are compact, accessible, responsive, and deduplicated", (
   const first = StubNotice.history[0];
   assert.ok(first);
   assert.ok(first.message.length < fullMessage.length);
-  assert.match(first.message, /Retry pending folder move recovery/);
+  assert.match(first.message, /Recheck records and unlock editing/);
   assert.equal(first.classes.has("clinical-workspace-recovery-notice"), true);
   assert.equal(first.attributes.get("aria-label"), fullMessage);
   assert.equal(first.attributes.get("title"), fullMessage);
@@ -271,15 +270,14 @@ test("the shared presenter styles and deduplicates recovery errors from open UI 
   assert.equal(formNotice.hidden, true, "the next UI surface must replace the prior recovery notice");
   assert.equal(actionNotice.classes.has("clinical-workspace-recovery-notice"), true);
   assert.equal(actionNotice.attributes.get("aria-label"), CLINICAL_ROOT_UNAVAILABLE_MESSAGE);
-  assert.match(actionNotice.message, /Retry pending folder move recovery/);
+  assert.match(actionNotice.message, /Recheck records and unlock editing/);
 
   hideClinicalRecoveryNotice();
   assert.equal(actionNotice.hidden, true);
 });
 
 test("a blocked integrity command uses the responsive recovery notice", async () => {
-  const fullMessage =
-    "Clinical Workspace is temporarily read-only because the configured folder is unavailable. After Sync finishes or the folder is restored, run “Retry pending folder move recovery” from the Command Palette.";
+  const fullMessage = CLINICAL_ROOT_UNAVAILABLE_MESSAGE;
   const plugin = new ClinicalWorkspacePlugin(new App(), {} as never) as unknown as {
     ensureStructure: () => Promise<void>;
     runIntegrityCheck: () => Promise<void>;
@@ -616,8 +614,8 @@ test("wikilink labels cannot inject link syntax and bidi controls are stripped",
 });
 
 test("Arabic-Indic identifiers are normalised to ASCII without losing leading zeroes", () => {
-  assert.equal(normalizeMrn("٠٠١٢٣٤٥"), "0012345");
-  assert.equal(normalizeMrn("۰۰۱۲۳۴۵"), "0012345");
+  assert.equal(normalizeMrn("٠٠٩٠٠٠٠٠٧٧"), "0090000077");
+  assert.equal(normalizeMrn("۰۰۹۰۰۰۰۰۷۷"), "0090000077");
 });
 
 test("frontmatter coercion drops prototype-mutating keys", () => {
@@ -648,7 +646,7 @@ test("integrity reports duplicate active episodes and interrupted patient merges
   const { service, repository, integrity } = await harness();
   const source = await service.createEpisode(episodeInput({ caseName: "Duplicate case" }));
   const target = await service.createEpisode(
-    episodeInput({ mrn: "9002", patientName: "Target", caseName: "Target case" })
+    episodeInput({ mrn: "9000009002", patientName: "Target", caseName: "Target case" })
   );
   const duplicate: EpisodeRecord = {
     ...source.episode.record,
@@ -666,13 +664,13 @@ test("integrity reports duplicate active episodes and interrupted patient merges
 test("a patient already merged away cannot be selected as a merge target", async () => {
   const { service } = await harness();
   const source = await service.createEpisode(
-    episodeInput({ mrn: "9003", patientName: "Source", caseName: "Source case" })
+    episodeInput({ mrn: "9000009003", patientName: "Source", caseName: "Source case" })
   );
   const retiredTarget = await service.createEpisode(
-    episodeInput({ mrn: "9004", patientName: "Retired", caseName: "Retired case" })
+    episodeInput({ mrn: "9000009004", patientName: "Retired", caseName: "Retired case" })
   );
   const survivor = await service.createEpisode(
-    episodeInput({ mrn: "9005", patientName: "Survivor", caseName: "Survivor case" })
+    episodeInput({ mrn: "9000009005", patientName: "Survivor", caseName: "Survivor case" })
   );
   await service.mergePatients(retiredTarget.patient.record.id, survivor.patient.record.id);
   await assert.rejects(

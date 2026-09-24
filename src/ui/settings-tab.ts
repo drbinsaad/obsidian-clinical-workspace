@@ -12,7 +12,7 @@ import { careSettingLabel, pathwayLabel, priorityLabel } from "../domain/schema"
 import { validateRootFolder } from "../domain/settings";
 import type { MigrationService } from "../services/migration";
 import { ConfirmMaintenanceModal } from "./modals";
-import { showClinicalNotice } from "./notices";
+import { showClinicalErrorNotice } from "./notices";
 
 function renderSetting(
   name: string,
@@ -43,7 +43,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
     try {
       await this.plugin.updateSettings(patch);
     } catch (error) {
-      showClinicalNotice(error instanceof Error ? error.message : "The setting could not be saved.", 7000);
+      showClinicalErrorNotice(error, "The setting could not be saved.", 7000);
       (this as unknown as { update?: () => void }).update?.();
     }
   }
@@ -174,7 +174,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
           ),
           renderSetting(
             "Run integrity check on first open",
-            "Report duplicate MRNs, broken links and unexpected values when the workspace opens. Results stay in the interface.",
+            "Report duplicate MRNs, broken links, unexpected values, text stored as a number and logbook-export problems when the workspace first opens with editing available. Results stay in the interface.",
             (row) => {
               row.addToggle((field) => {
                 field.toggleEl.setAttribute("aria-label", "Run integrity check on first open");
@@ -290,10 +290,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
                             new Notice(`Moved ${result.files} note${result.files === 1 ? "" : "s"} to “${result.to}”.`, 7000);
                             this.update();
                           } catch (error) {
-                            showClinicalNotice(
-                              error instanceof Error ? error.message : "The move could not be completed.",
-                              9000
-                            );
+                            showClinicalErrorNotice(error, "The move could not be completed.", 9000);
                             button.setDisabled(false);
                           }
                         })();
@@ -320,7 +317,7 @@ export class ClinicalSettingTab extends PluginSettingTab {
           {
             name: "Plugin settings",
             desc:
-              "data.json stores the settings shown here plus path-free initialization/recovery state: booleans, per-entity record counts, a checksum of the opaque record ids, and the plugin version the what's-new window was last shown for. It never stores MRNs, patient names, phone numbers, record paths or clinical record content.",
+              "data.json stores the settings shown here plus initialization and recovery state: yes/no flags, per-entity record counts and a checksum of the opaque record ids; the names of the current and up to 64 previous clinical folders; the source and destination folder names while a folder move is in progress; and the plugin version the what's-new window was last shown for. It never stores MRNs, patient names, phone numbers, individual note paths or clinical record content.",
             aliases: ["privacy", "patient data", "configuration"]
           }
         ]

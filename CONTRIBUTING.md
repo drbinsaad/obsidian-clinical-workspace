@@ -70,7 +70,10 @@ presented as a product screenshot.
 - Keep the change focused and explain its user and clinical-workflow consequence.
 - Describe privacy, data-integrity, accessibility, mobile, and migration effects
   where relevant.
-- Update documentation and `CHANGELOG.md` when behavior changes.
+- Update documentation and `CHANGELOG.md` when behavior changes. A new or
+  renamed command, button, or notice also needs the matching recipe and the
+  command table in [docs/user-guide.md](docs/user-guide.md); keep existing
+  command ids stable so users' hotkeys and toolbar buttons keep working.
 - Run `npm run review`, `npm audit`, and `git diff --check` before requesting
   review.
 - Do not bump versions, create tags, commit built release assets, or publish a

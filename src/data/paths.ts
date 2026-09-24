@@ -88,8 +88,10 @@ export function pathForRecord(entity: EntityType, id: string, root = clinicalRoo
 
 export function wikilink(path: string, label?: string): string {
   const extensionless = path.replace(/\.md$/i, "");
-  const safeLabel = label
-    ?.replace(/[|#^\\]/g, " ")
+  // Labels come from note properties, which a hand edit can leave as a
+  // number (an unquoted MRN). String() keeps that from throwing mid-workflow.
+  const safeLabel = String(label ?? "")
+    .replace(/[|#^\\]/g, " ")
     .replaceAll("[", " ")
     .replaceAll("]", " ")
     .replace(/\s+/g, " ")

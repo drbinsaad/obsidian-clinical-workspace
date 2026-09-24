@@ -284,7 +284,126 @@ export class MarkdownView extends ItemView {
   file: TFile | null = null;
 }
 export class Modal {}
-export class Setting {}
+
+/** The element surface the Setting stand-in needs; tests pass a DOM-harness TestElement. */
+interface StubSettingElement {
+  value: string;
+  createDiv(options?: { cls?: string }): StubSettingElement;
+  createEl(tagName: string, options?: { text?: string; cls?: string; attr?: Record<string, string> }): StubSettingElement;
+  setText(text: string): void;
+  setAttribute(name: string, value: string): void;
+  addEventListener(type: string, listener: () => void): void;
+}
+
+/**
+ * Mirrors the structure Obsidian's Setting renders (info with name and
+ * description, then the control), so a form modal can be opened in a
+ * DOM-harness test. Controls use upper-case tag names, as a browser reports.
+ */
+export class Setting {
+  readonly settingEl: StubSettingElement;
+  readonly infoEl: StubSettingElement;
+  readonly nameEl: StubSettingElement;
+  readonly descEl: StubSettingElement;
+  readonly controlEl: StubSettingElement;
+
+  constructor(containerEl: StubSettingElement) {
+    this.settingEl = containerEl.createDiv({ cls: "setting-item" });
+    this.infoEl = this.settingEl.createDiv({ cls: "setting-item-info" });
+    this.nameEl = this.infoEl.createDiv({ cls: "setting-item-name" });
+    this.descEl = this.infoEl.createDiv({ cls: "setting-item-description" });
+    this.controlEl = this.settingEl.createDiv({ cls: "setting-item-control" });
+  }
+
+  setName(name: string): this {
+    this.nameEl.setText(name);
+    return this;
+  }
+
+  setDesc(description: string): this {
+    this.descEl.setText(description);
+    return this;
+  }
+
+  addText(build: (component: unknown) => void): this {
+    const inputEl = this.controlEl.createEl("INPUT", { attr: { type: "text" } });
+    (inputEl as StubSettingElement & { type: string }).type = "text";
+    const component = {
+      inputEl,
+      getValue: () => inputEl.value,
+      setValue: (value: string) => {
+        inputEl.value = value;
+        return component;
+      },
+      setPlaceholder: (placeholder: string) => {
+        inputEl.setAttribute("placeholder", placeholder);
+        return component;
+      },
+      onChange: (listener: (value: string) => void) => {
+        inputEl.addEventListener("input", () => listener(inputEl.value));
+        return component;
+      }
+    };
+    build(component);
+    return this;
+  }
+
+  addDropdown(build: (component: unknown) => void): this {
+    const selectEl = this.controlEl.createEl("SELECT");
+    const component = {
+      selectEl,
+      addOptions: (options: Record<string, string>) => {
+        for (const [value, text] of Object.entries(options)) {
+          selectEl.createEl("OPTION", { text, attr: { value } });
+        }
+        return component;
+      },
+      getValue: () => selectEl.value,
+      setValue: (value: string) => {
+        selectEl.value = value;
+        return component;
+      },
+      onChange: (listener: (value: string) => void) => {
+        selectEl.addEventListener("change", () => listener(selectEl.value));
+        return component;
+      }
+    };
+    build(component);
+    return this;
+  }
+
+  addToggle(build: (component: unknown) => void): this {
+    // Obsidian 1.14 renders a focusable label around a checkbox kept out of
+    // the tab order; the label toggles on click and on Enter or Space.
+    const toggleEl = this.controlEl.createEl("LABEL", { cls: "checkbox-container", attr: { tabindex: "0" } });
+    toggleEl.createEl("INPUT", { attr: { type: "checkbox", tabindex: "-1" } });
+    let enabled = false;
+    const listeners: Array<(value: boolean) => void> = [];
+    const component = {
+      toggleEl,
+      getValue: () => enabled,
+      setValue: (value: boolean) => {
+        enabled = value;
+        return component;
+      },
+      onChange: (listener: (value: boolean) => void) => {
+        listeners.push(listener);
+        return component;
+      }
+    };
+    const toggle = (): void => {
+      enabled = !enabled;
+      for (const listener of listeners) listener(enabled);
+    };
+    toggleEl.addEventListener("click", toggle);
+    (toggleEl as unknown as { addEventListener(type: string, listener: (event: KeyboardEvent) => void): void })
+      .addEventListener("keydown", (event) => {
+        if (event.key === " " || event.key === "Enter") toggle();
+      });
+    build(component);
+    return this;
+  }
+}
 export class PluginSettingTab {
   hide(): void {}
 }

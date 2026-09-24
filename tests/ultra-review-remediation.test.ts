@@ -160,14 +160,14 @@ test("a stale form snapshot is refused instead of reverting concurrent changes",
 
   const patient = created.patient;
   await service.updatePatientIdentity(patient.record.id, {
-    mrn: "5001",
+    mrn: "9000005001",
     patientName: "Corrected Elsewhere",
     phone: ""
   });
   await assert.rejects(
     () =>
       service.updatePatientIdentity(patient.record.id, {
-        mrn: "5001",
+        mrn: "9000005001",
         patientName: "Stale Form Value",
         phone: "",
         expectedUpdatedAt: patient.record.updated_at
@@ -234,7 +234,7 @@ test("create() refuses to adopt a different record occupying the managed path", 
         completed_at: "",
         cancelled_at: "",
         cancel_reason: "",
-        idempotency_key: "task-00000000"
+        idempotency_key: "task-synthetic"
       }),
     /different note already occupies/
   );
@@ -245,7 +245,7 @@ test("invisible characters cannot split identities and a plus stays internationa
   assert.equal(normalizeText("﻿Test Patient⁠"), "Test Patient");
   // Orthographically significant joiners are preserved.
   assert.equal(normalizeText("می‌رود"), "می‌رود");
-  assert.equal(normalizePhone("+966 50 000 0001"), "+966500000001");
+  assert.equal(normalizePhone("+9000 50 000 001"), "+900050000001");
   assert.equal(normalizePhone("050+000+0001"), "0500000001");
 });
 
@@ -290,7 +290,7 @@ test("validateRecord reports corrupted MRNs and non-boolean follow-up flags", ()
     follow_up_required: "yes" as unknown as boolean,
     follow_up_date: "",
     follow_up_plan: "",
-    idempotency_key: "procedure-00000000"
+    idempotency_key: "procedure-synthetic"
   } satisfies ProcedureRecord;
   assert.ok(
     validateRecord(procedure).some(
@@ -339,7 +339,7 @@ test("the Next 7 days window includes tomorrow through day seven and nothing els
     completed_at: "",
     cancelled_at: "",
     cancel_reason: "",
-    idempotency_key: "task-00000000"
+    idempotency_key: "task-synthetic"
   });
 
   assert.equal(isoDateWithOffset(7, today), "2026-08-20");

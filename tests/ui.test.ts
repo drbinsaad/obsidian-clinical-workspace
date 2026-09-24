@@ -233,9 +233,11 @@ test("forms, workspace actions, and settings share the recovery notice presenter
     readFile(new URL("../src/ui/settings-tab.ts", import.meta.url), "utf8")
   ]);
 
-  assert.match(modalSource, /showClinicalNotice\(message, 7000\)/);
-  assert.match(workspaceSource, /showClinicalNotice\([\s\S]*The clinical action could not be completed/);
-  assert.match(settingsSource, /showClinicalNotice\([\s\S]*The move could not be completed/);
+  // showClinicalErrorNotice presents through showClinicalNotice once it has
+  // kept file-system detail out of the Notice text.
+  assert.match(modalSource, /showClinicalErrorNotice\(error, this\.submitFailureNotice\(\), 7000\)/);
+  assert.match(workspaceSource, /showClinicalErrorNotice\([\s\S]*The clinical action could not be completed/);
+  assert.match(settingsSource, /showClinicalErrorNotice\([\s\S]*The move could not be completed/);
   for (const source of [modalSource, workspaceSource, settingsSource]) {
     assert.doesNotMatch(source, /new Notice\(\s*error instanceof Error/);
   }

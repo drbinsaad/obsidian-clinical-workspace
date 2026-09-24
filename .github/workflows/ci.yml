@@ -14,6 +14,14 @@ jobs:
   check:
     name: Typecheck, test, build
     runs-on: ubuntu-latest
+    env:
+      # Public text the identifier-literal gate scans. The NUL-byte gate scans
+      # the same list: a file it missed could hide from the identifier gate.
+      PUBLIC_TEXT_PATHS: >-
+        src tests scripts docs README.md SECURITY.md CONTRIBUTING.md
+        CHANGELOG.md CODE_OF_CONDUCT.md SUPPORT.md manifest.json versions.json
+        styles.css esbuild.config.mjs eslint.config.mts package.json tsconfig.json
+        .github/ISSUE_TEMPLATE .github/PULL_REQUEST_TEMPLATE.md
     steps:
       # Actions are pinned to commit SHAs: a tag can be moved to point at
       # different code, and this workflow runs against a clinical codebase.
@@ -64,6 +72,19 @@ jobs:
           fi
           echo "No vault, .obsidian directory or .base file is tracked."
 
+      # A NUL byte makes git grep -I and editor search treat a file as binary,
+      # which silently drops it from the identifier-literal gate below.
+      - name: Assert no NUL bytes in tracked text
+        run: |
+          set -euo pipefail
+          # The list is split on spaces on purpose; no entry contains one.
+          # shellcheck disable=SC2086
+          if git grep -lP '\x00' -- $PUBLIC_TEXT_PATHS ':(exclude)*.png'; then
+            echo "::error::NUL byte(s) in the files above. Use the \\u0000 escape instead."
+            exit 1
+          fi
+          echo "No tracked text file contains a NUL byte."
+
       # Long digit literals in source or public documentation are almost always
       # fixtures, but a real MRN pasted while debugging looks exactly the same.
       # Every permitted value is listed here, so adding one is a deliberate act
@@ -72,18 +93,29 @@ jobs:
         run: |
           set -euo pipefail
           # Any value beginning 9000 is reserved for test fixtures and is approved
-          # by convention. The two long decimal values are documented FNV-1a
-          # constants in the release verifier. Everything else must be listed
-          # deliberately, so a real MRN pasted in while debugging fails the build.
-          ALLOWED='^(9000[0-9]*|0009000000001|0012345|0500000000|0500000001|16777619|2166136261)$'
-          # Hex literals are algorithmic constants, not identifiers.
-          UNEXPECTED=$(git grep -hI '' -- \
-                       src tests scripts docs README.md SECURITY.md CONTRIBUTING.md \
-                       CHANGELOG.md CODE_OF_CONDUCT.md SUPPORT.md manifest.json versions.json \
-                       .github/ISSUE_TEMPLATE .github/PULL_REQUEST_TEMPLATE.md \
+          # by convention. 0090000077 is the leading-zero 9000 fixture the MRN
+          # normalization tests use. The two long decimal values are documented
+          # FNV-1a constants in the release verifier. Everything else must be
+          # listed deliberately, so a real MRN pasted in while debugging fails
+          # the build.
+          ALLOWED='^(9000[0-9]*|0009000000001|0090000077|0012345|0500000000|0500000001|16777619|2166136261)$'
+          # Hex literals are algorithmic constants, not identifiers. `grep -a`
+          # keeps a stray binary byte from switching grep into "binary file
+          # matches" mode, which silently printed nothing and passed the gate.
+          # The plugin reads Arabic-Indic (U+0660-0669) and Persian
+          # (U+06F0-06F9) digits as MRN digits, so perl turns them into ASCII
+          # first. It matches their UTF-8 bytes, so the result depends neither
+          # on the runner's locale nor on every file being valid UTF-8. It also
+          # deletes the invisible characters the plugin strips from an MRN
+          # (U+061C, U+200B, U+200E, U+200F, U+202A-202E, U+2060, U+2066-2069,
+          # U+FEFF), so a zero-width mark cannot split a real one. Spaces and
+          # hyphens are kept: joining them would flag every ISO date.
+          # shellcheck disable=SC2086
+          UNEXPECTED=$(git grep -hI '' -- $PUBLIC_TEXT_PATHS \
                        ':(exclude)docs/assets/SHA256SUMS' \
+                       | perl -pe 's/\xD8\x9C|\xE2\x80[\x8B\x8E\x8F\xAA-\xAE]|\xE2\x81[\xA0\xA6-\xA9]|\xEF\xBB\xBF//g; s/\xD9([\xA0-\xA9])/chr(ord($1) - 0xA0 + 48)/ge; s/\xDB([\xB0-\xB9])/chr(ord($1) - 0xB0 + 48)/ge' \
                        | sed -E 's/0x[0-9a-fA-F]+//g' \
-                       | grep -oE '[0-9]{7,}' \
+                       | grep -aoE '[0-9]{7,}' \
                        | sort -u | grep -Ev "$ALLOWED" || true)
           if [ -n "$UNEXPECTED" ]; then
             echo "::error::Unapproved identifier-shaped literal(s) in source: $UNEXPECTED"

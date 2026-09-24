@@ -7,10 +7,13 @@
   color: var(--text-normal);
 }
 
+/* The start padding keeps a list heading scrolled into view, or a focused
+   control, clear of the sticky tab strip. */
 .clinical-workspace-scroll {
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
+  scroll-padding-block-start: 64px;
 }
 
 /* Obsidian applies a global border-box reset, but the layout depends on it
@@ -76,6 +79,30 @@
 .clinical-card-review {
   min-width: 0;
   max-width: 100%;
+}
+
+.clinical-write-block-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-inline-start: 4px solid var(--text-warning);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+}
+
+.clinical-write-block-title {
+  flex: 1 0 100%;
+}
+
+.clinical-write-block-text {
+  flex: 1 1 100%;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .clinical-workspace-header {
@@ -271,9 +298,21 @@
 
 .clinical-card-top {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+/* The status or date beside a card heading keeps its own width. Allowed to
+   shrink, it fell to one glyph per line ("No date" read N/o/d/a/t/e) in the
+   patient sheet on a phone; now a long heading wraps it onto its own line. */
+.clinical-card-top > h4 {
+  flex: 1 1 12rem;
+}
+
+.clinical-card-top > .clinical-card-meta {
+  flex: 0 0 auto;
 }
 
 .clinical-card h4 {
@@ -369,8 +408,13 @@
   border-color: transparent;
 }
 
+/* Raw --text-error on the button face measures 4.2:1 (light) and 3.5:1 (dark)
+   in the default themes, below AA for this small text. Mixed toward the body
+   colour it clears 4.5:1 at rest and on hover in both; the red border keeps
+   the danger cue now that the button no longer spans a row of its own. */
 .clinical-card-button.is-danger {
-  color: var(--text-error);
+  border-color: color-mix(in srgb, var(--text-error) 60%, var(--background-modifier-border));
+  color: color-mix(in srgb, var(--text-error) 45%, var(--text-normal));
 }
 
 /* Anchored to the view, not the viewport: `fixed` escapes a sidebar leaf on
@@ -502,15 +546,22 @@
   margin-top: 10px;
 }
 
+/* break-word, not anywhere: a narrow button wraps between words instead of
+   splitting "Reschedule" mid-word. */
 .clinical-workspace-view.is-narrow .clinical-card-button {
   width: 100%;
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   white-space: normal;
 }
 
+/* The primary action fills a row. Views emit it first, so the remaining
+   buttons pair up beneath it; a lone final button fills its row rather than
+   leaving a hole. Focus order stays the visual order (no dense packing). */
 .clinical-workspace-view.is-narrow .clinical-card-button.mod-cta,
-.clinical-workspace-view.is-narrow .clinical-card-button.is-danger {
+.clinical-workspace-view.is-narrow .clinical-card-actions > .clinical-card-button:only-child,
+.clinical-workspace-view.is-narrow .clinical-card-actions > .mod-cta:first-child ~ .clinical-card-button:last-child:nth-child(even),
+.clinical-workspace-view.is-narrow .clinical-card-actions > .clinical-card-button:first-child:not(.mod-cta) ~ .clinical-card-button:last-child:nth-child(odd) {
   grid-column: 1 / -1;
 }
 
@@ -528,6 +579,16 @@
   border: 1px dashed var(--background-modifier-border);
   border-radius: 14px;
   text-align: center;
+}
+
+.clinical-empty-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.clinical-empty-actions .clinical-card-button {
+  flex: 0 1 auto;
 }
 
 /* Column layout: heading and description fixed, fields scroll, actions pinned
@@ -554,6 +615,12 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+/* The bottom safe area is applied once, by the action footer inside the
+   content. Padding the content as well left about 84px of dead space under
+   the buttons on an iPhone. A sheet with no footer pads its body instead. */
+.clinical-modal .modal-content > .clinical-modal-body:last-child {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
@@ -635,13 +702,76 @@
   margin-top: 8px;
 }
 
+/* Mixed toward the body colour for AA contrast (raw --text-error is 4.2:1 on
+   the light default); the red border keeps the error cue. */
 .clinical-modal-error {
   margin-top: 12px;
   padding: 10px 12px;
   border: 1px solid var(--text-error);
   border-radius: 8px;
-  color: var(--text-error);
+  color: color-mix(in srgb, var(--text-error) 58%, var(--text-normal));
   font-size: var(--font-ui-small);
+}
+
+/* Backing out of a follow-up question is not a failure: a neutral note, not
+   the red alert. */
+.clinical-modal-note {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+}
+
+/* Discharge lists the open work it would close, with one explicit opt-in. */
+.clinical-discharge-tasks {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+}
+
+.clinical-discharge-tasks h4 {
+  margin: 0 0 6px;
+}
+
+.clinical-discharge-task-list {
+  margin: 0 0 8px;
+  padding-inline-start: 18px;
+  font-size: var(--font-ui-small);
+  overflow-wrap: anywhere;
+}
+
+.clinical-confirm-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+/* The label is the 44px touch target; the form-wide 44px floor stretched the
+   box itself into a 20x44 pill with its tick near the top. */
+.clinical-confirm-check input[type="checkbox"] {
+  flex: 0 0 auto;
+  inline-size: 20px;
+  block-size: 20px;
+  min-height: 0;
+  margin: 0;
+}
+
+/* The Undo in the "Task completed" notice is a full-size touch target. */
+.clinical-undo-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.clinical-undo-notice-action {
+  min-height: 44px;
+  padding: 4px 16px;
 }
 
 .clinical-quick-entry-grid,
@@ -650,8 +780,12 @@
   gap: 10px;
 }
 
+/* Packed at the top on every device: the grid grows to fill the sheet, and
+   on a full-screen iPad stretched rows spread the four options apart. */
 .clinical-quick-entry-grid {
   flex: 1 1 auto;
+  align-content: start;
+  grid-auto-rows: max-content;
   min-width: 0;
   min-height: 0;
   margin-top: 14px;
@@ -669,6 +803,9 @@
   justify-content: stretch;
   justify-items: start;
   gap: 4px;
+  /* Obsidian fixes every button's height (44 px on mobile); a wrapped
+     patient line would be cut off inside it. */
+  height: auto;
   min-height: 64px;
   padding: 12px 14px;
   border: 1px solid var(--background-modifier-border);
@@ -809,6 +946,12 @@
   padding-bottom: calc(16px + env(safe-area-inset-bottom));
 }
 
+/* With the keyboard up the sheet already ends above it, so the home-indicator
+   allowance only takes rows away from the form. */
+.is-mobile .clinical-modal.is-virtual-keyboard-open .clinical-modal-actions {
+  padding-bottom: 8px;
+}
+
 /* Obsidian reports iPhone landscape widths well above the portrait breakpoint.
    Mobile viewport geometry must therefore be keyed to the app's mobile class,
    not to CSS width. */
@@ -827,8 +970,10 @@
 
 /* The host close control is absolutely positioned inside the modal. Its
    default top offset enters the iPhone status area when the modal is almost
-   full-height, so move it below whichever safe-area source is available. */
-.is-mobile .clinical-modal > .modal-close-button {
+   full-height, so move it below whichever safe-area source is available.
+   Obsidian 1.14 renamed it .modal-header-button. */
+.is-mobile .clinical-modal > .modal-close-button,
+.is-mobile .clinical-modal > .modal-header-button {
   top: var(
     --clinical-modal-close-top,
     max(
@@ -842,8 +987,17 @@
 }
 
 .is-mobile.mod-rtl .clinical-modal > .modal-close-button,
-.is-mobile .mod-rtl .clinical-modal > .modal-close-button {
+.is-mobile .mod-rtl .clinical-modal > .modal-close-button,
+.is-mobile.mod-rtl .clinical-modal > .modal-header-button,
+.is-mobile .mod-rtl .clinical-modal > .modal-header-button {
   inset-inline-end: max(12px, env(safe-area-inset-left));
+}
+
+/* Obsidian 1.14 adds a title row above the content. These sheets draw their
+   own heading and reserve the close button's band, so on a phone the empty
+   row only pushed the form about 40 px further down. */
+.is-mobile .clinical-modal > .modal-header {
+  display: none;
 }
 
 .is-mobile .clinical-modal .clinical-modal-heading {
@@ -859,6 +1013,31 @@
   padding-block-start: var(--clinical-modal-close-reserve);
 }
 
+/* A landscape phone with the keyboard up leaves the sheet about 170 px. The
+   close band, phone padding and footer spacing took all of it and no field
+   was left to type in. Landscape has width to spare, so the close button
+   gets an end gutter instead of a band, and the chrome tightens. */
+@media (max-height: 500px) {
+  .is-mobile .clinical-modal.is-virtual-keyboard-open > .modal-content {
+    padding-block-start: var(--clinical-modal-close-top);
+    padding-block-end: 4px;
+    padding-inline-end: 56px;
+  }
+
+  .is-mobile .clinical-modal.is-virtual-keyboard-open .clinical-modal-heading {
+    padding-inline-end: 0;
+  }
+
+  .is-mobile .clinical-modal.is-virtual-keyboard-open .clinical-modal-body {
+    scroll-padding-block: 4px;
+  }
+
+  .is-mobile .clinical-modal.is-virtual-keyboard-open .clinical-modal-actions {
+    margin-top: 4px;
+    padding-block: 4px;
+  }
+}
+
 /* Phone-only compression. The height alternative catches landscape phones
    without classifying a full-size iPad as a handset. */
 @media (max-width: 700px), (max-height: 500px) {
@@ -872,12 +1051,15 @@
   .is-mobile .clinical-card-actions .clinical-card-button {
     width: 100%;
     min-width: 0;
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
     white-space: normal;
   }
 
+  /* Same pairing as the narrow-pane grid above. */
   .is-mobile .clinical-card-actions .clinical-card-button.mod-cta,
-  .is-mobile .clinical-card-actions .clinical-card-button.is-danger {
+  .is-mobile .clinical-card-actions > .clinical-card-button:only-child,
+  .is-mobile .clinical-card-actions > .mod-cta:first-child ~ .clinical-card-button:last-child:nth-child(even),
+  .is-mobile .clinical-card-actions > .clinical-card-button:first-child:not(.mod-cta) ~ .clinical-card-button:last-child:nth-child(odd) {
     grid-column: 1 / -1;
   }
 
@@ -1006,8 +1188,9 @@
   font-size: var(--font-ui-small);
 }
 
+/* Same AA mix as the form errors; raw --text-error is 3.9:1 on this panel. */
 .clinical-settings-blocked {
-  color: var(--text-error);
+  color: color-mix(in srgb, var(--text-error) 58%, var(--text-normal));
 }
 
 /* --- Chips (filters and date quick-offsets) ------------------------------- */
@@ -1017,6 +1200,16 @@
   flex-direction: column;
   gap: 6px;
   margin: 0 0 12px;
+}
+
+/* The Patients-tab export sits under the filter chips it starts from. */
+.clinical-card-actions.clinical-patient-list-actions {
+  margin: 0 0 12px;
+}
+
+.clinical-patient-list-actions .clinical-card-button {
+  flex: 0 1 auto;
+  min-height: 44px;
 }
 
 .clinical-chip-row,
@@ -1029,6 +1222,15 @@
 .clinical-date-chips {
   margin: 4px 0 8px;
   justify-content: flex-end;
+}
+
+.clinical-date-hint {
+  margin: 0 0 8px;
+  text-align: end;
+}
+
+.clinical-date-hint:empty {
+  display: none;
 }
 
 .clinical-chip {
@@ -1066,8 +1268,11 @@
   margin: 0 0 16px;
 }
 
+/* The row wraps rather than squeezing the text: in a 300 px pane View and
+   Open left the patient line one word per line and split an MRN. */
 .clinical-ward-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
@@ -1081,11 +1286,75 @@
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 14em;
 }
 
 .clinical-ward-text strong {
   overflow-wrap: anywhere;
+}
+
+/* View and Open stay compact beside the row text rather than growing into a
+   card-style button grid. */
+.clinical-ward-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-inline-start: auto;
+}
+
+.clinical-ward-actions .clinical-card-button {
+  flex: 0 0 auto;
+  min-width: 44px;
+}
+
+/* is-narrow makes every card button fill its grid cell. Here that made each
+   button as wide as the whole action box, pushing Open past the row edge on
+   phones and in narrow panes, so ward buttons keep their own width. */
+.clinical-workspace-view.is-narrow .clinical-ward-actions .clinical-card-button {
+  width: auto;
+}
+
+/* The patient line on an episode card opens the patient sheet. It keeps the
+   look of the meta line it replaces and gains only a chevron and focus ring. */
+.clinical-card-patient-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: auto;
+  min-height: 32px;
+  margin: 2px 0;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+  text-align: start;
+  white-space: normal;
+  cursor: pointer;
+}
+
+.clinical-card-patient-link:hover {
+  color: var(--text-normal);
+  text-decoration: underline;
+}
+
+.clinical-card-patient-link:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+.clinical-card-patient-chevron {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.clinical-card-patient-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+.is-mobile .clinical-card-patient-link {
+  min-height: 44px;
 }
 
 /* --- Logbook breakdown ----------------------------------------------------- */
@@ -1101,10 +1370,12 @@
   font-size: var(--font-ui-small);
 }
 
+/* Logical padding, so the gap sits between columns in RTL as well. */
 .clinical-breakdown-table th,
 .clinical-breakdown-table td {
   text-align: start;
-  padding: 6px 12px 6px 0;
+  padding-block: 6px;
+  padding-inline: 0 12px;
   border-bottom: 1px solid var(--background-modifier-border);
   font-variant-numeric: tabular-nums;
 }
@@ -1122,6 +1393,20 @@
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.clinical-search-more {
+  margin: 0;
+  font-size: var(--font-ui-small);
+}
+
+/* --- Task templates ---------------------------------------------------------- */
+
+.clinical-template-warnings {
+  margin: 4px 0 0;
+  padding-inline-start: 18px;
+  border-inline-start: 3px solid var(--text-warning);
+  font-size: var(--font-ui-small);
 }
 
 .clinical-summary-export {

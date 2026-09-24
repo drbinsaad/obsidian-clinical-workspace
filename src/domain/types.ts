@@ -118,6 +118,12 @@ export interface EpisodeRecord extends BaseRecord {
   pathway_before_archive: string;
   /** Status held immediately before archiving. */
   status_before_archive: string;
+  /**
+   * Status a completion replaced when it left the episode ready to close, so
+   * undoing that completion can put it back. Empty, or absent on records
+   * written before it existed, when nothing was recorded.
+   */
+  status_before_ready?: string;
 }
 
 export interface TaskRecord extends BaseRecord {
@@ -198,12 +204,31 @@ export interface NewEpisodeInput {
   nextAction: string;
   dueDate: string;
   /**
-   * Set by the UI after the user has been shown possible duplicates for an
-   * MRN-less patient and has chosen to create a new record anyway.
+   * Set by the UI after the user has been shown possible duplicates (same
+   * name, and no MRN on record) and has chosen to create a new record anyway.
    */
   forceNewPatient?: boolean;
-  /** Set by the UI when the user picked an existing patient from that prompt. */
+  /**
+   * Set by the UI when the user picked an existing patient from that prompt.
+   * When an MRN was entered, the picked record must have none; it is filled.
+   */
   existingPatientId?: string;
+  /**
+   * Set by the UI after the user was told the entered MRN belongs to a patient
+   * recorded under a different name, and confirmed it is that patient: the id
+   * of the record they were shown. The stored name is kept; the typed one is
+   * discarded. If the MRN belongs to another record by then, it is asked again.
+   */
+  confirmMrnOwner?: string;
+}
+
+export interface ArchiveEpisodeOptions {
+  /**
+   * Cancel every open task on the episode ("Closed at discharge") before
+   * archiving it. Off by default: dropping open clinical work must be an
+   * explicit choice, so without it open tasks still refuse the discharge.
+   */
+  cancelOpenTasks?: boolean;
 }
 
 export interface NewTaskInput {
@@ -250,6 +275,13 @@ export interface CompleteProcedureInput {
   followUpRequired: boolean;
   followUpDate: string;
   followUpPlan: string;
+  /**
+   * Set only by an Add another procedure form: a fresh id per form. It joins
+   * the idempotency key, so a second procedure with the same name and date is
+   * its own logbook entry, while resubmitting that same form stays one entry.
+   * Such an entry never runs the OR-booking completion.
+   */
+  additionalEntryId?: string;
 }
 
 export interface IntegrityIssue {

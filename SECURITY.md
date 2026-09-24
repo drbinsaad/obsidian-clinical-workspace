@@ -46,7 +46,10 @@ This repository contains two different components:
    requires a trusted desktop source checkout, Node.js 22, and an explicit
    terminal command. It is not bundled into the plugin, has no Obsidian command
    or interface, and is unavailable from a Community/BRAT/manual installation or
-   on iPhone/iPad.
+   on iPhone/iPad. When `--root` is omitted it also reads the vault's plugin
+   settings file, `.obsidian/plugins/clinical-workspace/data.json`, to find the
+   configured clinical folder; that is the only file it reads outside the
+   clinical folder.
 
 The runtime's vault confinement does not mean an export stays in the vault. The
 exporter's purpose is to create a separate confidential CSV at an approved
@@ -73,11 +76,15 @@ external location.
   Back up the vault first and review notes that link into the clinical folder
   after a move.
 - **Plugin settings hold no raw patient identity or clinical text.** `data.json`
-  stores the visible configuration, path-free initialization/recovery flags,
-  aggregate per-entity counts, a SHA-256 commitment over sorted opaque Patient,
-  Episode, Task, and Procedure IDs, and at most 64 normalized names of clinical
-  roots retired by successful moves. Those folder names are safety tombstones:
-  they let another synced device recognize a late old-root delivery. Audit
+  stores the visible configuration (including the clinical folder name),
+  path-free initialization/recovery flags, aggregate per-entity counts, a
+  SHA-256 commitment over sorted opaque Patient, Episode, Task, and Procedure
+  IDs, at most 64 normalized names of clinical roots retired by successful
+  moves, the source and destination folder names while a move is in progress,
+  and the plugin version the What's new window last showed. The retired folder
+  names are safety tombstones: they let another synced device recognize a late
+  old-root delivery. **Settings → Privacy and capabilities** shows the same
+  list inside Obsidian. Audit
   Event-log continuity is intentionally outside this recovery commitment. A
   vault-scoped, device-local Obsidian storage entry retains one rolling trusted
   tuple plus SHA-256 bindings to the normalized active root and each retired
@@ -87,6 +94,14 @@ external location.
   text, or record content. Counts disclose workspace size and the commitments
   are persistent pseudonymous fingerprints; protect the Obsidian profile and
   device accordingly.
+- **Paused means read-only, not hidden.** When the record set cannot be proven
+  complete (Sync still delivering, a record changed outside the plugin, a
+  review pending), the repository refuses every write, including patient-list
+  exports and handover notes, while the workspace still opens for reading with
+  an identifier-free banner. It refuses to open at all while a synced folder
+  move is unfinished (either folder may hold only part of the records), while
+  the configured folder is missing, and before first-use initialization. The
+  integrity check stays available in every one of these states.
 - **No identifiers in logs.** Integrity results are rendered in the interface.
   Messages are written so that they never contain an MRN, name, or phone
   number, and this is enforced by a test.
@@ -148,13 +163,25 @@ approved replacement of that exact external file; it does not relax any
 confidentiality requirement. Spreadsheet cells are escaped and formula-like
 values are neutralized, but output still requires human review.
 
+Without `--root`, the exporter reads the vault's
+`.obsidian/plugins/clinical-workspace/data.json` for the configured clinical
+folder, validates that name with the same rules as `--root`, and refuses while
+the file records an unfinished folder move, recovery check or review, or cannot
+be read safely. It falls
+back to `Clinical Workspace` only when the file does not exist or names no
+folder. `--from`, `--to`, and `--role` narrow the rows after every record has
+been validated, so a filter cannot hide a damaged record from the checks; they
+reduce volume, not re-identification risk.
+
 Unreadable or malformed records, duplicate IDs, missing relationships, and
 patient/episode mismatches abort the complete export before a CSV is published.
-Console output is limited to aggregate counts and data classification; it does
-not print output paths, record filenames, stable IDs, or clinical free-text
-tallies. A successful CSV is created through a private same-directory temporary
-file, atomically published, and restricted to owner-only permissions (`0600`)
-where supported.
+Console output is limited to aggregate counts, per-property error counts, and
+data classification; it does not print output paths, the clinical folder name,
+record filenames, stable IDs, or clinical free-text tallies. To locate a
+rejected note, the operator runs the in-app integrity check, whose
+`not-exportable` finding opens it inside Obsidian. A successful CSV is created
+through a private same-directory temporary file, atomically published, and
+restricted to owner-only permissions (`0600`) where supported.
 
 Before running an export:
 
@@ -176,9 +203,9 @@ Before running an export:
 
 **Assets.** Patient identifiers (MRN, name, phone), clinical case text,
 surgical history, the audit trail, pseudonymized exports, and identified
-exports. Generated ward-handover notes are especially sensitive because one
-document intentionally concentrates identifiers and pending work for multiple
-patients.
+exports. Generated ward-handover notes and patient lists are especially
+sensitive because one document intentionally concentrates identifiers and
+pending work for multiple patients.
 
 **Trust boundary.** The plugin runtime trusts the configured clinical folder in
 the vault. Frontmatter is coerced into expected types on read and unrecognised
@@ -197,18 +224,19 @@ vault/root/output path boundaries.
 | 6 | A hostile note causing code execution | **Not reachable.** All DOM is built with `createEl`/`createDiv`/`createSpan`, which assign `textContent`. There is no `innerHTML`, `eval`, or `new Function` anywhere in the source. |
 | 7 | Fabricated records mixed into real data | The synthetic data generator is compiled out of release builds and cannot be reached from a released version. |
 | 8 | A folder migration moving records outside the vault | Folder paths reject `.` and `..` segments anywhere in the path, and unsafe or ambiguous targets are rejected. |
-| 9 | Settings or a parent folder syncs before all moved clinical records, causing an empty or partial second tree | A synced root change is not activated without workspace evidence. The last known source remains active and clinical/scaffold writes are blocked while migration evidence is incomplete or both roots contain records. Path-free recovery state survives restart; a previously populated missing root requires its prior aggregate managed-file count before explicit recovery. |
+| 9 | Settings or a parent folder syncs before all moved clinical records, causing an empty or partial second tree | A synced root change is not activated without workspace evidence. The last known source remains active and clinical/scaffold writes are blocked while migration evidence is incomplete or both roots contain records. The workspace view refuses to open while the move is unfinished, so a partial list is never presented as complete; other write barriers open it read-only with a banner that warns when the records shown may be incomplete. Path-free recovery state survives restart; a previously populated missing root requires its prior aggregate managed-file count before explicit recovery. |
 | 10 | Re-identification of a default export | The output is explicitly labelled pseudonymized/confidential. Direct identifier columns are excluded, remaining fields and linkage risk are documented, and institutional handling plus human review are required. |
 | 11 | Direct identifiers exported accidentally | `mrn` and `patient_name` require `--identifiers`; the command prints an identified-record warning. Authorization and destination controls remain the operator's responsibility. |
 | 12 | Export overwrites a source or existing file | `--out` is mandatory, must use `.csv`, and must resolve outside both the vault and this source checkout. Output symlinks and non-files are rejected; an existing regular file is preserved unless the operator supplies `--force`. |
 | 13 | Spreadsheet formula injection through clinical free text | Every cell is quoted and formula-like content is neutralized before CSV creation. Review untrusted clinical text and use a supported spreadsheet viewer. |
-| 14 | Partial or incorrectly joined export | Malformed/unreadable records, duplicate IDs, missing links, and patient/episode mismatches abort before publication. Atomic private-file creation prevents a partial CSV from being mistaken for a complete one. |
+| 14 | Partial or incorrectly joined export | Malformed/unreadable records, duplicate IDs, missing links, and patient/episode mismatches abort before publication, including records outside any `--from`/`--to`/`--role` filter. Atomic private-file creation prevents a partial CSV from being mistaken for a complete one. The in-app `not-exportable` integrity finding locates the offending notes without the exporter printing identifiers. |
 | 15 | Export details leaking through terminal history or logs | The operator-supplied command can expose local filesystem paths through shell history. Runtime output itself omits paths, filenames, IDs, and free-text tallies. Use an institutionally managed terminal environment. |
 | 16 | A pre-0.3.6 workspace being baselined from an empty or partial Sync delivery | Every safetyless legacy workspace remains read-only on its first 0.3.6 open, regardless of the visible record count. After Sync is complete, the user must explicitly adopt the current records through **Initialize new workspace**, or initialize a genuinely new/record-free vault. The exact settings/root/count shown at confirmation are revalidated before saving, and a two-phase path-free approval marker makes interruption before scaffolding resumable. |
-| 17 | An automation URL exposes or silently attaches clinical context | Quick Entry uses separate fixed action names and rejects every query parameter, including identifiers, record IDs, file paths, note paths, text, content, and vault selection. Task/procedure actions show an unselected Episode picker; procedure choices remain limited to active OR bookings. An exact current managed-Episode path may be visibly promoted but still requires confirmation. Local patient-owned writes use one patient-merge → Episode-lifecycle → task/procedure lock order, re-read the relationship inside it, and reject inactive or interrupted-merge contexts. Episode creation, update, archive, restore, and identity correction participate in the same patient lock. A merge locks both source and target in stable ID order and requires an active surviving target. This prevents stale forms, opposite-direction merge cycles, cross-merge links, and revival of a retired Episode. Sync remains an external asynchronous writer, so the procedure flow re-reads context again before its final Episode transition. Apple Shortcuts, Siri, notifications, and automation history remain external trust boundaries. |
+| 17 | An automation URL exposes or silently attaches clinical context | Quick Entry uses separate fixed action names and rejects every query parameter, including identifiers, record IDs, file paths, note paths, text, content, and vault selection. Task/procedure actions show an unselected Episode picker; procedure choices are limited to active OR bookings and active Episodes that already have a logged procedure (shown as **Add another procedure**). An exact current managed-Episode path may be visibly promoted but still requires confirmation. Local patient-owned writes use one patient-merge → Episode-lifecycle → task/procedure lock order, re-read the relationship inside it, and reject inactive or interrupted-merge contexts. Episode creation, update, archive, restore, and identity correction participate in the same patient lock. A merge locks both source and target in stable ID order and requires an active surviving target. This prevents stale forms, opposite-direction merge cycles, cross-merge links, and revival of a retired Episode. Sync remains an external asynchronous writer, so the procedure flow re-reads context again before its final Episode transition. Apple Shortcuts, Siri, notifications, and automation history remain external trust boundaries. |
 | 18 | Concurrent identity edits or Episode creation assign one MRN to two active patients, or use a stale MRN resolution | Creation and correction share one lock keyed by the normalized MRN around the real collision lookup and identity write. Identity correction takes patient-merge → patient-identity → MRN locks; Episode resolution releases its short MRN lock before taking a patient lock, avoiding an inverted cycle. It then re-reads and revalidates the resolved MRN after the patient lock and again immediately before Episode creation. External Sync remains asynchronous, so integrity checks are still required after cross-device editing. |
 | 19 | Sync replaces a trusted recovery commitment or retired-root history and the app exits before the conflict flag reaches `data.json` | Before reading an external settings snapshot, the plugin synchronously marks a vault-scoped device-local journal pending while retaining the prior count/digest tuple and the bounded set of one-way retired-root fingerprints. Restart accepts a synced tombstone superset but fails closed if any locally committed fingerprint disappeared; only an exact final rescan or typed `ADOPT` can clear/replace conflicting trust. The record tuple covers Patient, Episode, Task, and Procedure IDs—not body content or Audit Events. The journal stores no raw path, folder name, ID, timestamps, history, or device identity. Clearing local Obsidian storage or opening on a genuinely new device removes this independent anchor and returns that device to trust-on-first-use; it is therefore an additional crash barrier, not a backup or multi-device consensus system. |
 | 20 | A generated ward-handover note exposes a high-density patient list | Handover generation stays inside the configured clinical `Documents/` folder, the UI states that it contains identifiers, and users are instructed to delete it after its approved operational use. Vault access, sanctioned Sync, institutional sharing, and retention controls remain mandatory. |
+| 21 | A patient-list export (Markdown or CSV) concentrates identifiers for every matching patient | The export is written only inside the configured clinical `Documents/` folder through the same fail-closed write barrier as records (so it is unavailable while editing is paused), with a filter-only filename and no identifier in any notice. The form and the Markdown note's header state that it contains identifiers, and both notices say to delete the file after use; a CSV holds only the column headings and rows. CSV cells are quoted and formula-like values neutralized. Once the file leaves the vault (Files app, email, spreadsheet software), institutional sharing, retention, and destruction rules apply. |
 
 ## Before using this with identifiable patient data
 

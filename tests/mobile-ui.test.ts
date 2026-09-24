@@ -151,7 +151,7 @@ function searchSnapshot(patientNames: readonly string[]): ClinicalSnapshot {
     ...EMPTY_SNAPSHOT,
     patients: patientNames.map((patientName, index) => ({
       id: `patient-${index}`,
-      mrn: `MRN-${index}`,
+      mrn: `900000000${index}`,
       patient_name: patientName,
       status: "active"
     })) as ClinicalSnapshot["patients"]
@@ -396,12 +396,20 @@ test("mobile card actions use two touch-safe columns instead of a full-width sta
     "card controls need their own touch target; tab declarations must not satisfy this assertion"
   );
 
-  for (const selector of [
-    ".clinical-workspace-view.is-narrow .clinical-card-button.mod-cta",
-    ".clinical-workspace-view.is-narrow .clinical-card-button.is-danger"
-  ]) {
-    assert.equal(styleFor(rules, selector).get("grid-column"), "1 / -1");
-  }
+  assert.equal(
+    styleFor(rules, ".clinical-workspace-view.is-narrow .clinical-card-button.mod-cta").get("grid-column"),
+    "1 / -1"
+  );
+  // Danger actions pair with a neighbour instead of taking a row of their
+  // own, which left half-empty rows; a red border keeps them distinct.
+  assert.equal(
+    styleFor(rules, ".clinical-workspace-view.is-narrow .clinical-card-button.is-danger").has("grid-column"),
+    false
+  );
+  assert.match(
+    required(styleFor(rules, ".clinical-card-button.is-danger"), "border-color"),
+    /--text-error/
+  );
 });
 
 test("filter and date chips meet the mobile touch-target floor", async () => {
@@ -595,6 +603,20 @@ test("mobile modal content honors the top safe area", async () => {
   assert.match(topReservation, /--clinical-modal-close-reserve|safe-area-inset-top/);
 });
 
+test("Obsidian 1.14's close button also stays below the status area, without an empty title row", async () => {
+  // 1.14 renamed the close control .modal-header-button and added an empty
+  // .modal-header row. The safe-area rule matched only the old class, so the
+  // close button sat under the status bar on a notched iPhone.
+  const rules = parseCssRules(await stylesPromise);
+  for (const control of [".modal-close-button", ".modal-header-button"]) {
+    const close = styleFor(rules, `.is-mobile .clinical-modal > ${control}`);
+    assert.match(required(close, "top"), /--clinical-modal-close-top/, control);
+    const rtl = styleFor(rules, `.is-mobile.mod-rtl .clinical-modal > ${control}`);
+    assert.match(required(rtl, "inset-inline-end"), /safe-area-inset-left/, `${control} in RTL`);
+  }
+  assert.equal(styleFor(rules, ".is-mobile .clinical-modal > .modal-header").get("display"), "none");
+});
+
 test("Quick Entry renders four packed actions rather than stretching rows across the sheet", async () => {
   const content = new TestElement();
   const modalElement = new TestElement();
@@ -636,6 +658,68 @@ test("Quick Entry renders four packed actions rather than stretching rows across
     minimumOptionHeight * options.length + gap * (options.length - 1) <= 320,
     "the four minimum-height options and gaps should remain compact"
   );
+});
+
+test("iPhone landscape with the keyboard up leaves the form rows to type in", async () => {
+  // A 390 pt landscape screen less a ~200 pt keyboard leaves a ~174 pt sheet.
+  // The 56 pt close band, phone padding and footer spacing took all of it, so
+  // Add patient and Search showed no field at all.
+  const rules = parseCssRules(await stylesPromise);
+  const content = ".is-mobile .clinical-modal.is-virtual-keyboard-open > .modal-content";
+  const footer = ".is-mobile .clinical-modal.is-virtual-keyboard-open .clinical-modal-actions";
+  const body = ".is-mobile .clinical-modal.is-virtual-keyboard-open .clinical-modal-body";
+  const landscape = { width: 844, height: 390 };
+  const contentStyle = styleForViewport(rules, landscape, content);
+  const footerStyle = styleForViewport(rules, landscape, footer);
+  assert.equal(
+    contentStyle.get("padding-block-start"),
+    "var(--clinical-modal-close-top)",
+    "the close button needs an end gutter, not a band above the form"
+  );
+  assert.ok(numericPx(required(contentStyle, "padding-inline-end")) >= 52, "fields stay clear of the close button");
+  const chrome =
+    12 +
+    numericPx(required(contentStyle, "padding-block-end")) +
+    numericPx(required(footerStyle, "margin-top")) +
+    2 * numericPx(required(footerStyle, "padding-block")) +
+    44;
+  assert.ok(174 - chrome >= 88, `only ${174 - chrome} pt left for a labelled field`);
+  assert.ok(numericPx(required(styleForViewport(rules, landscape, body), "scroll-padding-block")) <= 8);
+  // A full-screen iPad has the height for its normal spacing.
+  for (const ipad of [{ width: 1180, height: 820 }, { width: 820, height: 1180 }]) {
+    assert.equal(styleForViewport(rules, ipad, content).get("padding-inline-end"), undefined);
+  }
+});
+
+test("the Quick Entry hub stays packed on a full-screen iPad, not only on phones", async () => {
+  // The packing rule sat inside the phone media query, so on an iPad sheet
+  // the four options were spread down the full height.
+  const rules = parseCssRules(await stylesPromise);
+  for (const viewport of [{ width: 820, height: 1180 }, { width: 1180, height: 820 }]) {
+    const grid = styleForViewport(
+      rules,
+      viewport,
+      ".clinical-quick-entry-grid",
+      ".is-mobile .clinical-quick-entry-modal .clinical-quick-entry-grid"
+    );
+    const packed =
+      ["start", "flex-start"].includes(grid.get("align-content") ?? "") ||
+      ["max-content", "min-content"].includes(grid.get("grid-auto-rows") ?? "");
+    assert.ok(packed, `hub options stretch across a ${viewport.width}×${viewport.height} sheet`);
+  }
+});
+
+test("Quick Entry options and search rows grow with wrapped text instead of clipping it", async () => {
+  // Obsidian gives every button a fixed height (44 px on mobile); min-height
+  // alone left a 64 px row that cut off a wrapped patient line on iPhone.
+  const rules = parseCssRules(await stylesPromise);
+  const base = ".clinical-modal button.clinical-quick-entry-option";
+  for (const style of [
+    styleFor(rules, base),
+    styleFor(rules, base, ".is-mobile .clinical-quick-entry-modal button.clinical-quick-entry-option")
+  ]) {
+    assert.equal(style.get("height"), "auto");
+  }
 });
 
 test("unrelated safety modals do not inherit Quick Entry or Search sizing", () => {
