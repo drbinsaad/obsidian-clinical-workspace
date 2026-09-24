@@ -24,6 +24,7 @@ import {
   TASK_TYPES
 } from "../domain/types";
 import {
+  canonicalOption,
   careSettingLabel,
   displayMrn,
   displayPhone,
@@ -762,8 +763,7 @@ export class QuickEntryEpisodeModal extends ClinicalResponsiveModal {
  * to the fallback, which for priority would lower an emergency to routine.
  */
 function seedOption<T extends string>(value: string, allowed: readonly T[], fallback: T): T {
-  const key = String(value ?? "").trim().toLowerCase().replace(/[\s_]+/g, "-");
-  return allowed.find((option) => option === key) ?? fallback;
+  return canonicalOption(value, allowed) ?? fallback;
 }
 
 /**
@@ -943,7 +943,10 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
       }
       if (controls[controls.length - 1] === input) {
         if (this.returnSubmits) void this.handleSubmit(submit);
-        else input.blur();
+        // Return is the iPhone "done" key: hide the keyboard. With a hardware
+        // keyboard there is nothing to hide, and blurring would drop keyboard
+        // and screen-reader focus out of the form, so focus stays put.
+        else if (this.modalEl.hasClass("is-virtual-keyboard-open")) input.blur();
         return;
       }
       const index = controls.indexOf(input);

@@ -225,6 +225,19 @@ export function taskTypeLabel(type: string): string {
   );
 }
 
+/**
+ * Reads a stored choice the way a clinician meant it: a value typed by hand
+ * in the Properties panel ("Emergency", "OR booking") matches its option
+ * ignoring case and spacing. Returns undefined when nothing matches.
+ */
+export function canonicalOption<T extends string>(
+  value: string | undefined,
+  allowed: readonly T[]
+): T | undefined {
+  const key = normalizeText(value).toLowerCase().replace(/[\s_]+/g, "-");
+  return allowed.find((option) => option === key);
+}
+
 export function careSettingLabel(value: string): string {
   if (value === "inpatient") return "Inpatient";
   if (value === "outpatient") return "Outpatient";

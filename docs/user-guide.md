@@ -252,7 +252,9 @@ named after the filter, never after a patient. A note opens straight away.
 Obsidian cannot show a CSV. On iPhone, open the **Files** app, browse to your
 vault's clinical folder, then `Documents`, and open the file in Numbers or
 Excel. MRNs and phone numbers that start with 0 or are long get a leading
-apostrophe, so spreadsheets keep them exact.
+apostrophe, so spreadsheets keep every digit instead of dropping leading zeros
+or rounding. Most spreadsheet apps show that apostrophe in the cell: remove it
+before you copy an MRN into another system.
 
 The list contains identifiers. Share it only through an approved route and
 delete it after use. Column details are in [Patient

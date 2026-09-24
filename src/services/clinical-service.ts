@@ -3,6 +3,7 @@ import type {
   CompleteProcedureInput,
   EpisodeRecord,
   EpisodeUpdateInput,
+  EventRecord,
   MergePreview,
   NewEpisodeInput,
   NewTaskInput,
@@ -15,6 +16,7 @@ import type {
 } from "../domain/types";
 import { CARE_SETTINGS, PATHWAYS, PRIORITIES, TASK_TYPES } from "../domain/types";
 import {
+  canonicalOption,
   createId,
   formatLocalDateTime,
   isIsoDate,
@@ -819,9 +821,16 @@ export class ClinicalService {
         task.record.status === "completed" ? await this.withdrawNextOccurrence(task) : "none";
       // An escalation while the task was closed skipped it; it comes back at
       // the episode's priority, never lower, and never from or to a value
-      // that is not recognised.
+      // that is not recognised. A task deliberately filed below its episode's
+      // priority, with no escalation since it closed, comes back unchanged.
       const taskRank = priorityRank(task.record.priority);
-      const raisePriority = taskRank >= 0 && priorityRank(episode.record.priority) > taskRank;
+      const raisePriority =
+        taskRank >= 0 &&
+        priorityRank(episode.record.priority) > taskRank &&
+        (await this.episodeEscalatedSince(
+          task.record.episode_id,
+          task.record.completed_at || task.record.cancelled_at
+        ));
       const reopened = await this.repository.update<TaskRecord>(task.path, {
         status: "open",
         completed_at: "",
@@ -867,6 +876,26 @@ export class ClinicalService {
       });
       return { ...reopened, nextOccurrence };
     });
+  }
+
+  /**
+   * Whether the episode's priority was raised through Update at or after
+   * `since` (a stored UTC timestamp), read from its audited episode-updated
+   * events, whose states are "care setting/pathway/priority". A closed task
+   * with no recorded closing time counts as closed before any escalation.
+   */
+  private async episodeEscalatedSince(episodeId: string, since: string): Promise<boolean> {
+    const closedAt = normalizeText(since);
+    const priorityOf = (state: string): string =>
+      canonicalOption(state.split("/").pop(), PRIORITIES) ?? "";
+    return (await this.repository.list<EventRecord>("event")).some(
+      ({ record }) =>
+        record.action === "episode-updated" &&
+        record.episode_id === episodeId &&
+        (!closedAt || String(record.created_at) >= closedAt) &&
+        priorityRank(priorityOf(String(record.new_state))) >
+          priorityRank(priorityOf(String(record.previous_state)))
+    );
   }
 
   /**
@@ -1132,12 +1161,15 @@ export class ClinicalService {
     // due date mirror whatever tasks reconciliation leaves open, not the form;
     // and while the episode still carries its old priority, repeating an
     // interrupted save repeats the task escalation below instead of skipping it.
-    // A status the user set is not one a later reopen should undo.
+    // A status the user set is not one a later reopen should undo; a save
+    // that leaves the status as it was keeps what the completion replaced.
     await this.repository.update<EpisodeRecord>(episode.path, {
       care_setting: input.careSetting,
       pathway: input.pathway,
       status,
-      ...(episode.record.status_before_ready ? { status_before_ready: "" } : {})
+      ...(status !== episode.record.status && episode.record.status_before_ready
+        ? { status_before_ready: "" }
+        : {})
     });
 
     // Task handling here has to satisfy three things at once: re-saving the
@@ -1154,11 +1186,12 @@ export class ClinicalService {
     // Escalating the patient must reach the work: a routine task on an
     // emergency episode is missed by the priority filter and sorts last.
     // Only raised, never lowered — a task may carry its own higher priority.
-    // An unrecognised stored priority is not "below routine": the form showed
-    // a substitute for it, so saving the form is no escalation.
+    // The stored priority is read as the form showed it, so a hand-typed
+    // "Urgent" re-saved unchanged is no escalation and raising it is one;
+    // a task whose own priority is not recognised is never touched.
     const tasksEscalated =
-      priorityRank(episode.record.priority) >= 0 &&
-      priorityRank(input.priority) > priorityRank(episode.record.priority)
+      priorityRank(input.priority) >
+      priorityRank(canonicalOption(episode.record.priority, PRIORITIES) ?? "")
         ? await this.raiseOpenTaskPriorities(episode, input.priority)
         : 0;
     // `discharge-ready` is only a proposed pathway. Reconciliation can keep
@@ -1371,7 +1404,10 @@ export class ClinicalService {
     // auto-completed by the next procedure, and a carried repeat would raise
     // that pathway's default task again straight after. A repeat needs a
     // date to schedule from.
-    const sameWork = replaced && pathway === episode.record.pathway ? replaced : undefined;
+    const sameWork =
+      replaced && pathway === (canonicalOption(episode.record.pathway, PATHWAYS) ?? episode.record.pathway)
+        ? replaced
+        : undefined;
     const carriedType =
       sameWork && TASK_TYPES.includes(sameWork.record.task_type)
         ? sameWork.record.task_type
@@ -1706,7 +1742,11 @@ export class ClinicalService {
         // Remember what archiving overwrote so restore can put it back.
         pathway_before_archive: episode.record.pathway,
         status_before_archive: episode.record.status,
-        ...(episode.record.status_before_ready ? { status_before_ready: "" } : {}),
+        // Kept while the episode is archived from ready-to-close, so a restore
+        // that returns it there still lets a reopen put it back on hold.
+        ...(episode.record.status !== "ready-to-close" && episode.record.status_before_ready
+          ? { status_before_ready: "" }
+          : {}),
         closed_at: nowIso(),
         outcome: normalizeText(outcome) || "Episode closed",
         next_action: "",
@@ -1898,7 +1938,10 @@ export class ClinicalService {
       pathway,
       closed_at: "",
       pathway_before_archive: "",
-      status_before_archive: ""
+      status_before_archive: "",
+      ...(status !== "ready-to-close" && episode.record.status_before_ready
+        ? { status_before_ready: "" }
+        : {})
     });
     const patient = await this.repository.findById<PatientRecord>("patient", episode.record.patient_id);
     if (patient && patient.record.status === "archived") {

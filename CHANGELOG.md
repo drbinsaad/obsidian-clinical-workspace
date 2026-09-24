@@ -36,8 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previews the match count before writing. Available from **Patients → Export
   list**, **More → Export patient list**, and the command palette. The list
   holds exactly what the Patients tab shows, including hand-edited statuses
-  and care settings; the CSV keeps MRNs and phones that start with 0 or are
-  12 or more digits long exact; clinical text stays literal in the note; and
+  and care settings; in the CSV, MRNs and phones that start with 0 or are 12
+  or more digits long get a leading `'` so spreadsheets keep every digit;
+  clinical text stays literal in the note; and
   an episode still filed under a merged patient is listed under the surviving
   patient and counted once.
 - The Patients tab can be filtered by pathway and priority. Section counts
@@ -225,6 +226,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already completed, so the series cannot end up with two open copies.
 - A task reopened after its episode's priority was raised came back at its old
   priority; it now takes the episode's priority, and the audit trail says so.
+  A task you filed below its episode's priority comes back unchanged.
 - Raising an episode's priority could lower a task whose priority was typed by
   hand (for example `Emergency`) to routine. The **Update** form also keeps a
   hand-typed priority, care setting or pathway instead of resetting it.
@@ -250,8 +252,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a card's patient line opens one sheet.
 - Ward round, Patients and Tasks pages hold the same records on every device
   when records tie on priority, date and wording.
-- Pathway chips appear only for recognised pathways, so **Export list** matches
-  the filtered list. Task types read "Book OR" and "Post-op Follow-Up".
+- Pathway and task-type chips appear only for recognised values, so **Export
+  list** matches the filtered list and a hand-typed type cannot show as a
+  second, identical chip. Task types read "Book OR" and "Post-op Follow-Up".
 - On phones, patient-sheet status and date labels no longer wrap one letter per
   line, a card's single action button fills its row, and the discharge "cancel
   open tasks" checkbox keeps its square shape.

@@ -11,7 +11,7 @@ import type {
   TaskRecord,
   TaskType
 } from "../domain/types";
-import { PATHWAYS, PRIORITIES } from "../domain/types";
+import { PATHWAYS, PRIORITIES, TASK_TYPES } from "../domain/types";
 import {
   careSettingLabel,
   daysOverdue,
@@ -1257,10 +1257,14 @@ export class ClinicalWorkspaceView extends ItemView {
 
     // A selected type keeps its chip after its last task closes, as the
     // Patients pathway filter does; otherwise the filter went on hiding
-    // every task with no chip left to clear it.
+    // every task with no chip left to clear it. Only recognised types get a
+    // chip, as with pathways: a hand-typed "Book OR" would otherwise show a
+    // second chip that looks exactly like book-or's but filters half the
+    // tasks. Such tasks stay listed under All types.
+    const knownTypes: readonly string[] = TASK_TYPES;
     const typesInUse = [
       ...new Set([
-        ...open.map((task) => task.task_type),
+        ...open.map((task) => task.task_type).filter((type) => knownTypes.includes(type)),
         ...(this.taskTypeFilter === "all" ? [] : [this.taskTypeFilter])
       ])
     ].sort();

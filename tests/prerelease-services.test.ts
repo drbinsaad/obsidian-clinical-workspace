@@ -334,11 +334,13 @@ test("saving the form over an unrecognised priority escalates nothing", async ()
   await h.repository.update<EpisodeRecord>(created.episode.path, { priority: "Emergency" });
   await h.repository.update<TaskRecord>(created.task.path, { priority: "Emergency" });
 
-  // What the form submits: the seeded substitute and a new care setting.
+  // What the form submits: "Emergency" is seeded as emergency, with a new
+  // care setting. The stored value already meant emergency, so this is no
+  // escalation; and the task's own hand-typed value is never overwritten.
   const result = await h.service.updateEpisode(episodeId, {
     careSetting: "inpatient",
     pathway: "assessment",
-    priority: "routine",
+    priority: "emergency",
     nextAction: "Surgical review",
     dueDate: isoDateWithOffset(1, todayIso())
   });
@@ -572,4 +574,156 @@ test("Undo still reopens when the next occurrence was cancelled rather than comp
   const reopened = await h.service.reopenTask(first.record.id);
   assert.equal(reopened.record.status, "open");
   assert.equal(reopened.nextOccurrence, "none");
+});
+
+// --- Review of the fixes: hand-typed stored values, and state across saves ------
+
+test("raising a hand-typed episode priority through the form escalates its routine task", async () => {
+  for (const [mrn, stored, submitted] of [
+    ["9000880101", "Urgent", "emergency"],
+    ["9000880102", "urgnt", "urgent"]
+  ] as const) {
+    const h = await harness();
+    const created = await h.service.createEpisode(
+      episodeInput({
+        mrn,
+        patientName: "Synthetic Juliet",
+        caseName: "Cellulitis",
+        nextAction: "Review antibiotics",
+        dueDate: isoDateWithOffset(1, todayIso())
+      })
+    );
+    const episodeId = created.episode.record.id;
+    assert.ok(created.task);
+    await h.repository.update<EpisodeRecord>(created.episode.path, { priority: stored });
+
+    const result = await h.service.updateEpisode(episodeId, {
+      careSetting: "outpatient",
+      pathway: "assessment",
+      priority: submitted,
+      nextAction: "Review antibiotics",
+      dueDate: isoDateWithOffset(1, todayIso())
+    });
+    assert.equal(result.tasksEscalated, 1, `${stored} raised to ${submitted} reaches the open task`);
+    const [task] = await tasksOf(h, episodeId);
+    assert.equal(task?.priority, submitted);
+    assert.ok((await events(h)).some((event) => event.action === "task-priority-raised"));
+  }
+});
+
+test("re-saving a hand-typed pathway with reworded next action keeps the task's type", async () => {
+  const h = await harness();
+  const created = await orBooking(h, "9000880103");
+  const episodeId = created.episode.record.id;
+  assert.ok(created.task);
+  // A type and owner the pathway would not give a fresh task, so only a
+  // carried-over task keeps them.
+  await h.repository.update<TaskRecord>(created.task.path, {
+    task_type: "clinical-review",
+    owner: "Synthetic Registrar"
+  });
+  await h.repository.update<EpisodeRecord>(created.episode.path, { pathway: "OR booking" });
+
+  await h.service.updateEpisode(episodeId, {
+    careSetting: "outpatient",
+    pathway: "or-booking",
+    priority: "routine",
+    nextAction: "Book theatre slot for Friday list",
+    dueDate: isoDateWithOffset(1, todayIso())
+  });
+  const open = (await tasksOf(h, episodeId)).filter((task) => task.status === "open");
+  assert.equal(open.length, 1);
+  assert.equal(open[0]?.task, "Book theatre slot for Friday list");
+  assert.equal(open[0]?.task_type, "clinical-review", "the same work keeps its type");
+  assert.equal(open[0]?.owner, "Synthetic Registrar", "and its owner");
+});
+
+test("a priority-only save keeps the on-hold status a completion replaced", async () => {
+  const h = await harness();
+  const created = await h.service.createEpisode(
+    episodeInput({
+      mrn: "9000880104",
+      patientName: "Synthetic Kilo",
+      caseName: "Awaiting histology",
+      nextAction: "Chase histology",
+      dueDate: isoDateWithOffset(2, todayIso())
+    })
+  );
+  const episodeId = created.episode.record.id;
+  assert.ok(created.task);
+  await h.repository.update<EpisodeRecord>(created.episode.path, { status: "on-hold" });
+  await h.service.completeTask(created.task.record.id);
+  assert.equal((await episodeOf(h, episodeId)).status_before_ready, "on-hold");
+
+  await h.service.updateEpisode(episodeId, {
+    careSetting: "outpatient",
+    pathway: "assessment",
+    priority: "urgent",
+    nextAction: "",
+    dueDate: ""
+  });
+  const saved = await episodeOf(h, episodeId);
+  assert.equal(saved.status, "ready-to-close");
+  assert.equal(saved.status_before_ready, "on-hold", "a save that keeps the status keeps what it replaced");
+
+  const reopened = await h.service.reopenTask(created.task.record.id);
+  assert.equal((await episodeOf(h, episodeId)).status, "on-hold");
+  assert.equal(reopened.record.priority, "urgent", "escalated while it was closed, so it comes back raised");
+});
+
+test("archive and restore keep the on-hold status a completion replaced", async () => {
+  const h = await harness();
+  const created = await h.service.createEpisode(
+    episodeInput({
+      mrn: "9000880105",
+      patientName: "Synthetic Lima",
+      caseName: "Post-op check",
+      nextAction: "Wound review",
+      dueDate: isoDateWithOffset(2, todayIso())
+    })
+  );
+  const episodeId = created.episode.record.id;
+  assert.ok(created.task);
+  await h.repository.update<EpisodeRecord>(created.episode.path, { status: "on-hold" });
+  await h.service.completeTask(created.task.record.id);
+  await h.service.archiveEpisode(episodeId, "Discharged");
+  assert.equal((await episodeOf(h, episodeId)).status_before_ready, "on-hold");
+
+  await h.service.restoreEpisode(episodeId);
+  const restored = await episodeOf(h, episodeId);
+  assert.equal(restored.status, "ready-to-close");
+  assert.equal(restored.status_before_ready, "on-hold");
+
+  await h.service.reopenTask(created.task.record.id);
+  const reopened = await episodeOf(h, episodeId);
+  assert.equal(reopened.status, "on-hold");
+  assert.equal(reopened.status_before_ready, "");
+});
+
+test("Undo leaves a task deliberately filed below its episode's priority unchanged", async () => {
+  const h = await harness();
+  const created = await h.service.createEpisode(
+    episodeInput({
+      mrn: "9000880106",
+      patientName: "Synthetic Mike",
+      caseName: "Head injury",
+      priority: "urgent",
+      nextAction: "Neuro observations",
+      dueDate: isoDateWithOffset(1, todayIso())
+    })
+  );
+  const episodeId = created.episode.record.id;
+  const routine = await h.service.createTask({
+    patientId: created.patient.record.id,
+    episodeId,
+    task: "Arrange outpatient letter",
+    taskType: "other",
+    priority: "routine",
+    dueDate: isoDateWithOffset(3, todayIso()),
+    owner: ""
+  });
+  await h.service.completeTask(routine.task.record.id);
+  const reopened = await h.service.reopenTask(routine.task.record.id);
+  assert.equal(reopened.record.priority, "routine", "no escalation happened while it was closed");
+  assert.ok(!(await events(h)).some((event) => event.action === "task-priority-raised"));
 });

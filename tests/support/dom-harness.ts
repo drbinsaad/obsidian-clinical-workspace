@@ -87,6 +87,10 @@ export class TestElement {
     for (const name of names) this.classes.delete(name);
   }
 
+  hasClass(name: string): boolean {
+    return this.classes.has(name);
+  }
+
   toggleClass(name: string, force?: boolean): void {
     const enabled = force ?? !this.classes.has(name);
     if (enabled) this.classes.add(name);

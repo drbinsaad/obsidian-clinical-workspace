@@ -231,6 +231,11 @@ function openModal(modal: object): { content: TestElement } {
   return { content };
 }
 
+/** What the modal's keyboard layout sets while the iPhone keyboard is up. */
+function keyboardOpen(modal: object): void {
+  (modal as unknown as { modalEl: TestElement }).modalEl.addClass("is-virtual-keyboard-open");
+}
+
 function pressEnter(
   content: TestElement,
   target: TestElement,
@@ -334,10 +339,17 @@ test("Return in the Discharge outcome hides the keyboard; only the button or Ctr
   assert.ok(outcome);
   assert.equal(outcome.getAttribute("enterkeyhint"), "done");
   const blurs = trackBlur(outcome);
+  // With a hardware keyboard there is nothing to hide: focus stays in the form.
   pressEnter(content, outcome);
   await flush();
   assert.equal(archived.length, 0, "one Return must not archive the episode");
-  assert.equal(blurs(), 1, "Return hides the keyboard instead");
+  assert.equal(blurs(), 0, "no on-screen keyboard, so focus stays on the field");
+
+  keyboardOpen(modal);
+  pressEnter(content, outcome);
+  await flush();
+  assert.equal(archived.length, 0, "one Return must not archive the episode");
+  assert.equal(blurs(), 1, "Return hides the on-screen keyboard instead");
 
   pressEnter(content, outcome, { ctrlKey: true });
   await flush();
@@ -366,6 +378,7 @@ test("Return in the Cancel task reason hides the keyboard; Cmd+Enter cancels", a
   assert.ok(reason);
   assert.equal(reason.getAttribute("enterkeyhint"), "done");
   const blurs = trackBlur(reason);
+  keyboardOpen(modal);
   pressEnter(content, reason);
   await flush();
   assert.deepEqual(cancelled, [], "one Return must not cancel the task");
@@ -630,6 +643,24 @@ test("task types read as clinicians write them", async () => {
   const row = root.find('[aria-label="Filter by task type"]');
   assert.ok(row);
   assert.ok(row.findAll("button").some((button) => button.textContent === "Book OR"));
+
+  // A hand-typed "Book OR" would render a second, identical-looking chip that
+  // filters only half the tasks; only recognised types get a chip.
+  const typed = snapshotOf({
+    patients: [patient("PAT-alpha")],
+    episodes: [episode("EPI-alpha", "PAT-alpha")],
+    tasks: [
+      task("TSK-a", "EPI-alpha", { task_type: "book-or" }),
+      task("TSK-c", "EPI-alpha", { task_type: "Book OR" as TaskRecord["task_type"] }),
+      task("TSK-b", "EPI-alpha", { task_type: "clinical-review" })
+    ]
+  });
+  view.render(typed);
+  const labels = root
+    .find('[aria-label="Filter by task type"]')
+    ?.findAll("button")
+    .map((button) => button.textContent);
+  assert.deepEqual(labels, ["All types", "Book OR", "Clinical Review"]);
 
   const { content } = openModal(new NewTaskModal(new App(), episode("EPI-alpha", "PAT-alpha"), "Synthetic", async () => undefined));
   await flush();

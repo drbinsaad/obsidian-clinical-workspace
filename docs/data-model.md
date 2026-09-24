@@ -192,8 +192,9 @@ every episode that matches the chosen filter:
   apps cannot evaluate them. Obsidian cannot display a CSV itself: open it
   from your file manager or the iOS/iPadOS Files app. MRN and phone values
   that start with 0 or are 12 or more digits long also get a leading `'`, so
-  spreadsheets keep them exact instead of dropping leading zeroes or rounding
-  them. Obsidian Sync copies a CSV only when syncing of other file types is
+  spreadsheets keep every digit instead of dropping leading zeroes or rounding
+  them. Most spreadsheet apps show that `'` as part of the cell text, so remove
+  it before copying the value into another system. Obsidian Sync copies a CSV only when syncing of other file types is
   enabled.
 
 Like the handover note, a patient list contains identifiers by design, stays
