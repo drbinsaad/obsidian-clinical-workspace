@@ -47,11 +47,12 @@ import {
   pathwayAfterProcedure,
   pathwayAfterRestore,
   priorityRank,
+  statusAfterReopen,
   statusAfterRestore,
   statusAfterTaskCompletion
 } from "../domain/transitions";
 import { wikilink } from "../data/paths";
-import { ClinicalRepository } from "../data/repository";
+import { ClinicalRepository, CLINICAL_WRITES_BLOCKED_MESSAGE } from "../data/repository";
 
 export interface CreateEpisodeResult {
   patient: RecordWithPath<PatientRecord>;
@@ -94,6 +95,14 @@ export interface ArchiveEpisodeResult extends RecordWithPath<EpisodeRecord> {
   /** Open tasks cancelled by the discharge; always 0 without cancelOpenTasks. */
   cancelledTasks: number;
 }
+
+/**
+ * The repository's refusal while a record-folder move is being prepared. It
+ * names nothing, so a partial discharge may pass it on; keep it identical to
+ * the text ClinicalRepository throws.
+ */
+const MUTATIONS_PAUSED_MESSAGE =
+  "Clinical Workspace is preparing a record-folder move. Try again after it finishes.";
 
 /** Raised when a patient looks like one that already exists. */
 export class PossibleDuplicatePatientError extends Error {
@@ -342,7 +351,8 @@ export class ClinicalService {
             closed_at: "",
             outcome: "",
             pathway_before_archive: "",
-            status_before_archive: ""
+            status_before_archive: "",
+            status_before_ready: ""
           };
           const episode = await this.repository.create(episodeRecord);
           await this.repository.createEvent({
@@ -599,7 +609,8 @@ export class ClinicalService {
     await this.repository.update<EpisodeRecord>(episode.path, {
       next_action: imminent.record.task,
       due_date: imminent.record.due_date,
-      status: episode.record.status === "ready-to-close" ? "active" : episode.record.status
+      status: episode.record.status === "ready-to-close" ? "active" : episode.record.status,
+      ...(episode.record.status_before_ready ? { status_before_ready: "" } : {})
     });
     if (result.duplicate) return result;
     await this.repository.createEvent({
@@ -806,21 +817,43 @@ export class ClinicalService {
       // still finds the task closed and converges instead of skipping this.
       const nextOccurrence =
         task.record.status === "completed" ? await this.withdrawNextOccurrence(task) : "none";
+      // An escalation while the task was closed skipped it; it comes back at
+      // the episode's priority, never lower, and never from or to a value
+      // that is not recognised.
+      const taskRank = priorityRank(task.record.priority);
+      const raisePriority = taskRank >= 0 && priorityRank(episode.record.priority) > taskRank;
       const reopened = await this.repository.update<TaskRecord>(task.path, {
         status: "open",
         completed_at: "",
         cancelled_at: "",
-        cancel_reason: ""
+        cancel_reason: "",
+        ...(raisePriority ? { priority: episode.record.priority } : {})
       });
+      if (raisePriority) {
+        await this.repository.createEvent({
+          action: "task-priority-raised",
+          patientId: task.record.patient_id,
+          episodeId: task.record.episode_id,
+          targetId: task.record.id,
+          targetEntity: "task",
+          summary: "Task priority raised with its episode",
+          previousState: task.record.priority,
+          newState: episode.record.priority
+        });
+      }
       await this.reconcileEpisodeAfterTaskChange(task.record.episode_id, "");
-      // Newly outstanding work reactivates a ready-to-close episode; the
-      // reconcile alone leaves the status where it was.
+      // Newly outstanding work takes a ready-to-close episode back to the
+      // status the completion replaced (on hold stays on hold); the reconcile
+      // alone leaves the status where it was.
       const latestEpisode = await this.repository.findById<EpisodeRecord>(
         "episode",
         task.record.episode_id
       );
       if (latestEpisode && latestEpisode.record.status === "ready-to-close") {
-        await this.repository.update<EpisodeRecord>(latestEpisode.path, { status: "active" });
+        await this.repository.update<EpisodeRecord>(latestEpisode.path, {
+          status: statusAfterReopen(latestEpisode.record.status_before_ready),
+          status_before_ready: ""
+        });
       }
       await this.repository.createEvent({
         action: "task-reopened",
@@ -863,6 +896,35 @@ export class ClinicalService {
     ];
     const tasks = await this.repository.list<TaskRecord>("task");
     const wording = normalizeComparable(task.record.task);
+    // The series has moved on when a later occurrence was already completed:
+    // the next occurrence itself, or (after it was rescheduled) any later one
+    // in the series completed after this one. Its completion raised the
+    // occurrence after it, so reopening this one would leave the series
+    // running twice. Refused before anything is written; a cancelled or
+    // entered-in-error occurrence does not count.
+    const keys = new Set(
+      candidates.map((dueDate) =>
+        taskIdempotencyKey({ episodeId: task.record.episode_id, task: task.record.task, dueDate })
+      )
+    );
+    const completedAt = Date.parse(task.record.completed_at);
+    const movedOn = tasks.some(
+      ({ record }) =>
+        record.id !== task.record.id &&
+        record.episode_id === task.record.episode_id &&
+        record.status === "completed" &&
+        normalizeComparable(record.task) === wording &&
+        ((keys.has(record.idempotency_key) && candidates.includes(normalizeText(record.due_date))) ||
+          ((record.repeat_every_days ?? 0) === interval &&
+            Number.isFinite(completedAt) &&
+            Date.parse(record.completed_at) > completedAt &&
+            normalizeIsoDate(record.due_date) > seed))
+    );
+    if (movedOn) {
+      throw new Error(
+        "A later occurrence of this repeating task was already completed, so this one was not reopened."
+      );
+    }
     const untouched = (record: TaskRecord): boolean =>
       record.status === "open" &&
       record.updated_at === record.created_at &&
@@ -941,8 +1003,16 @@ export class ClinicalService {
     );
   }
 
-  /** Points the episode at its next outstanding task, or marks it ready to close. */
-  private async reconcileEpisodeAfterTaskChange(episodeId: string, closedTaskId: string): Promise<void> {
+  /**
+   * Points the episode at its next outstanding task, or marks it ready to
+   * close. `keepStatus` refreshes only the pointer, for a caller that sets the
+   * status itself and must leave the current one for a retry.
+   */
+  private async reconcileEpisodeAfterTaskChange(
+    episodeId: string,
+    closedTaskId: string,
+    keepStatus = false
+  ): Promise<void> {
     const tasks = (await this.repository.list<TaskRecord>("task")).map((item) => item.record);
     const nextStatus = statusAfterTaskCompletion(tasks, episodeId, closedTaskId);
     const episode = await this.repository.findById<EpisodeRecord>("episode", episodeId);
@@ -951,16 +1021,32 @@ export class ClinicalService {
       .filter((item) => item.episode_id === episodeId && item.id !== closedTaskId && taskIsOpen(item))
       .sort((a, b) => String(a.due_date || "9999").localeCompare(String(b.due_date || "9999")));
     const first = remaining[0];
+    const pointer = { next_action: first?.task ?? "", due_date: first?.due_date ?? "" };
+    if (keepStatus) {
+      await this.repository.update<EpisodeRecord>(episode.path, pointer);
+      return;
+    }
     const proposedStatus = nextStatus ?? episode.record.status;
     const terminal = ["archived", "cancelled", "entered-in-error"].includes(episode.record.status);
     const status =
       !terminal && canTransitionEpisode(episode.record.status, proposedStatus)
         ? proposedStatus
         : episode.record.status;
+    // Moving to ready to close remembers the status it replaced, so undoing
+    // the completion can put an on-hold episode back on hold. Staying ready
+    // to close keeps what was recorded; any other status clears it.
+    const statusBeforeReady =
+      status !== "ready-to-close"
+        ? ""
+        : episode.record.status === "ready-to-close"
+          ? (episode.record.status_before_ready ?? "")
+          : episode.record.status;
     await this.repository.update<EpisodeRecord>(episode.path, {
       status,
-      next_action: first?.task ?? "",
-      due_date: first?.due_date ?? ""
+      ...(statusBeforeReady !== (episode.record.status_before_ready ?? "")
+        ? { status_before_ready: statusBeforeReady }
+        : {}),
+      ...pointer
     });
   }
 
@@ -1021,6 +1107,17 @@ export class ClinicalService {
     ) {
       throw new Error("Next action and due date are required for this pathway.");
     }
+    // The task handling below moves, replaces or raises the episode's open
+    // tasks, and would refuse one filed under another chart (Sync after a
+    // merge leaves such a task) only after the episode was half-saved.
+    const openTasks = (await this.repository.list<TaskRecord>("task")).filter(
+      ({ record }) => record.episode_id === episode.record.id && taskIsOpen(record)
+    );
+    if (openTasks.some(({ record }) => record.patient_id !== episode.record.patient_id)) {
+      throw new Error(
+        "A task on this episode is filed under a different patient, so nothing was saved. Run the clinical data integrity check and repair that task, then save again."
+      );
+    }
 
     // Only the discharge-ready pathway implies a status change. Anything else
     // leaves the status alone, so an on-hold episode is not silently reactivated.
@@ -1035,10 +1132,12 @@ export class ClinicalService {
     // due date mirror whatever tasks reconciliation leaves open, not the form;
     // and while the episode still carries its old priority, repeating an
     // interrupted save repeats the task escalation below instead of skipping it.
+    // A status the user set is not one a later reopen should undo.
     await this.repository.update<EpisodeRecord>(episode.path, {
       care_setting: input.careSetting,
       pathway: input.pathway,
-      status
+      status,
+      ...(episode.record.status_before_ready ? { status_before_ready: "" } : {})
     });
 
     // Task handling here has to satisfy three things at once: re-saving the
@@ -1055,7 +1154,10 @@ export class ClinicalService {
     // Escalating the patient must reach the work: a routine task on an
     // emergency episode is missed by the priority filter and sorts last.
     // Only raised, never lowered — a task may carry its own higher priority.
+    // An unrecognised stored priority is not "below routine": the form showed
+    // a substitute for it, so saving the form is no escalation.
     const tasksEscalated =
+      priorityRank(episode.record.priority) >= 0 &&
       priorityRank(input.priority) > priorityRank(episode.record.priority)
         ? await this.raiseOpenTaskPriorities(episode, input.priority)
         : 0;
@@ -1070,11 +1172,16 @@ export class ClinicalService {
     const imminent = await this.imminentOpenTask(episodeId);
     const current = await this.repository.findById<EpisodeRecord>("episode", episodeId);
     if (!current) throw new Error("Episode was not found after updating its tasks.");
+    const finalStatus =
+      current.record.status === "ready-to-close" && imminent ? "active" : current.record.status;
     const finalEpisode = await this.repository.update<EpisodeRecord>(current.path, {
       priority: input.priority,
       next_action: imminent?.record.task ?? "",
       due_date: imminent?.record.due_date ?? "",
-      status: current.record.status === "ready-to-close" && imminent ? "active" : current.record.status
+      status: finalStatus,
+      ...(finalStatus !== "ready-to-close" && current.record.status_before_ready
+        ? { status_before_ready: "" }
+        : {})
     });
     await this.repository.createEvent({
       action: "episode-updated",
@@ -1100,11 +1207,17 @@ export class ClinicalService {
     priority: Priority
   ): Promise<number> {
     const target = priorityRank(priority);
+    // An unrecognised task priority (ranked -1) is left alone: it may be a
+    // hand-typed "Emergency", and the integrity check already reports it.
+    const below = (value: string): boolean => {
+      const rank = priorityRank(value);
+      return rank >= 0 && rank < target;
+    };
     const lower = (await this.repository.list<TaskRecord>("task")).filter(
       ({ record }) =>
         record.episode_id === episode.record.id &&
         taskIsOpen(record) &&
-        priorityRank(record.priority) < target
+        below(record.priority)
     );
     let raised = 0;
     for (const item of lower) {
@@ -1117,7 +1230,7 @@ export class ClinicalService {
           !taskIsOpen(latest.record) ||
           latest.record.episode_id !== episode.record.id ||
           latest.record.patient_id !== episode.record.patient_id ||
-          priorityRank(latest.record.priority) >= target
+          !below(latest.record.priority)
         ) {
           return false;
         }
@@ -1571,25 +1684,52 @@ export class ClinicalService {
       );
     }
 
-    const cancelledTasks = options.cancelOpenTasks
-      ? await this.cancelOpenTasksForDischarge(episode)
-      : 0;
+    // Counted as each task is cancelled, so a failure part-way, or after the
+    // last cancellation but before the archive write, can say what was
+    // already done.
+    const progress = { cancelled: 0 };
+    let decisionReason = "";
+    let updated: RecordWithPath<EpisodeRecord>;
+    try {
+      if (options.cancelOpenTasks) await this.cancelOpenTasksForDischarge(episode, progress);
 
-    const tasks = (await this.repository.list<TaskRecord>("task")).map((item) => item.record);
-    const decision = canArchiveEpisode(episode.record.status, tasks, episodeId);
-    if (!decision.allowed) throw new Error(decision.reason);
+      const tasks = (await this.repository.list<TaskRecord>("task")).map((item) => item.record);
+      const decision = canArchiveEpisode(episode.record.status, tasks, episodeId);
+      if (!decision.allowed) {
+        decisionReason = decision.reason;
+        throw new Error(decision.reason);
+      }
 
-    const updated = await this.repository.update<EpisodeRecord>(episode.path, {
-      status: "archived",
-      pathway: "discharge-ready",
-      // Remember what archiving overwrote so restore can put it back.
-      pathway_before_archive: episode.record.pathway,
-      status_before_archive: episode.record.status,
-      closed_at: nowIso(),
-      outcome: normalizeText(outcome) || "Episode closed",
-      next_action: "",
-      due_date: ""
-    });
+      updated = await this.repository.update<EpisodeRecord>(episode.path, {
+        status: "archived",
+        pathway: "discharge-ready",
+        // Remember what archiving overwrote so restore can put it back.
+        pathway_before_archive: episode.record.pathway,
+        status_before_archive: episode.record.status,
+        ...(episode.record.status_before_ready ? { status_before_ready: "" } : {}),
+        closed_at: nowIso(),
+        outcome: normalizeText(outcome) || "Episode closed",
+        next_action: "",
+        due_date: ""
+      });
+    } catch (error) {
+      if (progress.cancelled === 0) throw error;
+      // The raw reason can quote a path or filename, so only a message this
+      // plugin wrote for the user is passed on.
+      const reason = error instanceof Error ? error.message : "";
+      const known =
+        reason !== "" &&
+        (reason === decisionReason ||
+          reason === CLINICAL_WRITES_BLOCKED_MESSAGE ||
+          reason === MUTATIONS_PAUSED_MESSAGE ||
+          reason === this.repository.getWriteBlockReason());
+      const count = progress.cancelled;
+      throw new Error(
+        `${count} open task${count === 1 ? " was" : "s were"} already cancelled, but the episode was not discharged. ${known ? `${reason} ` : ""}Retry Discharge to finish.`,
+        { cause: error }
+      );
+    }
+    const cancelledTasks = progress.cancelled;
 
     const otherActive = (await this.repository.list<EpisodeRecord>("episode")).some(
       ({ record }) =>
@@ -1633,12 +1773,18 @@ export class ClinicalService {
    * Cancels the episode's open tasks as part of an explicitly requested
    * discharge: each through the audited cancel path, then one reconcile.
    * Nothing is archived yet, so an interruption leaves only cancelled tasks
-   * and a retry converges. Returns how many tasks this call cancelled.
+   * and a retry converges. `progress.cancelled` counts the tasks this call
+   * cancelled as it goes, so it is right even when the call fails part-way.
+   * The episode status is left alone: the archive sets it, and a retry after
+   * an interruption must still find (and record) the status held before.
    *
    * Caller must hold the patient-merge lock, then the Episode lifecycle lock,
    * and must already have refused unreadable task notes.
    */
-  private async cancelOpenTasksForDischarge(episode: RecordWithPath<EpisodeRecord>): Promise<number> {
+  private async cancelOpenTasksForDischarge(
+    episode: RecordWithPath<EpisodeRecord>,
+    progress: { cancelled: number }
+  ): Promise<void> {
     // Refuse before cancelling anything when the archive itself would be
     // refused: closing the work and then keeping the episode open helps no one.
     const transition = canArchiveEpisode(episode.record.status, [], episode.record.id);
@@ -1655,7 +1801,6 @@ export class ClinicalService {
         "A task on this episode is filed under a different patient, so no task was closed. Run the clinical data integrity check and repair that task, then discharge again."
       );
     }
-    let cancelled = 0;
     let wrote = false;
     try {
       for (const item of open) {
@@ -1671,15 +1816,14 @@ export class ClinicalService {
           if (!taskIsOpen(latest.record)) return;
           wrote = true;
           await this.cancelTaskUnlocked(latest, "Closed at discharge", false);
-          cancelled += 1;
+          progress.cancelled += 1;
         });
       }
     } finally {
       // Also when the loop stopped part-way, so the episode never keeps
       // mirroring a task this call already cancelled.
-      if (wrote) await this.reconcileEpisodeAfterTaskChange(episode.record.id, "");
+      if (wrote) await this.reconcileEpisodeAfterTaskChange(episode.record.id, "", true);
     }
-    return cancelled;
   }
 
   /**
@@ -1835,7 +1979,8 @@ export class ClinicalService {
       // booking. The logbook needs one entry per procedure, so it is accepted
       // as an addition: the pathway, status and next action the episode has
       // now stay as they are, and only a requested follow-up adds work. Also
-      // decided this way on a retry, so a retry never re-runs the transition.
+      // decided this way on a retry of a part-failed addition, so that retry
+      // never re-runs the transition.
       const additional =
         episode.record.pathway !== "or-booking" &&
         procedures.some(
@@ -1863,6 +2008,16 @@ export class ClinicalService {
             "This procedure is already recorded with different follow-up details. Nothing was changed. Open the saved procedure record to review it, then either retry with the saved details or correct the saved record first."
           );
         }
+      }
+      // audit_pending is cleared only as the workflow's last step, so a
+      // matching record without it was fully logged earlier. Running the
+      // workflow again would redo the episode transition (overwriting what
+      // the clinician has set since) and re-raise a completed follow-up,
+      // while adding no logbook entry. Refused before anything is written.
+      if (existing && existing.record.audit_pending !== true) {
+        throw new Error(
+          "This procedure is already in the logbook for this episode. To log another, use a different date or name."
+        );
       }
       // The persisted record is the write authority for every later step.
       const followUp = existing
@@ -1984,7 +2139,8 @@ export class ClinicalService {
             : (nextOutstanding?.record.task ?? ""),
           due_date: followUp.required
             ? followUp.date
-            : (nextOutstanding?.record.due_date ?? "")
+            : (nextOutstanding?.record.due_date ?? ""),
+          ...(latestEpisode.record.status_before_ready ? { status_before_ready: "" } : {})
         });
       }
       if (followUp.required) {
