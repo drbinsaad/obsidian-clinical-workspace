@@ -194,3 +194,38 @@ test("a retried addition keeps its addition wording, and a record without the fi
   const retriedLegacy = await h.service.completeProcedure(legacyInput);
   assert.deepEqual(await completions(h, retriedLegacy.record.id), ["episode unchanged", "episode unchanged"]);
 });
+
+test("a retry after an attempt that stopped before the move, with the episode moved by hand, is not worded as a completion", async () => {
+  const { h, episodeId, input, repo } = await rebookedEpisode("9000000954");
+  const surgery = input({ procedure: "Revision of drain", procedureDate: "2026-09-15" });
+  // The attempt stops at the episode transition: the episode stays on OR booking.
+  const realUpdate = repo.update.bind(h.repository);
+  repo.update = async (path: string, changes: Record<string, unknown>) => {
+    if (path.includes("/Episodes/") && "pathway" in changes) {
+      throw new Error("Injected write failure (synthetic)");
+    }
+    return realUpdate(path, changes);
+  };
+  await assert.rejects(() => h.service.completeProcedure(surgery), /Injected write failure/);
+  repo.update = realUpdate;
+  const pending = await procedureNamed(h, "Revision of drain");
+  assert.equal(pending.logged_as, "completion");
+  assert.equal((await episodeOf(h, episodeId)).pathway, "or-booking");
+
+  // The clinician moves the episode on by hand before retrying the form.
+  await h.service.updateEpisode(episodeId, {
+    careSetting: "outpatient",
+    pathway: "result-review",
+    priority: "routine",
+    nextAction: "Review histology",
+    dueDate: isoDateWithOffset(7, todayIso())
+  });
+  const retried = await h.service.completeProcedure(surgery);
+  assert.equal(retried.record.id, pending.id);
+  assert.equal((await episodeOf(h, episodeId)).pathway, "result-review", "the retry leaves the hand-set pathway");
+  assert.deepEqual(
+    await completions(h, retried.record.id),
+    ["episode unchanged"],
+    "this save never moved the episode, so its audit entry does not say it did"
+  );
+});

@@ -1353,6 +1353,51 @@ test("an unfinished save is sent to Complete surgery only when that finishes it"
     ["missing-audit-event"],
     "a reworded follow-up task is still the follow-up"
   );
+
+  // 7. Two entries from one operation ask for the same follow-up; the
+  // second reuses the open task the first raised, and only its audit entry
+  // is lost. The follow-up it asked for is there, so adding another is not
+  // advised.
+  const shared = await booking("9000000720", "Synthetic Grove", "0500000000");
+  await h.service.completeProcedure(surgery(shared, withFollowUp));
+  await pause();
+  const sharedAddition = await loseAudit(
+    surgery(shared, { procedure: "Central neck dissection", additionalEntryId: "ADD-synthetic-20", ...withFollowUp })
+  );
+  assert.equal(
+    (await tasksOf(h, shared.episode.record.id)).filter((task) => task.task_type === "postop-follow-up").length,
+    1,
+    "the second entry reused the open follow-up task"
+  );
+  assert.deepEqual(
+    (await findingsFor(sharedAddition.record.id)).map((issue) => issue.code),
+    ["missing-audit-event"],
+    "a follow-up shared with an earlier entry is still the follow-up"
+  );
+
+  // 8. A first completion stops at its follow-up task; a later entry on the
+  // episode raises its own, different follow-up. That task is the other
+  // entry's, so the first entry's missing follow-up is still reported.
+  const lost = await booking("9000000721", "Synthetic Heath", "0500000001");
+  await failAtFollowUp(surgery(lost, withFollowUp));
+  const lostEntry = await newest(lost.episode.record.id);
+  await pause();
+  await h.service.completeProcedure(
+    surgery(lost, {
+      procedure: "Drainage of seroma",
+      additionalEntryId: "ADD-synthetic-21",
+      followUpRequired: true,
+      followUpDate: isoDateWithOffset(2, todayIso()),
+      followUpPlan: "Drain review"
+    })
+  );
+  const lostFindings = await findingsFor(lostEntry.record.id);
+  assert.deepEqual(lostFindings.map((issue) => issue.code), ["unfinished-procedure"]);
+  assert.match(
+    lostFindings[0]?.message ?? "",
+    /\+ Task/,
+    "another entry's follow-up task does not stand in for this one's"
+  );
 });
 
 // --- Discharge with open tasks -----------------------------------------------

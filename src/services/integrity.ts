@@ -163,11 +163,24 @@ function unfinishedProcedureMessage(
     (!movedOnSince || Date.parse(String(task.created_at)) < savedAt);
   const episodeUnsettled =
     owedTransition && ((onBooking && !movedOnSince) || activity.tasks.some(openBooking));
-  // Any follow-up task raised on the episode since the save counts, whatever
-  // it says or when it is due now: it may have been rescheduled or reworded.
+  // The follow-up is there when a task still says what the save asked for,
+  // whenever it was raised (a later entry with the same follow-up reuses the
+  // open task). It may since have been rescheduled or reworded, so a
+  // post-operative follow-up raised since the save also counts, unless it is
+  // the follow-up another entry on the episode asked for.
+  const asksFor = (item: ProcedureRecord, task: TaskRecord): boolean =>
+    item.follow_up_required === true &&
+    normalizeComparable(task.task) === normalizeComparable(item.follow_up_plan) &&
+    normalizeText(task.due_date) === normalizeText(item.follow_up_date);
   const followUpMissing =
     record.follow_up_required === true &&
-    !activity.tasks.some((task) => task.task_type === "postop-follow-up" && since(task.created_at));
+    !activity.tasks.some(
+      (task) =>
+        asksFor(record, task) ||
+        (task.task_type === "postop-follow-up" &&
+          since(task.created_at) &&
+          !otherLogged.some((item) => asksFor(item, task)))
+    );
   // A form cancelled after an error and entered again is a second entry by
   // design; it may also be a genuine second procedure, so this only asks.
   const loggedAgain = otherLogged.some(

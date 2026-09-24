@@ -2220,11 +2220,14 @@ export class ClinicalService {
       const auditOwed = !outcome.alreadyLogged || outcome.procedure.record.audit_pending === true;
       // A retry of a part-failed completion finds the episode already moved
       // off OR booking, so `additional` alone would word it as an addition.
-      // The record says how it was first logged; records without it keep the
-      // calculation above.
-      const auditAsAddition =
-        additionalEntryId !== "" ||
-        (additional && outcome.procedure.record.logged_as !== "completion");
+      // The record says how it was first logged, and the episode shows
+      // whether that completion's move was applied (not, for example, a
+      // move made by hand after an attempt that stopped before it). Records
+      // without the field keep the calculation above.
+      const completionApplied =
+        outcome.procedure.record.logged_as === "completion" &&
+        episode.record.pathway === pathwayAfterProcedure(followUp.required);
+      const auditAsAddition = additionalEntryId !== "" || (additional && !completionApplied);
       if (auditOwed) {
         const event = await this.repository.createEvent({
           action: "procedure-completed",
