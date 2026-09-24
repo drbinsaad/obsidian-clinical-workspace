@@ -1220,7 +1220,9 @@ test("an unfinished save is sent to Complete surgery only when that finishes it"
 
   // 3. A first completion stops after its transition, and the episode is
   // later re-booked: with a booking task, and without one (only the
-  // episode's own update shows it was re-booked).
+  // episode's own update shows it was re-booked). The re-booking's update
+  // records that the episode had been moved on, so only the follow-up task
+  // is in question.
   for (const [mrn, name, nextAction] of [
     ["9000000713", "Synthetic Zulu", "Book completion thyroidectomy"],
     ["9000000714", "Synthetic Amber", ""]
@@ -1236,7 +1238,12 @@ test("an unfinished save is sent to Complete surgery only when that finishes it"
     await rebook(rebooked, nextAction);
     const rebookedFindings = await findingsFor(stuck.record.id);
     assert.deepEqual(rebookedFindings.map((issue) => issue.code), ["unfinished-procedure"]);
-    assert.match(rebookedFindings[0]?.message ?? "", /pathway, next action and tasks/);
+    assert.match(rebookedFindings[0]?.message ?? "", /\+ Task/);
+    assert.doesNotMatch(
+      rebookedFindings[0]?.message ?? "",
+      /moved on/,
+      "the re-booking's update shows the episode had been moved on"
+    );
     assertNoCompleteSurgery(
       rebookedFindings.map((issue) => issue.message),
       `the episode was re-booked${nextAction ? "" : " without a task"} after the save`
@@ -1273,14 +1280,123 @@ test("an unfinished save is sent to Complete surgery only when that finishes it"
   assert.equal(finishedEpisode.next_action, "Clinic review");
   assert.deepEqual(await findingsFor(stuck.record.id), []);
 
+  // 4b. The same stop, then the entry's name is corrected by hand, so
+  // Complete surgery no longer finds it (it would add a second entry). It
+  // is still the episode's first entry, so it still owes the transition.
+  const corrected = await booking("9000000717", "Synthetic Dune", "0500000001");
+  await failAtTransition(surgery(corrected, { procedure: "Hemithyroidectomyy" }));
+  const misspelt = await newest(corrected.episode.record.id);
+  await h.repository.update<ProcedureRecord>(misspelt.path, { procedure: "Hemithyroidectomy" });
+  const correctedFindings = await findingsFor(misspelt.record.id);
+  assert.deepEqual(correctedFindings.map((issue) => issue.code), ["unfinished-procedure"]);
+  assert.match(correctedFindings[0]?.message ?? "", /pathway, next action and tasks/);
+  assertNoCompleteSurgery(
+    correctedFindings.map((issue) => issue.message),
+    "Complete surgery would not find the corrected entry"
+  );
+
+  // 4c. The same stop, then an update that leaves the episode on OR
+  // booking: nothing shows it was moved on, so it is still in question.
+  const stillBooked = await booking("9000000718", "Synthetic Elm", "0500000000");
+  await failAtTransition(surgery(stillBooked));
+  const unsettled = await newest(stillBooked.episode.record.id);
+  await rebook(stillBooked, "Book theatre");
+  const stillBookedFindings = await findingsFor(unsettled.record.id);
+  assert.deepEqual(stillBookedFindings.map((issue) => issue.code), ["unfinished-procedure"]);
+  assert.match(stillBookedFindings[0]?.message ?? "", /pathway, next action and tasks/);
+
   // 5. A first completion whose audit write alone fails has done
-  // everything else, so it is the plain missing-audit-event.
+  // everything else, so it is the plain missing-audit-event, and stays so
+  // when the episode is later re-booked for a return to theatre.
   const firstAuditOnly = await booking("9000000716", "Synthetic Cedar", "0500000000");
   const logged = await loseAudit(surgery(firstAuditOnly));
   assert.equal(logged.record.audit_pending, true);
   assert.deepEqual(
     (await findingsFor(logged.record.id)).map((issue) => issue.code),
     ["missing-audit-event"]
+  );
+  await rebook(firstAuditOnly, "Book return to theatre");
+  assert.equal(
+    (await h.repository.findById<EpisodeRecord>("episode", firstAuditOnly.episode.record.id))?.record.pathway,
+    "or-booking"
+  );
+  assert.deepEqual(
+    (await findingsFor(logged.record.id)).map((issue) => issue.code),
+    ["missing-audit-event"],
+    "the re-booking is a later one, not a transition the save missed"
+  );
+
+  // 6. The same with a follow-up, whose task is then rescheduled and
+  // reworded: it is still the follow-up the save raised, so adding another
+  // is not advised.
+  const followedUp = await booking("9000000719", "Synthetic Fern", "0500000001");
+  const withTask = await loseAudit(surgery(followedUp, withFollowUp));
+  assert.equal(withTask.record.audit_pending, true);
+  assert.deepEqual(
+    (await findingsFor(withTask.record.id)).map((issue) => issue.code),
+    ["missing-audit-event"]
+  );
+  const [followTask] = (await tasksOf(h, followedUp.episode.record.id)).filter(
+    (task) => task.task_type === "postop-follow-up"
+  );
+  assert.ok(followTask);
+  await h.service.rescheduleTask(followTask.id, isoDateWithOffset(21, todayIso()));
+  assert.deepEqual(
+    (await findingsFor(withTask.record.id)).map((issue) => issue.code),
+    ["missing-audit-event"],
+    "a rescheduled follow-up task is still the follow-up"
+  );
+  const followTaskPath = (await h.repository.findById<TaskRecord>("task", followTask.id))!.path;
+  await h.repository.update<TaskRecord>(followTaskPath, { task: "Wound and voice review" });
+  assert.deepEqual(
+    (await findingsFor(withTask.record.id)).map((issue) => issue.code),
+    ["missing-audit-event"],
+    "a reworded follow-up task is still the follow-up"
+  );
+
+  // 7. Two entries from one operation ask for the same follow-up; the
+  // second reuses the open task the first raised, and only its audit entry
+  // is lost. The follow-up it asked for is there, so adding another is not
+  // advised.
+  const shared = await booking("9000000720", "Synthetic Grove", "0500000000");
+  await h.service.completeProcedure(surgery(shared, withFollowUp));
+  await pause();
+  const sharedAddition = await loseAudit(
+    surgery(shared, { procedure: "Central neck dissection", additionalEntryId: "ADD-synthetic-20", ...withFollowUp })
+  );
+  assert.equal(
+    (await tasksOf(h, shared.episode.record.id)).filter((task) => task.task_type === "postop-follow-up").length,
+    1,
+    "the second entry reused the open follow-up task"
+  );
+  assert.deepEqual(
+    (await findingsFor(sharedAddition.record.id)).map((issue) => issue.code),
+    ["missing-audit-event"],
+    "a follow-up shared with an earlier entry is still the follow-up"
+  );
+
+  // 8. A first completion stops at its follow-up task; a later entry on the
+  // episode raises its own, different follow-up. That task is the other
+  // entry's, so the first entry's missing follow-up is still reported.
+  const lost = await booking("9000000721", "Synthetic Heath", "0500000001");
+  await failAtFollowUp(surgery(lost, withFollowUp));
+  const lostEntry = await newest(lost.episode.record.id);
+  await pause();
+  await h.service.completeProcedure(
+    surgery(lost, {
+      procedure: "Drainage of seroma",
+      additionalEntryId: "ADD-synthetic-21",
+      followUpRequired: true,
+      followUpDate: isoDateWithOffset(2, todayIso()),
+      followUpPlan: "Drain review"
+    })
+  );
+  const lostFindings = await findingsFor(lostEntry.record.id);
+  assert.deepEqual(lostFindings.map((issue) => issue.code), ["unfinished-procedure"]);
+  assert.match(
+    lostFindings[0]?.message ?? "",
+    /\+ Task/,
+    "another entry's follow-up task does not stand in for this one's"
   );
 });
 

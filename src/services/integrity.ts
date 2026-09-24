@@ -8,7 +8,9 @@ import type {
   RecordWithPath,
   TaskRecord
 } from "../domain/types";
+import { PATHWAYS } from "../domain/types";
 import {
+  canonicalOption,
   isIsoDate,
   mrnMatchKey,
   normalizeComparable,
@@ -92,6 +94,8 @@ interface EpisodeActivity {
   procedures: ProcedureRecord[];
   /** When each audit event about the episode record itself was written. */
   episodeEventTimes: string[];
+  /** When each Update of the episode that started off OR booking was written. */
+  movedOffBookingTimes: string[];
 }
 
 const UNFINISHED_PROCEDURE_COMPLETE_SURGERY =
@@ -142,16 +146,40 @@ function unfinishedProcedureMessage(
 
   // A Complete surgery save owes the move off OR booking and the booking
   // task's completion; one that is still on OR booking, or still has an open
-  // booking task, may not have had them. An added entry owes neither.
+  // booking task, may not have had them. An added entry owes neither. The
+  // first entry on an episode can only have come from Complete surgery (Add
+  // another procedure is offered once an entry exists), so it owes them even
+  // when a hand correction has changed its key. An Update written since the
+  // save that found the episode off OR booking proves it was moved on, so a
+  // booking now is a later one; only a booking task older than the save is
+  // then still owed.
+  const owedTransition =
+    savedByCompleteSurgery ||
+    !otherLogged.some((item) => Date.parse(String(item.created_at)) < savedAt);
+  const movedOnSince = activity.movedOffBookingTimes.some((time) => Date.parse(time) >= savedAt);
+  const openBooking = (task: TaskRecord): boolean =>
+    task.task_type === "book-or" &&
+    taskIsOpen(task) &&
+    (!movedOnSince || Date.parse(String(task.created_at)) < savedAt);
   const episodeUnsettled =
-    savedByCompleteSurgery &&
-    (onBooking || activity.tasks.some((task) => task.task_type === "book-or" && taskIsOpen(task)));
+    owedTransition && ((onBooking && !movedOnSince) || activity.tasks.some(openBooking));
+  // The follow-up is there when a task still says what the save asked for,
+  // whenever it was raised (a later entry with the same follow-up reuses the
+  // open task). It may since have been rescheduled or reworded, so a
+  // post-operative follow-up raised since the save also counts, unless it is
+  // the follow-up another entry on the episode asked for.
+  const asksFor = (item: ProcedureRecord, task: TaskRecord): boolean =>
+    item.follow_up_required === true &&
+    normalizeComparable(task.task) === normalizeComparable(item.follow_up_plan) &&
+    normalizeText(task.due_date) === normalizeText(item.follow_up_date);
   const followUpMissing =
     record.follow_up_required === true &&
     !activity.tasks.some(
       (task) =>
-        normalizeComparable(task.task) === normalizeComparable(record.follow_up_plan) &&
-        normalizeText(task.due_date) === normalizeText(record.follow_up_date)
+        asksFor(record, task) ||
+        (task.task_type === "postop-follow-up" &&
+          since(task.created_at) &&
+          !otherLogged.some((item) => asksFor(item, task)))
     );
   // A form cancelled after an error and entered again is a second entry by
   // design; it may also be a genuine second procedure, so this only asks.
@@ -636,7 +664,7 @@ export class IntegrityService {
       const activityOf = (episodeId: string): EpisodeActivity => {
         let activity = activityByEpisode.get(episodeId);
         if (!activity) {
-          activity = { tasks: [], procedures: [], episodeEventTimes: [] };
+          activity = { tasks: [], procedures: [], episodeEventTimes: [], movedOffBookingTimes: [] };
           activityByEpisode.set(episodeId, activity);
         }
         return activity;
@@ -647,7 +675,19 @@ export class IntegrityService {
       }
       for (const event of events) {
         if (event.record.target_entity !== "episode") continue;
-        activityOf(event.record.target_id).episodeEventTimes.push(event.record.created_at);
+        const activity = activityOf(event.record.target_id);
+        activity.episodeEventTimes.push(event.record.created_at);
+        // Updates record the state they started from as "care setting/pathway/priority".
+        const stateBefore = String(event.record.previous_state ?? "").split("/");
+        const pathwayBefore = canonicalOption(stateBefore[1], PATHWAYS);
+        if (
+          event.record.action === "episode-updated" &&
+          stateBefore.length === 3 &&
+          pathwayBefore &&
+          pathwayBefore !== "or-booking"
+        ) {
+          activity.movedOffBookingTimes.push(event.record.created_at);
+        }
       }
       for (const procedure of unfinished) {
         const message = unfinishedProcedureMessage(
