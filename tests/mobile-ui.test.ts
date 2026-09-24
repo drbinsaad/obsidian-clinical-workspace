@@ -646,6 +646,24 @@ test("Quick Entry renders four packed actions rather than stretching rows across
   );
 });
 
+test("the Quick Entry hub stays packed on a full-screen iPad, not only on phones", async () => {
+  // The packing rule sat inside the phone media query, so on an iPad sheet
+  // the four options were spread down the full height.
+  const rules = parseCssRules(await stylesPromise);
+  for (const viewport of [{ width: 820, height: 1180 }, { width: 1180, height: 820 }]) {
+    const grid = styleForViewport(
+      rules,
+      viewport,
+      ".clinical-quick-entry-grid",
+      ".is-mobile .clinical-quick-entry-modal .clinical-quick-entry-grid"
+    );
+    const packed =
+      ["start", "flex-start"].includes(grid.get("align-content") ?? "") ||
+      ["max-content", "min-content"].includes(grid.get("grid-auto-rows") ?? "");
+    assert.ok(packed, `hub options stretch across a ${viewport.width}×${viewport.height} sheet`);
+  }
+});
+
 test("Quick Entry options and search rows grow with wrapped text instead of clipping it", async () => {
   // Obsidian gives every button a fixed height (44 px on mobile); min-height
   // alone left a 64 px row that cut off a wrapped patient line on iPhone.

@@ -780,8 +780,12 @@
   gap: 10px;
 }
 
+/* Packed at the top on every device: the grid grows to fill the sheet, and
+   on a full-screen iPad stretched rows spread the four options apart. */
 .clinical-quick-entry-grid {
   flex: 1 1 auto;
+  align-content: start;
+  grid-auto-rows: max-content;
   min-width: 0;
   min-height: 0;
   margin-top: 14px;
