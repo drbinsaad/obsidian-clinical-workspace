@@ -142,6 +142,8 @@ Its card shows a **Repeats** badge.
   created: "Task reopened. Its next occurrence was withdrawn." If you had
   already changed that next occurrence, it is left open and the notice says
   so.
+  If a later occurrence was already completed, Undo and Reopen are refused,
+  so the series never ends up with two open copies.
 - **Cancelling** a repeating task ends the series.
 
 ## How do I update an episode?

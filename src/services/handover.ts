@@ -14,6 +14,7 @@ import {
   todayIso
 } from "../domain/schema";
 import { priorityRank } from "../domain/transitions";
+import { escapeMarkdownInline, survivingPatientLookup } from "./patient-list";
 
 /**
  * Priority-first order for a worklist read from the top: emergency, then
@@ -36,11 +37,16 @@ export function compareTasksByPriority(a: TaskRecord, b: TaskRecord): number {
  * record. It replaces the manual re-typing a handover otherwise requires.
  */
 export function buildHandoverNote(snapshot: ClinicalSnapshot, today = todayIso()): string {
-  const patientById = new Map(snapshot.patients.map((patient) => [patient.id, patient] as const));
+  // Work still filed under a merged-away patient is handed over under the
+  // surviving patient, and clinical free text is escaped so a stray %%, #, or
+  // [[ cannot hide the rest of the note or turn into a tag or link.
+  const patientOf = survivingPatientLookup(snapshot.patients);
   const episodeById = new Map(snapshot.episodes.map((episode) => [episode.id, episode] as const));
+  const text = (value: string | undefined, fallback: string): string =>
+    normalizeText(value) ? escapeMarkdownInline(value ?? "") : fallback;
   const label = (patient: PatientRecord | undefined): string =>
     patient
-      ? `MRN ${displayMrn(patient.mrn)} · ${patient.patient_name || "Name not recorded"}`
+      ? `MRN ${escapeMarkdownInline(displayMrn(patient.mrn))} · ${text(patient.patient_name, "Name not recorded")}`
       : "Patient identity missing";
 
   const activeEpisodes = snapshot.episodes.filter(
@@ -48,11 +54,11 @@ export function buildHandoverNote(snapshot: ClinicalSnapshot, today = todayIso()
   );
   const priorityRankKey: Record<string, string> = { emergency: "0", urgent: "1", routine: "2" };
   const episodeLine = (episode: EpisodeRecord): string => {
-    const patient = patientById.get(episode.patient_id);
+    const patient = patientOf(episode.patient_id);
     const next = normalizeText(episode.next_action)
-      ? `next: ${episode.next_action}${episode.due_date ? ` (due ${episode.due_date})` : ""}`
+      ? `next: ${escapeMarkdownInline(episode.next_action)}${episode.due_date ? ` (due ${escapeMarkdownInline(episode.due_date)})` : ""}`
       : "no outstanding action";
-    return `- **${label(patient)}** — ${episode.case || "Case not recorded"} · ${pathwayLabel(episode.pathway)} · ${priorityLabel(episode.priority)} · ${next}`;
+    return `- **${label(patient)}** — ${text(episode.case, "Case not recorded")} · ${pathwayLabel(episode.pathway)} · ${escapeMarkdownInline(priorityLabel(episode.priority))} · ${next}`;
   };
   const bySortKey = (a: EpisodeRecord, b: EpisodeRecord): number =>
     `${priorityRankKey[a.priority] ?? "3"}|${a.due_date || "9999"}`.localeCompare(
@@ -75,8 +81,8 @@ export function buildHandoverNote(snapshot: ClinicalSnapshot, today = todayIso()
     .sort(compareTasksByPriority);
   const undated = openTasks.filter(taskIsUndated).sort(compareTasksByPriority);
   const taskLine = (task: TaskRecord): string => {
-    const patient = patientById.get(task.patient_id);
-    const caseName = episodeById.get(task.episode_id)?.case || "Case not recorded";
+    const patient = patientOf(task.patient_id);
+    const caseName = text(episodeById.get(task.episode_id)?.case, "Case not recorded");
     const due = normalizeIsoDate(task.due_date);
     const state = !due
       ? normalizeText(task.due_date)
@@ -87,7 +93,7 @@ export function buildHandoverNote(snapshot: ClinicalSnapshot, today = todayIso()
         : due === today
           ? "due today"
           : `due ${due}`;
-    return `- ${task.task || "Task not recorded"} — ${label(patient)} · ${caseName} · ${priorityLabel(task.priority)} · ${state}`;
+    return `- ${text(task.task, "Task not recorded")} — ${label(patient)} · ${caseName} · ${escapeMarkdownInline(priorityLabel(task.priority))} · ${state}`;
   };
   const section = (heading: string, tasks: TaskRecord[], empty: string): string[] => [
     "",

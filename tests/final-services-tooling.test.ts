@@ -208,7 +208,7 @@ test("close-at-discharge interrupted part-way still re-points the episode away f
 
   await assert.rejects(
     () => h.service.archiveEpisode(episodeId, "Discharged", { cancelOpenTasks: true }),
-    /simulated failure/
+    /1 open task was already cancelled, but the episode was not discharged/
   );
   const tasks = await tasksOf(h, episodeId);
   assert.deepEqual(tasks.map((task) => task.status).sort(), ["cancelled", "open"]);

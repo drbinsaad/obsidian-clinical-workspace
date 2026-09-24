@@ -24,7 +24,8 @@ import {
   ArchiveEpisodeModal,
   CancelTaskModal,
   NewTaskModal,
-  PatientDetailModal
+  PatientDetailModal,
+  UpdateEpisodeModal
 } from "../src/ui/modals";
 import {
   ClinicalWorkspaceView,
@@ -670,4 +671,36 @@ test("the discharge checkbox keeps its square; the label carries the touch targe
   assert.equal(checkbox.get("block-size"), "20px");
   const label = computedDeclarations(rules, [".clinical-confirm-check"]);
   assert.equal(label.get("min-height"), "44px");
+});
+
+test("the Update form keeps a hand-typed priority, care setting and pathway instead of resetting them", async () => {
+  const modal = new UpdateEpisodeModal(
+    new App(),
+    // Hand-typed values as the Properties panel stores them; the record types do not allow them.
+    episode("EPI-typed", "PAT-typed", {
+      priority: "Emergency",
+      care_setting: " Inpatient ",
+      pathway: "OR booking"
+    } as unknown as Partial<EpisodeRecord>),
+    async () => undefined
+  );
+  openModal(modal);
+  await flush();
+  const value = (modal as unknown as { value: () => { priority: string; careSetting: string; pathway: string } }).value();
+  assert.equal(value.priority, "emergency", "saving the form must not lower an emergency to routine");
+  assert.equal(value.careSetting, "inpatient");
+  assert.equal(value.pathway, "or-booking");
+
+  const unknown = new UpdateEpisodeModal(
+    new App(),
+    episode("EPI-unknown", "PAT-unknown", { priority: "whenever" } as unknown as Partial<EpisodeRecord>),
+    async () => undefined
+  );
+  openModal(unknown);
+  await flush();
+  assert.equal(
+    (unknown as unknown as { value: () => { priority: string } }).value().priority,
+    "routine",
+    "a value that matches no option still falls back"
+  );
 });

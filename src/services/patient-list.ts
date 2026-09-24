@@ -105,8 +105,8 @@ function episodeInScope(status: string, scope: PatientListScope): boolean {
 
 /**
  * Folds anything a caller or an older saved state might hand in back to a
- * valid filter, so an unexpected value narrows to "all" rather than silently
- * matching nothing.
+ * valid filter, so an unexpected value falls back to "all" (a wider list)
+ * rather than silently matching nothing.
  */
 export function normalizePatientListFilter(value: Partial<PatientListFilter> | undefined): PatientListFilter {
   const pick = <T extends string>(candidate: unknown, allowed: readonly T[], fallback: T): T =>
@@ -120,20 +120,16 @@ export function normalizePatientListFilter(value: Partial<PatientListFilter> | u
 }
 
 /**
- * One row per matching episode. A patient with two matching episodes appears
- * twice, because the episode — not the patient — carries the care setting,
- * pathway, and priority a list is filtered on.
+ * Looks a patient up by id, following merged_into to the surviving patient:
+ * an episode or task still filed under a merged-away patient (an interrupted
+ * merge or a late Sync delivery) is shown under the person it now belongs to.
+ * The walk stops on a repeated id or after a few hops, so a cycle cannot loop.
  */
-export function selectPatientListRows(
-  snapshot: ClinicalSnapshot,
-  filter: PatientListFilter,
-  today = todayIso()
-): PatientListRow[] {
-  const patientById = new Map(snapshot.patients.map((patient) => [patient.id, patient] as const));
-  // An episode still filed under a merged-away patient (an interrupted merge
-  // or a late Sync delivery) is listed under the surviving patient. The walk
-  // stops on a repeated id or after a few hops, so a cycle cannot loop.
-  const survivingPatient = (id: string): PatientRecord | undefined => {
+export function survivingPatientLookup(
+  patients: readonly PatientRecord[]
+): (id: string) => PatientRecord | undefined {
+  const patientById = new Map(patients.map((patient) => [patient.id, patient] as const));
+  return (id) => {
     let current = patientById.get(id);
     const seen = new Set<string>();
     while (current?.merged_into && !seen.has(current.id) && seen.size < 8) {
@@ -144,6 +140,19 @@ export function selectPatientListRows(
     }
     return current;
   };
+}
+
+/**
+ * One row per matching episode. A patient with two matching episodes appears
+ * twice, because the episode — not the patient — carries the care setting,
+ * pathway, and priority a list is filtered on.
+ */
+export function selectPatientListRows(
+  snapshot: ClinicalSnapshot,
+  filter: PatientListFilter,
+  today = todayIso()
+): PatientListRow[] {
+  const survivingPatient = survivingPatientLookup(snapshot.patients);
   const openTasksByEpisode = new Map<string, { open: number; overdue: number }>();
   for (const task of snapshot.tasks) {
     if (!taskIsOpen(task)) continue;
@@ -266,6 +275,15 @@ const COLUMNS: readonly PatientListColumn[] = [
  * Everything still reads the same.
  */
 function markdownCell(value: string): string {
+  return escapeMarkdownInline(value);
+}
+
+/**
+ * Escapes clinical free text for inline Markdown in a generated note, so it
+ * reads as typed and never becomes a link, tag, math, emphasis, HTML, or a
+ * %% comment that hides the rest of the note. Shared with the handover note.
+ */
+export function escapeMarkdownInline(value: string): string {
   return normalizeText(value)
     .replace(/\\/g, "\\\\")
     .replace(/\|/g, "\\|")

@@ -16,6 +16,7 @@ import type { ClinicalRepository } from "../src/data/repository";
 import { DEFAULT_SETTINGS } from "../src/domain/settings";
 import type { ClinicalSnapshot, EpisodeRecord, PatientRecord } from "../src/domain/types";
 import { ClinicalService } from "../src/services/clinical-service";
+import { buildHandoverNote } from "../src/services/handover";
 import { IntegrityService } from "../src/services/integrity";
 import { MigrationService } from "../src/services/migration";
 import {
@@ -468,4 +469,59 @@ test("a record edited during the automatic recovery's final scan keeps writes pa
     timers.restore();
     setClinicalRoot(originalRoot);
   }
+});
+
+test("the handover note keeps clinical text literal and hands merged work to the surviving patient", () => {
+  const survivor = patient("PAT-survivor", { mrn: "9000000102", patient_name: "Synthetic Survivor" });
+  const retired = patient("PAT-retired", {
+    mrn: "9000000103",
+    patient_name: "Synthetic Retired",
+    merged_into: "PAT-survivor"
+  });
+  const leftover = episode("EPI-leftover", "PAT-retired", {
+    care_setting: "inpatient",
+    case: "Bed #4B [[Other note]]",
+    next_action: "Titrate 50%% then recheck $x$"
+  });
+  const note = buildHandoverNote(
+    {
+      patients: [survivor, retired],
+      episodes: [leftover],
+      tasks: [
+        {
+          schema_version: 3,
+          entity: "task",
+          id: "TSK-leftover",
+          created_at: "2026-09-01T08:00:00.000Z",
+          updated_at: "2026-09-01T08:00:00.000Z",
+          tags: ["clinical/task"],
+          patient_id: "PAT-retired",
+          episode_id: "EPI-leftover",
+          patient: "",
+          episode: "",
+          task: "Chase #histology %% result",
+          task_type: "review-result",
+          priority: "routine",
+          status: "open",
+          due_date: TODAY,
+          owner: "",
+          completed_at: "",
+          cancelled_at: "",
+          cancel_reason: "",
+          idempotency_key: "synthetic-leftover-task"
+        }
+      ],
+      procedures: []
+    },
+    TODAY
+  );
+
+  assert.match(note, /MRN 9000000102 · Synthetic Survivor/, "leftover work is handed over under the surviving patient");
+  assert.doesNotMatch(note, /9000000103|Synthetic Retired/, "the retired identity is not handed over");
+  assert.doesNotMatch(note, /%%/, "no %% remains to open a comment that hides the rest of the note");
+  assert.doesNotMatch(note, /(^|[^\\&])#[A-Za-z0-9]/m, "no bare # remains to become a tag (&#37; is the escaped %)");
+  assert.doesNotMatch(note, /(^|[^\\])\[\[/m, "no bare [[ remains to become a link");
+  assert.match(note, /Bed \\#4B \\\[\\\[Other note\\\]\\\]/);
+  assert.match(note, /Titrate 50&#37;&#37; then recheck \\\$x\\\$/);
+  assert.match(note, /Chase \\#histology &#37;&#37; result/);
 });

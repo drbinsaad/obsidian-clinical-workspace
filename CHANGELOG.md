@@ -34,7 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   care setting, pathway, priority, and episode status — to a Markdown note or
   a formula-safe CSV spreadsheet in the clinical `Documents` folder. The form
   previews the match count before writing. Available from **Patients → Export
-  list**, **More → Export patient list**, and the command palette.
+  list**, **More → Export patient list**, and the command palette. The list
+  holds exactly what the Patients tab shows, including hand-edited statuses
+  and care settings; the CSV keeps MRNs and phones that start with 0 or are
+  12 or more digits long exact; clinical text stays literal in the note; and
+  an episode still filed under a merged patient is listed under the surviving
+  patient and counted once.
 - The Patients tab can be filtered by pathway and priority. Section counts
   show when a filter hides records, and **Export list** starts from the
   current filter.
@@ -202,12 +207,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ADOPT` after a restart.
 - The integrity check on first open no longer reappears after every settings
   save from the other device.
-- **Remove identifiers from generated note bodies** reports how many notes it
-  rewrote when Sync interrupts it, instead of failing silently.
+- **Remove identifiers from generated note bodies** stops, and reports how
+  many notes it rewrote, when Sync pauses editing partway through, instead of
+  rewriting the rest or failing silently.
 - The Arabic Letter Mark (U+061C) is stripped from entered text and logbook CSV
   cells like the other direction-control characters.
 - Danger buttons and error text meet AA contrast with the default light and
   dark themes.
+- Editing a record note while the workspace was re-checking itself after an
+  earlier change could let editing resume before the new change was checked.
+- Logging the same procedure again on the same date re-ran the operating-room
+  step, overwriting the episode's pathway and bringing back a completed
+  follow-up task. It is now refused with a clear message.
+- Undo or Reopen on the last task of an episode that was on hold made the
+  episode active; it now goes back on hold.
+- Undo or Reopen on a repeating task is refused once a later occurrence was
+  already completed, so the series cannot end up with two open copies.
+- A task reopened after its episode's priority was raised came back at its old
+  priority; it now takes the episode's priority, and the audit trail says so.
+- Raising an episode's priority could lower a task whose priority was typed by
+  hand (for example `Emergency`) to routine. The **Update** form also keeps a
+  hand-typed priority, care setting or pathway instead of resetting it.
+- Saving an episode that has a task filed under a different patient left the
+  change half-applied; it is now refused before anything is saved.
+- If **Discharge** fails after closing the open tasks, the message says the
+  tasks were already cancelled and to retry, and the retry keeps an on-hold
+  status for restore.
+- The ward handover note keeps `%%`, `#`, `[[` and other Obsidian syntax in
+  clinical text as plain text, and lists work still filed under a merged
+  patient under the surviving patient.
+- Without `--root`, the logbook exporter refuses when the clinical folder holds
+  fewer records than the plugin last confirmed, for example while still
+  syncing, instead of exporting a partial logbook.
+- On iPhone, Return (the **done** key) in the Discharge outcome or Cancel task
+  reason field only hides the keyboard; the button or Ctrl/Cmd+Enter submits.
+  Forms open at their title on small phones.
+- Completing a repeating task no longer moves keyboard or VoiceOver focus onto
+  the next occurrence's **Complete** button, and **Recheck now** keeps focus
+  when the read-only banner redraws.
+- The ward round's **View** no longer opens a sheet for merged or merging
+  patients, the sheet shows the patient's current details, and a double tap
+  on a card's patient line opens one sheet.
+- Ward round, Patients and Tasks pages hold the same records on every device
+  when records tie on priority, date and wording.
+- Pathway chips appear only for recognised pathways, so **Export list** matches
+  the filtered list. Task types read "Book OR" and "Post-op Follow-Up".
+- On phones, patient-sheet status and date labels no longer wrap one letter per
+  line, a card's single action button fills its row, and the discharge "cancel
+  open tasks" checkbox keeps its square shape.
+- The CI identifier check now catches record numbers split by invisible
+  characters and also scans `styles.css` and the root config files.
 
 ## [0.6.9] - 2026-09-20
 

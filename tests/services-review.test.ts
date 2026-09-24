@@ -596,7 +596,7 @@ test("another procedure can be logged once the episode's first one is recorded",
   assert.equal(afterFirst?.record.status, "ready-to-close");
 
   await h.service.completeProcedure(procedure("Adenoidectomy"));
-  await h.service.completeProcedure(procedure("Adenoidectomy"));
+  await assert.rejects(() => h.service.completeProcedure(procedure("Adenoidectomy")), /already in the logbook/);
   const afterSecond = await h.repository.findById<EpisodeRecord>("episode", episodeId);
   assert.equal(afterSecond?.record.pathway, "discharge-ready", "the pathway is left alone");
   assert.equal(afterSecond?.record.status, "ready-to-close", "the status is left alone");
@@ -721,7 +721,7 @@ test("an interrupted close-at-discharge converges on retry", async () => {
 
   await assert.rejects(
     () => h.service.archiveEpisode(episodeId, "Discharged", { cancelOpenTasks: true }),
-    /simulated failure/
+    /3 open tasks were already cancelled, but the episode was not discharged/
   );
   const episode = await h.repository.findById<EpisodeRecord>("episode", episodeId);
   assert.notEqual(episode?.record.status, "archived");

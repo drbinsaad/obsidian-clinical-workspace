@@ -74,6 +74,7 @@ Patient ──< Episode ──< Task
 | `next_action` / `due_date` | Mirror of the soonest **open** task (earliest due date first, undated last) — not free fields. Recomputed after every task change and every **Update**; both are blank when nothing is open. |
 | `opened_at` / `closed_at` / `outcome` | Lifecycle bookkeeping; `outcome` survives restore. |
 | `pathway_before_archive` / `status_before_archive` | What archiving overwrote, so restore can put it back. |
+| `status_before_ready` | The status a task completion replaced when it left the episode ready to close, so Undo or Reopen can put it back (for example on hold). Empty when none. |
 
 An episode cannot be archived while it has an open task, or while any task
 note inside the configured `Tasks/` record folder is unreadable (unreadable

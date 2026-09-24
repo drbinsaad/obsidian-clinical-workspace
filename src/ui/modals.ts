@@ -752,8 +752,15 @@ export class QuickEntryEpisodeModal extends ClinicalResponsiveModal {
  * form still SUBMITS the invalid one — the user approves a value they never
  * saw. The seed is folded to a valid option so display and write agree.
  */
+/**
+ * Seeds a select from a stored value. A value typed by hand in the Properties
+ * panel ("Emergency", "OR booking") is matched ignoring case and spacing, so
+ * saving the form keeps the stored choice instead of silently resetting it
+ * to the fallback, which for priority would lower an emergency to routine.
+ */
 function seedOption<T extends string>(value: string, allowed: readonly T[], fallback: T): T {
-  return (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+  const key = String(value ?? "").trim().toLowerCase().replace(/[\s_]+/g, "-");
+  return allowed.find((option) => option === key) ?? fallback;
 }
 
 /**
