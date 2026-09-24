@@ -294,7 +294,12 @@ test("Return on the first procedure field moves on instead of logging the surger
     });
   const { content } = openModal(modal);
   await flush();
-  const [procedureName, surgeryDate, outcome, followUpDate, followUpPlan] = content.findAll("input");
+  // Obsidian's toggle carries a hidden checkbox input; Return must never land on it.
+  const hiddenToggleInput = content.find(".checkbox-container")?.find("input");
+  assert.ok(hiddenToggleInput, "the stub renders Obsidian's toggle DOM");
+  const [procedureName, surgeryDate, outcome, followUpDate, followUpPlan] = content
+    .findAll("input")
+    .filter((input) => input !== hiddenToggleInput);
   assert.ok(procedureName && surgeryDate && outcome && followUpDate && followUpPlan);
   assert.equal(procedureName.focused, true, "the first field takes focus");
 
@@ -317,6 +322,7 @@ test("Return on the first procedure field moves on instead of logging the surger
   pressEnter(content, outcome);
   await flush();
   assert.equal(submitted.length, 0);
+  assert.equal(hiddenToggleInput.focused, false, "a second Return there would switch follow-up off");
   assert.equal(followUpDate.focused, true);
 
   pressEnter(content, followUpPlan);
