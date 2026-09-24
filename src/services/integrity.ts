@@ -8,7 +8,14 @@ import type {
   RecordWithPath,
   TaskRecord
 } from "../domain/types";
-import { isIsoDate, mrnMatchKey, normalizeComparable, normalizeText, taskIsOpen } from "../domain/schema";
+import {
+  isIsoDate,
+  mrnMatchKey,
+  normalizeComparable,
+  normalizeText,
+  procedureIdempotencyKey,
+  taskIsOpen
+} from "../domain/schema";
 import { validateRecord } from "../domain/validate";
 import { storedValueKindsOf } from "../data/markdown";
 import { ClinicalRepository } from "../data/repository";
@@ -77,6 +84,104 @@ function exportBlockers(record: ProcedureRecord): string[] {
     blockers.push('follow_up_date (must be YYYY-MM-DD with no time, or "" when no follow-up is required)');
   }
   return blockers;
+}
+
+/** What else is on a procedure's episode, for judging an unfinished save. */
+interface EpisodeActivity {
+  tasks: TaskRecord[];
+  procedures: ProcedureRecord[];
+  /** When each audit event about the episode record itself was written. */
+  episodeEventTimes: string[];
+}
+
+const UNFINISHED_PROCEDURE_COMPLETE_SURGERY =
+  "This procedure is in the Surgery logbook, but saving it stopped part-way: its audit entry was never written and the episode is still on OR booking. To finish it, find the episode under Surgery → OR booking, tap Complete surgery and enter the same procedure, date and follow-up. That finishes this entry instead of adding a second one.";
+
+/**
+ * The finding for a completed procedure still marked audit_pending with no
+ * completion event, or null when nothing but that audit entry can be
+ * missing (it is then an ordinary missing-audit-event, which agrees with the
+ * "clinical action succeeded" notice the clinician saw).
+ *
+ * Complete surgery is suggested only where it finishes this entry: a
+ * Complete surgery form saved it (its key has no Add another procedure form
+ * id, so Complete surgery finds it again), the episode is still on OR
+ * booking, and nothing was logged, added or updated on the episode since. An
+ * added entry's key carries its form id, so Complete surgery would write a
+ * second entry and complete the episode's current booking; and an episode
+ * that was moved on and then re-booked would have that new booking completed
+ * before its surgery. Neither may be suggested.
+ */
+function unfinishedProcedureMessage(
+  record: ProcedureRecord,
+  episode: EpisodeRecord | undefined,
+  activity: EpisodeActivity
+): string | null {
+  const savedAt = Date.parse(String(record.created_at));
+  // An unreadable time counts as "since the save": the Complete surgery
+  // suggestion must never rest on a guess.
+  const since = (value: unknown): boolean => !(Date.parse(String(value)) < savedAt);
+  const savedByCompleteSurgery =
+    record.idempotency_key ===
+    procedureIdempotencyKey(record.episode_id, record.procedure, record.procedure_date);
+  const onBooking =
+    episode?.pathway === "or-booking" &&
+    !["archived", "cancelled", "entered-in-error"].includes(episode.status);
+  const otherLogged = activity.procedures.filter(
+    (item) => item.id !== record.id && item.status === "completed"
+  );
+  if (
+    savedByCompleteSurgery &&
+    onBooking &&
+    otherLogged.length === 0 &&
+    !activity.tasks.some((task) => since(task.created_at)) &&
+    !activity.episodeEventTimes.some(since)
+  ) {
+    return UNFINISHED_PROCEDURE_COMPLETE_SURGERY;
+  }
+
+  // A Complete surgery save owes the move off OR booking and the booking
+  // task's completion; one that is still on OR booking, or still has an open
+  // booking task, may not have had them. An added entry owes neither.
+  const episodeUnsettled =
+    savedByCompleteSurgery &&
+    (onBooking || activity.tasks.some((task) => task.task_type === "book-or" && taskIsOpen(task)));
+  const followUpMissing =
+    record.follow_up_required === true &&
+    !activity.tasks.some(
+      (task) =>
+        normalizeComparable(task.task) === normalizeComparable(record.follow_up_plan) &&
+        normalizeText(task.due_date) === normalizeText(record.follow_up_date)
+    );
+  // A form cancelled after an error and entered again is a second entry by
+  // design; it may also be a genuine second procedure, so this only asks.
+  const loggedAgain = otherLogged.some(
+    (item) =>
+      normalizeComparable(item.procedure) === normalizeComparable(record.procedure) &&
+      normalizeText(item.procedure_date) === normalizeText(record.procedure_date) &&
+      since(item.created_at)
+  );
+  if (!episodeUnsettled && !followUpMissing && !loggedAgain) return null;
+
+  const parts = [
+    "This procedure is in the Surgery logbook, but its audit entry was never written, so saving it may have stopped part-way."
+  ];
+  if (episodeUnsettled) {
+    parts.push(
+      "The episode may not have been moved on for it: open the episode and check its pathway, next action and tasks."
+    );
+  }
+  if (followUpMissing) {
+    parts.push(
+      "No follow-up task matching the one it asked for is on the episode: add it with + Task if it is still needed."
+    );
+  }
+  parts.push(
+    loggedAgain
+      ? "The same procedure on the same date was logged on this episode after it: if that entry re-entered this one after an error, set status to entered-in-error on this note so the logbook counts it once."
+      : "Check the Surgery logbook before logging the procedure again: a new form adds a second entry."
+  );
+  return parts.join(" ");
 }
 
 /** The exporter's timestamp rule: strict UTC, and a real instant. */
@@ -510,28 +615,56 @@ export class IntegrityService {
     }
 
     // --- Audit-trail coverage -----------------------------------------------
-    // A procedure whose save stopped part-way keeps audit_pending and has no
-    // completion event; its episode update or follow-up task may be missing
-    // too. Retrying the form that saved it finishes it, and so does Complete
-    // surgery with the same details while the episode is on OR booking. Once
-    // the episode has moved on nothing in the workspace will: Complete
-    // surgery is not offered, and a new Add another procedure form is a
-    // separate entry by design. A pending flag beside a written
+    // A completed procedure still marked audit_pending with no completion
+    // event did not finish saving. Retrying the form that saved it finishes
+    // it; once that form is gone, a new Add another procedure form is a
+    // separate entry by design, and Complete surgery finishes it only in the
+    // narrow case unfinishedProcedureMessage checks for. So the finding says
+    // what to check, or is left to missing-audit-event below when nothing but
+    // the audit entry can be missing. A pending flag beside a written
     // completion event only means clearing the flag failed after the workflow
     // ran to its end, so that is not reported.
+    const unfinished = procedures.filter(
+      ({ record }) =>
+        record.status === "completed" &&
+        record.audit_pending === true &&
+        !actionsByTarget.get(record.id)?.has("procedure-completed")
+    );
     const unfinishedProcedurePaths = new Set<string>();
-    for (const procedure of procedures) {
-      if (procedure.record.status !== "completed" || procedure.record.audit_pending !== true) continue;
-      if (actionsByTarget.get(procedure.record.id)?.has("procedure-completed")) continue;
-      unfinishedProcedurePaths.add(procedure.path);
-      issues.push({
-        code: "unfinished-procedure",
-        severity: "warning",
-        message:
-          "This procedure is in the Surgery logbook, but saving it stopped part-way, so its audit entry was never written and the episode update or follow-up task it asked for may be missing. If the episode is still on OR booking, tap Complete surgery and enter the same details to finish it. Otherwise check the episode's tasks and add any missing follow-up task, and check the Surgery logbook before logging the procedure again: a new form adds a second entry.",
-        recordId: procedure.record.id,
-        path: procedure.path
-      });
+    if (unfinished.length > 0) {
+      const activityByEpisode = new Map<string, EpisodeActivity>();
+      const activityOf = (episodeId: string): EpisodeActivity => {
+        let activity = activityByEpisode.get(episodeId);
+        if (!activity) {
+          activity = { tasks: [], procedures: [], episodeEventTimes: [] };
+          activityByEpisode.set(episodeId, activity);
+        }
+        return activity;
+      };
+      for (const task of tasks) activityOf(task.record.episode_id).tasks.push(task.record);
+      for (const procedure of procedures) {
+        activityOf(procedure.record.episode_id).procedures.push(procedure.record);
+      }
+      for (const event of events) {
+        if (event.record.target_entity !== "episode") continue;
+        activityOf(event.record.target_id).episodeEventTimes.push(event.record.created_at);
+      }
+      for (const procedure of unfinished) {
+        const message = unfinishedProcedureMessage(
+          procedure.record,
+          episodeById.get(procedure.record.episode_id)?.record,
+          activityOf(procedure.record.episode_id)
+        );
+        if (!message) continue;
+        unfinishedProcedurePaths.add(procedure.path);
+        issues.push({
+          code: "unfinished-procedure",
+          severity: "warning",
+          message,
+          recordId: procedure.record.id,
+          path: procedure.path
+        });
+      }
     }
     // Event writes never fail the clinical action; the cost of that choice is
     // that a lost event must be found here, or it is lost silently forever.

@@ -81,6 +81,11 @@ const procedureInput = (
   ...overrides
 });
 
+// The refusal names the truthful way to log a second procedure with the same
+// name and date, never altering the logbook's name or date.
+const REFUSAL =
+  /^Error: This procedure is already in the logbook for this episode, so nothing was changed\. To log a second one with the same name and date, use Add another procedure on the episode's newest entry in the Surgery logbook; it is offered once the episode has moved on from OR booking\.$/;
+
 test("re-submitting a fully logged procedure is refused and changes nothing", async () => {
   const h = await harness();
   const created = await orBooking(h, "9000880001");
@@ -103,11 +108,39 @@ test("re-submitting a fully logged procedure is refused and changes nothing", as
 
   await assert.rejects(
     () => h.service.completeProcedure(input),
-    /^Error: This procedure is already in the logbook for this episode\. To log another, use a different date or name\.$/
+    REFUSAL
   );
   assert.deepEqual(await episodeOf(h, episodeId), before, "the episode is untouched");
   assert.deepEqual(await tasksOf(h, episodeId), tasksBefore, "no task is completed or raised");
   assert.equal((await events(h)).length, eventsBefore, "nothing is audited");
+  assert.equal((await h.repository.list<ProcedureRecord>("procedure")).length, 1);
+});
+
+test("a same-name, same-day procedure on a re-booked episode is refused without suggesting another name or date", async () => {
+  const h = await harness();
+  const created = await orBooking(h, "9000880004");
+  const episodeId = created.episode.record.id;
+  const input = procedureInput(created.patient.record.id, episodeId);
+  await h.service.completeProcedure(input);
+  // A same-day return to theatre is booked on the same episode.
+  await h.service.updateEpisode(episodeId, {
+    careSetting: "inpatient",
+    pathway: "or-booking",
+    priority: "urgent",
+    nextAction: "Book return to theatre",
+    dueDate: todayIso()
+  });
+  const before = await episodeOf(h, episodeId);
+  const tasksBefore = await tasksOf(h, episodeId);
+
+  await assert.rejects(() => h.service.completeProcedure(input), (error: unknown) => {
+    assert.match(String(error), REFUSAL);
+    assert.doesNotMatch(String(error), /different date or name/);
+    return true;
+  });
+  assert.deepEqual(await episodeOf(h, episodeId), before, "the new booking is untouched");
+  assert.deepEqual(await tasksOf(h, episodeId), tasksBefore);
+  assert.ok(tasksBefore.some((task) => task.task_type === "book-or" && task.status === "open"));
   assert.equal((await h.repository.list<ProcedureRecord>("procedure")).length, 1);
 });
 

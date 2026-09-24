@@ -87,11 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integrity check findings for text stored as a number, invalid repeat
   intervals, records left under a merged patient, open episodes under an
   archived or entered-in-error patient, completed procedures the logbook
-  exporter would refuse, a procedure whose save stopped part-way (its audit
-  entry, and possibly its follow-up task, missing), and database views still
-  filtering on a previous clinical folder. The report now covers 24 check
-  families. See [Integrity check
-  findings](docs/data-model.md#integrity-check-findings).
+  exporter would refuse, a procedure whose save stopped part-way (the finding
+  says what to check, and suggests **Complete surgery** only when that
+  finishes the saved entry), and database views still filtering on a
+  previous clinical folder. The report now covers 24 check families. See
+  [Integrity check findings](docs/data-model.md#integrity-check-findings).
 - Task template previews show each task's type, priority and due date, and list
   anything that was skipped or defaulted under "Check this template:".
 - Logbook exporter: `--from`, `--to` and `--role` filters, applied only after
@@ -225,7 +225,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Submitting **Complete surgery** again for a procedure already logged on the
   same date re-ran the operating-room step, overwriting the episode's pathway
   and bringing back a completed follow-up task. It is now refused with a clear
-  message.
+  message, which points to **Add another procedure** for a second procedure
+  with the same name and date.
 - Undo or Reopen on the last task of an episode that was on hold made the
   episode active; it now goes back on hold.
 - Undo or Reopen on a repeating task is refused once a later occurrence was

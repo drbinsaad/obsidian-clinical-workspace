@@ -2068,11 +2068,14 @@ export class ClinicalService {
       // while adding no logbook entry. Refused before anything is written.
       // With an entry id the match is that same form's own entry, logged by
       // an earlier tap whose error came afterwards; it is what this
-      // submission asked for, so it is returned with nothing written.
+      // submission asked for, so it is returned with nothing written. The
+      // refusal names Add another procedure for a genuine second one with
+      // the same name and date (a same-day return to theatre), so the
+      // clinician is never pushed to alter the logbook's name or date.
       if (existing && existing.record.audit_pending !== true) {
         if (additionalEntryId) return existing;
         throw new Error(
-          "This procedure is already in the logbook for this episode. To log another, use a different date or name."
+          "This procedure is already in the logbook for this episode, so nothing was changed. To log a second one with the same name and date, use Add another procedure on the episode's newest entry in the Surgery logbook; it is offered once the episode has moved on from OR booking."
         );
       }
       // The persisted record is the write authority for every later step.
