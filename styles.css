@@ -799,6 +799,9 @@
   justify-content: stretch;
   justify-items: start;
   gap: 4px;
+  /* Obsidian fixes every button's height (44 px on mobile); a wrapped
+     patient line would be cut off inside it. */
+  height: auto;
   min-height: 64px;
   padding: 12px 14px;
   border: 1px solid var(--background-modifier-border);

@@ -646,6 +646,19 @@ test("Quick Entry renders four packed actions rather than stretching rows across
   );
 });
 
+test("Quick Entry options and search rows grow with wrapped text instead of clipping it", async () => {
+  // Obsidian gives every button a fixed height (44 px on mobile); min-height
+  // alone left a 64 px row that cut off a wrapped patient line on iPhone.
+  const rules = parseCssRules(await stylesPromise);
+  const base = ".clinical-modal button.clinical-quick-entry-option";
+  for (const style of [
+    styleFor(rules, base),
+    styleFor(rules, base, ".is-mobile .clinical-quick-entry-modal button.clinical-quick-entry-option")
+  ]) {
+    assert.equal(style.get("height"), "auto");
+  }
+});
+
 test("unrelated safety modals do not inherit Quick Entry or Search sizing", () => {
   const content = new TestElement();
   const modalElement = new TestElement();
