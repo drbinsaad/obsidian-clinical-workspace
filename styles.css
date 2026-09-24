@@ -970,8 +970,10 @@
 
 /* The host close control is absolutely positioned inside the modal. Its
    default top offset enters the iPhone status area when the modal is almost
-   full-height, so move it below whichever safe-area source is available. */
-.is-mobile .clinical-modal > .modal-close-button {
+   full-height, so move it below whichever safe-area source is available.
+   Obsidian 1.14 renamed it .modal-header-button. */
+.is-mobile .clinical-modal > .modal-close-button,
+.is-mobile .clinical-modal > .modal-header-button {
   top: var(
     --clinical-modal-close-top,
     max(
@@ -985,8 +987,17 @@
 }
 
 .is-mobile.mod-rtl .clinical-modal > .modal-close-button,
-.is-mobile .mod-rtl .clinical-modal > .modal-close-button {
+.is-mobile .mod-rtl .clinical-modal > .modal-close-button,
+.is-mobile.mod-rtl .clinical-modal > .modal-header-button,
+.is-mobile .mod-rtl .clinical-modal > .modal-header-button {
   inset-inline-end: max(12px, env(safe-area-inset-left));
+}
+
+/* Obsidian 1.14 adds a title row above the content. These sheets draw their
+   own heading and reserve the close button's band, so on a phone the empty
+   row only pushed the form about 40 px further down. */
+.is-mobile .clinical-modal > .modal-header {
+  display: none;
 }
 
 .is-mobile .clinical-modal .clinical-modal-heading {

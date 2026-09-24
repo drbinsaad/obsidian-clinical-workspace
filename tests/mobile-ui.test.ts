@@ -603,6 +603,20 @@ test("mobile modal content honors the top safe area", async () => {
   assert.match(topReservation, /--clinical-modal-close-reserve|safe-area-inset-top/);
 });
 
+test("Obsidian 1.14's close button also stays below the status area, without an empty title row", async () => {
+  // 1.14 renamed the close control .modal-header-button and added an empty
+  // .modal-header row. The safe-area rule matched only the old class, so the
+  // close button sat under the status bar on a notched iPhone.
+  const rules = parseCssRules(await stylesPromise);
+  for (const control of [".modal-close-button", ".modal-header-button"]) {
+    const close = styleFor(rules, `.is-mobile .clinical-modal > ${control}`);
+    assert.match(required(close, "top"), /--clinical-modal-close-top/, control);
+    const rtl = styleFor(rules, `.is-mobile.mod-rtl .clinical-modal > ${control}`);
+    assert.match(required(rtl, "inset-inline-end"), /safe-area-inset-left/, `${control} in RTL`);
+  }
+  assert.equal(styleFor(rules, ".is-mobile .clinical-modal > .modal-header").get("display"), "none");
+});
+
 test("Quick Entry renders four packed actions rather than stretching rows across the sheet", async () => {
   const content = new TestElement();
   const modalElement = new TestElement();
