@@ -923,6 +923,19 @@ test("ward-round View and Open keep their own width in narrow panes", async () =
   assert.ok(indexOf(narrowWard) > indexOf(narrowButton), "the override follows the rule it overrides");
 });
 
+test("ward-round rows wrap View and Open under the text instead of squeezing it", async () => {
+  // In a 300 px pane the buttons left the patient line ~90 px, one word per
+  // line, and an MRN broke across two lines.
+  const rules = parseCssRules(await readFile(new URL("../styles.css", import.meta.url), "utf8"));
+  const phone = { width: 320, height: 568 };
+  assert.equal(computedDeclarations(rules, [".clinical-ward-row"], phone).get("flex-wrap"), "wrap");
+  const flex = computedDeclarations(rules, [".clinical-ward-text"], phone).get("flex") ?? "";
+  const basis = /^1 1 (\d+(?:\.\d+)?)em$/.exec(flex);
+  assert.ok(basis && Number(basis[1]) >= 12, `the text needs a readable basis to wrap at, got "${flex}"`);
+  const actions = computedDeclarations(rules, [".clinical-ward-actions"], phone);
+  assert.equal(actions.get("margin-inline-start"), "auto", "wrapped buttons stay at the row's end");
+});
+
 /* ------------------------------------------------------- view harness ----- */
 
 const STAMP = "2026-09-01T08:00:00.000Z";

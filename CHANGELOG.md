@@ -183,6 +183,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task's owner and type.
 - An episode could show a due date that no open task tracked.
 - The ward round stopped at 30 inpatients while its heading counted them all.
+- In a narrow pane or on a small phone, **View** and **Open** squeezed each
+  ward-round row to a word per line and could split an MRN across lines. They
+  now move under the row's text when space runs short.
 - A task-type filter could hide every task with no chip left to clear it.
 - Changing a filter chip, or **Clear filters**, kept the page you were on, so
   the highest-priority matches could sit unseen on an earlier page. The list

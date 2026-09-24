@@ -1208,8 +1208,11 @@
   margin: 0 0 16px;
 }
 
+/* The row wraps rather than squeezing the text: in a 300 px pane View and
+   Open left the patient line one word per line and split an MRN. */
 .clinical-ward-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
@@ -1223,7 +1226,7 @@
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 14em;
 }
 
 .clinical-ward-text strong {
@@ -1236,6 +1239,7 @@
   display: flex;
   flex: 0 0 auto;
   gap: 6px;
+  margin-inline-start: auto;
 }
 
 .clinical-ward-actions .clinical-card-button {
