@@ -64,7 +64,11 @@ export function statusAfterTaskCompletion(
   return remaining.length === 0 ? "ready-to-close" : null;
 }
 
-/** Higher is more urgent; an unrecognised value ranks below routine. */
+/**
+ * Higher is more urgent; an unrecognised value ranks -1, below routine. That
+ * is not a lower priority, only an unknown one, so escalation never moves a
+ * value from or over it.
+ */
 export function priorityRank(priority: string): number {
   return (PRIORITIES as readonly string[]).indexOf(priority);
 }
@@ -107,4 +111,13 @@ export function statusAfterRestore(
 ): EpisodeStatus {
   if (statusBeforeArchive === "on-hold") return "on-hold";
   return openTaskCount(tasks, episodeId) > 0 ? "active" : "ready-to-close";
+}
+
+/**
+ * Status a ready-to-close episode returns to when one of its tasks is
+ * reopened: the one the completion replaced, or active when none was recorded
+ * (records written before the field existed).
+ */
+export function statusAfterReopen(statusBeforeReady: string | undefined): EpisodeStatus {
+  return statusBeforeReady === "on-hold" ? "on-hold" : "active";
 }

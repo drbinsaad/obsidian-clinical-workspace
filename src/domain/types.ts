@@ -118,6 +118,12 @@ export interface EpisodeRecord extends BaseRecord {
   pathway_before_archive: string;
   /** Status held immediately before archiving. */
   status_before_archive: string;
+  /**
+   * Status a completion replaced when it left the episode ready to close, so
+   * undoing that completion can put it back. Empty, or absent on records
+   * written before it existed, when nothing was recorded.
+   */
+  status_before_ready?: string;
 }
 
 export interface TaskRecord extends BaseRecord {
