@@ -2116,6 +2116,7 @@ export class ClinicalService {
               // Cleared only after the completion audit event is durably
               // written, so a retry knows the trail still owes an entry.
               audit_pending: true,
+              logged_as: additional ? "addition" : "completion",
               idempotency_key: key
             }),
             alreadyLogged: false
@@ -2217,6 +2218,13 @@ export class ClinicalService {
       // A retry that finds the note but an unpaid audit debt settles it here;
       // a failed clear can at worst repeat an event, never lose one.
       const auditOwed = !outcome.alreadyLogged || outcome.procedure.record.audit_pending === true;
+      // A retry of a part-failed completion finds the episode already moved
+      // off OR booking, so `additional` alone would word it as an addition.
+      // The record says how it was first logged; records without it keep the
+      // calculation above.
+      const auditAsAddition =
+        additionalEntryId !== "" ||
+        (additional && outcome.procedure.record.logged_as !== "completion");
       if (auditOwed) {
         const event = await this.repository.createEvent({
           action: "procedure-completed",
@@ -2227,7 +2235,7 @@ export class ClinicalService {
           summary: "Procedure completed",
           // An addition keeps the episode's pathway, so its follow-up is a
           // task added, not the post-operative pathway a completion sets.
-          newState: additional
+          newState: auditAsAddition
             ? followUp.required
               ? "follow-up task added"
               : "episode unchanged"

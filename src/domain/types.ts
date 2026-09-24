@@ -170,6 +170,13 @@ export interface ProcedureRecord extends BaseRecord {
    * Absent on records written before 0.5.0.
    */
   audit_pending?: boolean;
+  /**
+   * Whether the save that created this record completed the OR booking or
+   * was logged as an addition. A retry uses it for the audit wording, since
+   * by then the first attempt may already have moved the episode on.
+   * Absent on older records, which fall back to the episode state.
+   */
+  logged_as?: "completion" | "addition";
   idempotency_key: string;
 }
 

@@ -1016,12 +1016,19 @@
 /* A landscape phone with the keyboard up leaves the sheet about 170 px. The
    close band, phone padding and footer spacing took all of it and no field
    was left to type in. Landscape has width to spare, so the close button
-   gets an end gutter instead of a band, and the chrome tightens. */
+   gets an end gutter instead of a band, and the chrome tightens. The gutter
+   follows the close button's safe-area inset, which a notched iPhone pushes
+   47 to 59 px in from the edge. */
 @media (max-height: 500px) {
   .is-mobile .clinical-modal.is-virtual-keyboard-open > .modal-content {
     padding-block-start: var(--clinical-modal-close-top);
     padding-block-end: 4px;
-    padding-inline-end: 56px;
+    padding-inline-end: calc(max(12px, env(safe-area-inset-right)) + 44px);
+  }
+
+  .is-mobile.mod-rtl .clinical-modal.is-virtual-keyboard-open > .modal-content,
+  .is-mobile .mod-rtl .clinical-modal.is-virtual-keyboard-open > .modal-content {
+    padding-inline-end: calc(max(12px, env(safe-area-inset-left)) + 44px);
   }
 
   .is-mobile .clinical-modal.is-virtual-keyboard-open .clinical-modal-heading {

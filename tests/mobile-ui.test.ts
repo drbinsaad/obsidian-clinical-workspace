@@ -676,7 +676,33 @@ test("iPhone landscape with the keyboard up leaves the form rows to type in", as
     "var(--clinical-modal-close-top)",
     "the close button needs an end gutter, not a band above the form"
   );
-  assert.ok(numericPx(required(contentStyle, "padding-inline-end")) >= 52, "fields stay clear of the close button");
+  // A notched iPhone pushes the close button 47 to 59 pt in from the end
+  // edge, so a fixed 56 px gutter let it cover the topmost field or row.
+  const gutterAt = (value: string, side: "left" | "right", inset: number): number => {
+    const match = new RegExp(
+      `^calc\\(max\\((\\d+)px, env\\(safe-area-inset-${side}\\)\\) \\+ (\\d+)px\\)$`
+    ).exec(normalized(value));
+    assert.ok(match, `the gutter must follow the ${side} safe-area inset, got ${value}`);
+    return Math.max(Number(match[1]), inset) + Number(match[2]);
+  };
+  const rtlContent = styleForViewport(
+    rules,
+    landscape,
+    ".is-mobile.mod-rtl .clinical-modal.is-virtual-keyboard-open > .modal-content"
+  );
+  for (const [style, side] of [
+    [contentStyle, "right"],
+    [rtlContent, "left"]
+  ] as const) {
+    const gutter = required(style, "padding-inline-end");
+    assert.ok(gutterAt(gutter, side, 0) >= 52, "fields stay clear of the close button");
+    for (const inset of [47, 59]) {
+      assert.ok(
+        gutterAt(gutter, side, inset) >= inset + 44,
+        `a ${inset} pt ${side} inset puts the close button over the fields`
+      );
+    }
+  }
   const chrome =
     12 +
     numericPx(required(contentStyle, "padding-block-end")) +
