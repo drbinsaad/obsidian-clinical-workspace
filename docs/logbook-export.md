@@ -83,6 +83,10 @@ guessing when:
 - the settings record a recovery check or review that has not finished (while
   Obsidian shows **Editing is paused**), so the records may be incomplete, for
   example while Sync is still delivering them. Finish it in Obsidian first;
+- the clinical folder holds fewer procedure or episode records (or, with
+  `--identifiers`, patient records) than the settings say the plugin last
+  confirmed, so the workspace looks incomplete, for example while it is still
+  syncing. Open the vault in Obsidian and let it finish;
 - the settings file cannot be read, is not valid JSON, or resolves outside the
   vault. Pass `--root` explicitly.
 

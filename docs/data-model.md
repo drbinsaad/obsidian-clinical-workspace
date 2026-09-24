@@ -169,27 +169,30 @@ every episode that matches the chosen filter:
 
 | Filter | Choices |
 |---|---|
-| Care setting | Any · `inpatient` · `outpatient` |
+| Care setting | Any · `inpatient` · `outpatient` (any value other than `inpatient` counts as outpatient, as on the Patients tab) |
 | Pathway | Any · any pathway value above |
 | Priority | Any · `routine` · `urgent` · `emergency` |
-| Episodes | Open (`active`, `on-hold`, `ready-to-close`) · one status · every status except `entered-in-error` |
+| Episodes | Open (every status except `archived`, `cancelled` and `entered-in-error`, as on the Patients tab) · one status · every status except `entered-in-error` |
 
 - One row per matching **episode**: a patient with two matching episodes is
   listed twice, because the episode carries the setting, pathway, and
   priority being filtered. Rows are ordered inpatients first, then by
-  priority, due date, and patient name.
+  priority, due date, and patient name. An episode still filed under a
+  merged patient is listed, and counted, under the surviving patient.
 - Columns: MRN, patient, phone, case, setting, pathway, priority, status,
   next action, due date, opened date, open tasks, overdue tasks.
 - **Note (`.md`)** — a Markdown table that opens in Obsidian. Pipes,
-  brackets, and angle brackets in clinical text are escaped so they cannot
-  break the table or create links.
+  brackets, angle brackets, and Obsidian's inline syntax (`%%` comments,
+  `#` tags, `$` math, emphasis, highlights) in clinical text are escaped so
+  they cannot break the table, hide rows, or create links or tags.
 - **Spreadsheet (`.csv`)** — UTF-8 with a byte-order mark (so Arabic names
   display correctly in Excel), CRLF line endings, every cell quoted, and
   formula-like values (`=`, `+`, `-`, `@`) prefixed with `'` so spreadsheet
   apps cannot evaluate them. Obsidian cannot display a CSV itself: open it
-  from your file manager or the iOS/iPadOS Files app. Spreadsheet apps may
-  drop leading zeroes from MRN and phone columns unless you import them as
-  text. Obsidian Sync copies a CSV only when syncing of other file types is
+  from your file manager or the iOS/iPadOS Files app. MRN and phone values
+  that start with 0 or are 12 or more digits long also get a leading `'`, so
+  spreadsheets keep them exact instead of dropping leading zeroes or rounding
+  them. Obsidian Sync copies a CSV only when syncing of other file types is
   enabled.
 
 Like the handover note, a patient list contains identifiers by design, stays

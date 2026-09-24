@@ -179,6 +179,8 @@ function validateRootArgument(root, source = "--root") {
  * could then be in either folder. So is a recovery check or review the
  * plugin still requires (it keeps editing paused then): the records under
  * that folder may be incomplete, for example while Sync is still delivering.
+ * The per-type record counts the plugin last trusted are returned too, so a
+ * folder holding fewer records than that is refused as well.
  */
 async function configuredRoot(vault) {
   const settingsFile = path.join(vault, ".obsidian", "plugins", "clinical-workspace", "data.json");
@@ -191,7 +193,7 @@ async function configuredRoot(vault) {
     text = await readFile(canonical, "utf8");
   } catch (error) {
     if (error instanceof ExportError) throw error;
-    if (isRecord(error) && error.code === "ENOENT") return DEFAULT_ROOT;
+    if (isRecord(error) && error.code === "ENOENT") return { root: DEFAULT_ROOT, expectedCounts: null };
     fail("The plugin settings file could not be read. Pass --root explicitly.");
   }
   let settings;
@@ -218,7 +220,8 @@ async function configuredRoot(vault) {
       "The plugin records a recovery check or review that has not finished, so the records may be incomplete. Finish it in Obsidian first, or pass --root explicitly."
     );
   }
-  if (typeof settings.rootFolder !== "string") return DEFAULT_ROOT;
+  const expectedCounts = committedEntityCounts(safety);
+  if (typeof settings.rootFolder !== "string") return { root: DEFAULT_ROOT, expectedCounts };
   // The plugin's own normalisation: forward slashes, no repeated or edge separators.
   const root = settings.rootFolder
     .trim()
@@ -226,9 +229,36 @@ async function configuredRoot(vault) {
     .replace(/\/{2,}/gu, "/")
     .replace(/^\/+|\/+$/gu, "")
     .trim();
-  if (!root) return DEFAULT_ROOT;
+  if (!root) return { root: DEFAULT_ROOT, expectedCounts };
   validateRootArgument(root, "The clinical folder in the plugin settings");
-  return root;
+  return { root, expectedCounts };
+}
+
+/** Per-type counts from an initialized version-1 safety object, else null. */
+function committedEntityCounts(safety) {
+  if (!isRecord(safety) || safety.version !== 1 || safety.initialized !== true) return null;
+  const counts = safety.expectedEntityCounts;
+  if (!isRecord(counts)) return null;
+  const committed = {};
+  for (const entity of ["patient", "episode", "procedure"]) {
+    const value = counts[entity];
+    if (Number.isSafeInteger(value) && value >= 0) committed[entity] = value;
+  }
+  return committed;
+}
+
+/**
+ * Fewer records than the plugin last trusted means notes are missing or have
+ * not arrived yet. The plugin would pause editing on its next start; the
+ * export stops rather than writing a silently partial logbook.
+ */
+function assertNotBelowCommitted(expectedCounts, entity, count) {
+  const expected = expectedCounts?.[entity];
+  if (expected !== undefined && count < expected) {
+    fail(
+      "The clinical folder holds fewer records than the plugin last confirmed, so the workspace looks incomplete (for example, still syncing). Open the vault in Obsidian and let it finish, or pass --root explicitly. No CSV was written."
+    );
+  }
 }
 
 async function clinicalRoot(vault, rootArgument) {
@@ -733,7 +763,11 @@ async function main() {
   }
 
   const vault = await existingDirectory(options.vault, "The supplied vault");
-  const root = await clinicalRoot(vault, options.root ?? (await configuredRoot(vault)));
+  // Counts are compared only for the folder saved in the plugin's settings;
+  // an explicit --root is the operator's own decision.
+  const configured = options.root === null ? await configuredRoot(vault) : null;
+  const expectedCounts = configured?.expectedCounts ?? null;
+  const root = await clinicalRoot(vault, configured ? configured.root : options.root);
   const target = await outputTarget(vault, options.out, options.force);
 
   if (options.identifiers) {
@@ -743,9 +777,13 @@ async function main() {
   }
 
   const procedures = await recordsIn(root, "Procedures", "procedure");
+  assertNotBelowCommitted(expectedCounts, "procedure", procedures.length);
   if (procedures.length === 0) fail("No valid procedure records were found; no CSV was written.");
   const episodes = await recordsIn(root, "Episodes", "episode");
+  assertNotBelowCommitted(expectedCounts, "episode", episodes.length);
+  // Patients are read only for an identified export, so only then compared.
   const patients = options.identifiers ? await recordsIn(root, "Patients", "patient") : null;
+  if (patients) assertNotBelowCommitted(expectedCounts, "patient", patients.length);
   const { episodeById, patientById } = validateRelationships(procedures, episodes, patients);
   const completed = validateExportSchema(procedures, episodeById, patientById, options.identifiers);
   const selected = applyFilters(completed, options);

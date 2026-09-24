@@ -2931,7 +2931,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     // this pass dirty; also rescan so a change delivered without an event
     // cannot inherit the just-validated result.
     let finalInventory: RecordInventory | null = null;
-    if (!this.exactRootRecoveryRetryRequested) {
+    if (!this.exactRootRecoveryRetryRequested && this.markerFreeRecoveryRevision === recoveryRevision) {
       try {
         finalInventory = await this.parsedRecordInventory(root);
       } catch {
@@ -2940,6 +2940,7 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     }
     const finalMatches =
       !this.exactRootRecoveryRetryRequested &&
+      this.markerFreeRecoveryRevision === recoveryRevision &&
       finalInventory !== null &&
       !this.firstUseInitializationPending &&
       !this.baselineReviewRequired &&
@@ -4365,6 +4366,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     ) {
       // Invalidate an in-flight scan now, as an immediate retry would have.
       this.markerFreeRecoveryRevision += 1;
+      // A running exact recovery may already be past its revision check (in
+      // its clearing save or final scan). Make it loop and rescan instead of
+      // releasing on a result read before this edit.
+      if (this.exactRootRecoveryPromise) this.exactRootRecoveryRetryRequested = true;
     }
     this.managedRecordRecheckPaths.add(path);
     if (this.managedRecordRecheckTimer !== null) {
@@ -5324,6 +5329,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
               candidates.map((file) => file.path),
               async () => {
                 for (const file of candidates) {
+                  // Sync can arm the barrier mid-batch. Checked outside the
+                  // per-note catch so the stop is reported, not swallowed.
+                  const blocked = this.repository.getWriteBlockReason();
+                  if (blocked || this.migrationRecoveryBlocked) {
+                    throw new Error(blocked ?? this.recoveryBlockMessage);
+                  }
                   try {
                     await this.app.vault.process(file, (current) => {
                       const rawBody = bodyAfterFrontmatter(current);
