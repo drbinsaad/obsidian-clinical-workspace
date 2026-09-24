@@ -35,6 +35,7 @@ import {
   priorityLabel,
   searchKey,
   taskIsOpen,
+  taskTypeLabel,
   todayIso
 } from "../domain/schema";
 import type { TaskBundle } from "../data/templates";
@@ -67,15 +68,8 @@ const PRIORITY_OPTIONS = Object.fromEntries(
 ) as Record<Priority, string>;
 
 const TASK_TYPE_OPTIONS = Object.fromEntries(
-  TASK_TYPES.map((value) => [value, titleCase(value)])
+  TASK_TYPES.map((value) => [value, taskTypeLabel(value)])
 ) as Record<TaskType, string>;
-
-function titleCase(value: string): string {
-  return value
-    .split("-")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
 
 /** Numbers the ids that link a field to its hint text; unique per window. */
 let fieldHintSequence = 0;
@@ -785,6 +779,14 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
   private cancelEl: HTMLButtonElement | null = null;
   private submitEl: HTMLButtonElement | null = null;
   private submitting = false;
+  /**
+   * Whether plain Return in the form's last field submits. A destructive
+   * form whose only text field is also its last (Discharge, Cancel task)
+   * turns this off: iPhone users tap Return ("done") to hide the keyboard,
+   * and that one tap archived the episode or cancelled the task. There
+   * Return only hides the keyboard; the button or Ctrl/Cmd+Enter submits.
+   */
+  protected returnSubmits = true;
 
   protected constructor(
     app: App,
@@ -925,8 +927,13 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
       // filed the task before its Due date was reached. Only the form's last
       // field, or an explicit Ctrl/Cmd+Enter, submits; elsewhere Return moves on.
       const controls = reachableFormControls(this.contentEl);
-      if (event.ctrlKey || event.metaKey || controls[controls.length - 1] === input) {
+      if (event.ctrlKey || event.metaKey) {
         void this.handleSubmit(submit);
+        return;
+      }
+      if (controls[controls.length - 1] === input) {
+        if (this.returnSubmits) void this.handleSubmit(submit);
+        else input.blur();
         return;
       }
       const index = controls.indexOf(input);
@@ -934,8 +941,11 @@ export abstract class ClinicalModal<T> extends ClinicalResponsiveModal {
     });
     // Showing a hidden group (follow-up) changes which field is last.
     this.contentEl.addEventListener("focusin", () => syncEnterKeyHints(this.contentEl));
+    // Without preventScroll, focusing a first field below a long case name
+    // scrolled the form past its own title on a small phone. The keyboard
+    // handler still reveals the field if the keyboard would cover it.
     queueMicrotask(() => {
-      reachableFormControls(this.contentEl)[0]?.focus();
+      reachableFormControls(this.contentEl)[0]?.focus({ preventScroll: true });
     });
   }
 
@@ -1681,6 +1691,7 @@ export class ArchiveEpisodeModal extends ClinicalModal<ArchiveEpisodeRequest> {
     openTasks: readonly TaskRecord[] = []
   ) {
     super(app, "Archive episode", onSubmit);
+    this.returnSubmits = false;
     this.episode = episode;
     this.requireConfirmation = requireConfirmation;
     this.openTasks = openTasks;
@@ -1776,6 +1787,7 @@ export class CancelTaskModal extends ClinicalModal<string> {
 
   constructor(app: App, task: TaskRecord, onSubmit: AsyncSubmit<string>) {
     super(app, "Cancel task", onSubmit);
+    this.returnSubmits = false;
     this.task = task;
   }
 
@@ -2136,7 +2148,7 @@ export class ApplyTemplateModal extends ClinicalResponsiveModal {
       // episode's priority, or no date, and must be visible before applying.
       for (const item of bundle.tasks.slice(0, 6)) {
         const details = [
-          titleCase(item.taskType),
+          taskTypeLabel(item.taskType),
           item.priority ? priorityLabel(item.priority) : "episode's priority",
           item.dueInDays !== null
             ? `due in ${item.dueInDays} day${item.dueInDays === 1 ? "" : "s"}`

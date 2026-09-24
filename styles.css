@@ -298,9 +298,21 @@
 
 .clinical-card-top {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+/* The status or date beside a card heading keeps its own width. Allowed to
+   shrink, it fell to one glyph per line ("No date" read N/o/d/a/t/e) in the
+   patient sheet on a phone; now a long heading wraps it onto its own line. */
+.clinical-card-top > h4 {
+  flex: 1 1 12rem;
+}
+
+.clinical-card-top > .clinical-card-meta {
+  flex: 0 0 auto;
 }
 
 .clinical-card h4 {
@@ -547,6 +559,7 @@
    buttons pair up beneath it; a lone final button fills its row rather than
    leaving a hole. Focus order stays the visual order (no dense packing). */
 .clinical-workspace-view.is-narrow .clinical-card-button.mod-cta,
+.clinical-workspace-view.is-narrow .clinical-card-actions > .clinical-card-button:only-child,
 .clinical-workspace-view.is-narrow .clinical-card-actions > .mod-cta:first-child ~ .clinical-card-button:last-child:nth-child(even),
 .clinical-workspace-view.is-narrow .clinical-card-actions > .clinical-card-button:first-child:not(.mod-cta) ~ .clinical-card-button:last-child:nth-child(odd) {
   grid-column: 1 / -1;
@@ -738,10 +751,13 @@
   cursor: pointer;
 }
 
+/* The label is the 44px touch target; the form-wide 44px floor stretched the
+   box itself into a 20x44 pill with its tick near the top. */
 .clinical-confirm-check input[type="checkbox"] {
   flex: 0 0 auto;
   inline-size: 20px;
   block-size: 20px;
+  min-height: 0;
   margin: 0;
 }
 
@@ -998,6 +1014,7 @@
 
   /* Same pairing as the narrow-pane grid above. */
   .is-mobile .clinical-card-actions .clinical-card-button.mod-cta,
+  .is-mobile .clinical-card-actions > .clinical-card-button:only-child,
   .is-mobile .clinical-card-actions > .mod-cta:first-child ~ .clinical-card-button:last-child:nth-child(even),
   .is-mobile .clinical-card-actions > .clinical-card-button:first-child:not(.mod-cta) ~ .clinical-card-button:last-child:nth-child(odd) {
     grid-column: 1 / -1;

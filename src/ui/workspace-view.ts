@@ -11,7 +11,7 @@ import type {
   TaskRecord,
   TaskType
 } from "../domain/types";
-import { PRIORITIES } from "../domain/types";
+import { PATHWAYS, PRIORITIES } from "../domain/types";
 import {
   careSettingLabel,
   daysOverdue,
@@ -28,6 +28,7 @@ import {
   taskIsOverdue,
   taskIsUndated,
   taskIsUpcoming,
+  taskTypeLabel,
   todayIso
 } from "../domain/schema";
 import { clinicalFolder } from "../data/paths";
@@ -230,13 +231,6 @@ export function createClinicalWorkspacePaneHost(element: HTMLElement): ClinicalW
   };
 }
 
-function titleCaseType(value: string): string {
-  return value
-    .split("-")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
 const LIST_PAGE_LABELS: Record<string, string> = {
   "today-ward": "Ward round",
   "today-overdue": "Overdue tasks",
@@ -269,10 +263,27 @@ interface FocusedControlKey {
   name: string;
   /** Which of the same-tag elements sharing this name it was. */
   occurrence: number;
+  /** The record a card action belongs to, and its visible label. */
+  recordId: string;
+  action: string;
 }
 
 function controlName(control: Element): string {
   return control.getAttribute("aria-label") ?? (control.textContent ?? "").trim();
+}
+
+/**
+ * Merged, merging and retired patients have no sheet of their own: their
+ * episodes and work are split across records, and the service refuses task
+ * changes while a merge is in progress.
+ */
+function hasPatientSheet(patient: PatientRecord | undefined): patient is PatientRecord {
+  return Boolean(
+    patient &&
+    patient.status === "active" &&
+    !patient.merged_into &&
+    !patient.merge_in_progress
+  );
 }
 
 export interface PageWindow<T> {
@@ -782,8 +793,17 @@ export class ClinicalWorkspaceView extends ItemView {
       pageAction: active.dataset.pageAction ?? "",
       tag,
       name,
-      occurrence: Math.max(0, this.namesakes(root, tag, name).indexOf(active))
+      occurrence: Math.max(0, this.namesakes(root, tag, name).indexOf(active)),
+      recordId: active.dataset.recordId ?? "",
+      action: active.dataset.action ?? ""
     };
+  }
+
+  /** The card action with this label on this record's card, if still drawn. */
+  private recordControl(recordId: string, action: string): HTMLElement | undefined {
+    return Array.from(this.contentEl.querySelectorAll("button")).find(
+      (control) => control.dataset.recordId === recordId && control.dataset.action === action
+    );
   }
 
   /** Elements with this tag and accessible name, in document order. */
@@ -800,8 +820,13 @@ export class ClinicalWorkspaceView extends ItemView {
     const byPage = key.pageKey && key.pageAction
       ? this.pagerControl(key.pageKey, key.pageAction)
       : undefined;
-    const sameName = this.namesakes(root, key.tag, key.name);
-    const target = byId ?? byPage ?? sameName[Math.min(key.occurrence, sameName.length - 1)];
+    // A card action returns only to its own record's control. Matching by
+    // name moved focus from a completed recurring task onto the next
+    // occurrence's identically named Complete, one keypress from closing
+    // work not yet done.
+    const byRecord = key.recordId ? this.recordControl(key.recordId, key.action) : undefined;
+    const sameName = key.recordId ? [] : this.namesakes(root, key.tag, key.name);
+    const target = byId ?? byPage ?? byRecord ?? sameName[Math.min(key.occurrence, sameName.length - 1)];
     if (target?.instanceOf(HTMLElement)) {
       // A card heading is focusable only once paging has focused it.
       if (key.tag !== "button" && target.getAttribute("tabindex") === null) {
@@ -824,9 +849,21 @@ export class ClinicalWorkspaceView extends ItemView {
     const slot = this.writeBlockSlot;
     const recovery = this.recovery;
     if (!slot || !recovery) return;
+    // Emptying the slot destroys a focused Recheck now button, which dropped
+    // keyboard and VoiceOver users to the document body. Inside render() the
+    // slot is new, so focus is never in it and render() places focus itself.
+    const ownerDocument = (this.contentEl as HTMLElement & { ownerDocument?: Document }).ownerDocument;
+    const active = ownerDocument?.activeElement;
+    const hadFocus = Boolean(active?.instanceOf(HTMLElement) && slot.contains(active));
     slot.empty();
     const reason = this.repository.getWriteBlockReason();
-    if (!reason) return;
+    if (!reason) {
+      if (hadFocus) {
+        const heading = this.contentEl.querySelector(".clinical-workspace-title");
+        if (heading?.instanceOf(HTMLElement)) heading.focus({ preventScroll: true });
+      }
+      return;
+    }
     const banner = slot.createDiv({
       cls: "clinical-write-block-banner",
       attr: { role: "status" }
@@ -854,6 +891,7 @@ export class ClinicalWorkspaceView extends ItemView {
         button.disabled = false;
       });
     });
+    if (hadFocus) button.focus({ preventScroll: true });
   }
 
   private renderHeader(container: HTMLElement): void {
@@ -1007,10 +1045,10 @@ export class ClinicalWorkspaceView extends ItemView {
         // The patient sheet (episodes, open work with Complete and
         // Reschedule, history) is what a round acts on; the raw note that
         // "Open" shows has no clinical actions, so it comes second.
-        if (patient) {
-          this.actionButton(rowActions, "View", () => this.openPatientDetail(patient), false, false, context);
+        if (hasPatientSheet(patient)) {
+          this.actionButton(rowActions, "View", () => this.openPatientDetail(patient), false, false, context, episode.id);
         }
-        this.actionButton(rowActions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
+        this.actionButton(rowActions, "Open", () => this.openRecord("episode", episode.id), false, false, context, episode.id);
       }
       this.renderPagination(container, "today-ward", wardPage);
     }
@@ -1128,14 +1166,18 @@ export class ClinicalWorkspaceView extends ItemView {
     const chip = (row: HTMLElement, label: string, selected: boolean, apply: () => void): void =>
       this.filterChip(row, label, selected, apply, PATIENT_FILTER_PAGES);
     // A selected pathway stays visible even after its last episode closes, so
-    // a filter can never hide the list without a chip that clears it.
+    // a filter can never hide the list without a chip that clears it. Only a
+    // recognised pathway gets a chip: Export list cannot represent a
+    // hand-edited value and widened such a seed to every pathway. Those
+    // episodes stay listed under "All pathways".
+    const knownPathways: readonly string[] = PATHWAYS;
     const pathwaysInUse = [
       ...new Set([
         ...active.map((episode) => episode.pathway),
         ...(this.patientPathwayFilter === "all" ? [] : [this.patientPathwayFilter])
       ])
     ]
-      .filter((pathway) => pathway)
+      .filter((pathway) => knownPathways.includes(pathway))
       .sort((a, b) => pathwayLabel(a).localeCompare(pathwayLabel(b)));
     if (pathwaysInUse.length > 1 || this.patientPathwayFilter !== "all") {
       const pathwayRow = this.chipRow(filters, "Filter by pathway");
@@ -1228,7 +1270,7 @@ export class ClinicalWorkspaceView extends ItemView {
         this.taskTypeFilter = "all";
       });
       for (const type of typesInUse) {
-        chip(typeRow, titleCaseType(type), this.taskTypeFilter === type, () => {
+        chip(typeRow, taskTypeLabel(type), this.taskTypeFilter === type, () => {
           this.taskTypeFilter = this.taskTypeFilter === type ? "all" : type;
         });
       }
@@ -1343,9 +1385,10 @@ export class ClinicalWorkspaceView extends ItemView {
         },
         true,
         false,
-        context
+        context,
+        episode.id
       );
-      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
+      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context, episode.id);
     }
     this.renderPagination(container, "surgery-bookings", bookingPage);
 
@@ -1470,9 +1513,10 @@ export class ClinicalWorkspaceView extends ItemView {
           }),
         true,
         false,
-        context
+        context,
+        episode.id
       );
-      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
+      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context, episode.id);
     }
     this.renderPagination(container, "more-archive", archivePage);
 
@@ -1525,12 +1569,20 @@ export class ClinicalWorkspaceView extends ItemView {
   }
 
   /** One screen per patient: episodes, work, logbook, and trail together. */
-  private async openPatientDetail(patient: PatientRecord): Promise<void> {
+  private async openPatientDetail(rendered: PatientRecord): Promise<void> {
     try {
       const [snapshot, events] = await Promise.all([
         this.repository.snapshot(),
         this.repository.list<EventRecord>("event")
       ]);
+      // The button was drawn from an older snapshot. A patient merged, or
+      // corrected on another device, since then is read afresh, and one with
+      // no sheet any more opens as its note, as search does.
+      const patient = snapshot.patients.find((item) => item.id === rendered.id);
+      if (!hasPatientSheet(patient)) {
+        this.openRecord("patient", rendered.id);
+        return;
+      }
       new PatientDetailModal(
         this.app,
         {
@@ -1645,12 +1697,7 @@ export class ClinicalWorkspaceView extends ItemView {
 
   private identifiablePatients(snapshot: ClinicalSnapshot): PatientRecord[] {
     return snapshot.patients
-      .filter(
-        (patient) =>
-          patient.status === "active" &&
-          !patient.merged_into &&
-          !patient.merge_in_progress
-      )
+      .filter((patient) => hasPatientSheet(patient))
       .sort((a, b) => this.text(a.patient_name).localeCompare(this.text(b.patient_name)));
   }
 
@@ -1669,8 +1716,8 @@ export class ClinicalWorkspaceView extends ItemView {
     }
     const patientContext = this.patientLabel(patient);
     const actions = card.createDiv({ cls: "clinical-card-actions" });
-    this.actionButton(actions, "View", () => this.openPatientDetail(patient), false, false, patientContext);
-    this.actionButton(actions, "Open", () => this.openRecord("patient", patient.id), false, false, patientContext);
+    this.actionButton(actions, "View", () => this.openPatientDetail(patient), false, false, patientContext, patient.id);
+    this.actionButton(actions, "Open", () => this.openRecord("patient", patient.id), false, false, patientContext, patient.id);
     this.actionButton(actions, "Edit identity", () => {
       if (!this.canOpenWriteForm()) return;
       new PatientIdentityModal(this.app, patient, async (input) => {
@@ -1678,7 +1725,7 @@ export class ClinicalWorkspaceView extends ItemView {
         new Notice("Patient identity updated.");
         await this.refresh();
       }).open();
-    }, false, false, patientContext);
+    }, false, false, patientContext, patient.id);
     const others = this.identifiablePatients(snapshot).filter((item) => item.id !== patient.id);
     if (others.length) {
       this.actionButton(actions, "Merge", () => {
@@ -1694,7 +1741,7 @@ export class ClinicalWorkspaceView extends ItemView {
             await this.refresh();
           }
         ).open();
-      }, false, false, patientContext);
+      }, false, false, patientContext, patient.id);
     }
   }
 
@@ -1715,7 +1762,7 @@ export class ClinicalWorkspaceView extends ItemView {
       const card = this.episodeCard(list, episode, patient);
       const context = this.episodeContext(episode, patient);
       const actions = card.createDiv({ cls: "clinical-card-actions" });
-      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context);
+      this.actionButton(actions, "Open", () => this.openRecord("episode", episode.id), false, false, context, episode.id);
       this.actionButton(actions, "+ Task", () => {
         if (!this.canOpenWriteForm()) return;
         new NewTaskModal(this.app, episode, this.patientLabel(patient), async (input) => {
@@ -1723,7 +1770,7 @@ export class ClinicalWorkspaceView extends ItemView {
           new Notice(taskAddedNotice(created.duplicate));
           await this.refresh();
         }).open();
-      }, false, false, context);
+      }, false, false, context, episode.id);
       this.actionButton(actions, "Update", () => {
         if (!this.canOpenWriteForm()) return;
         new UpdateEpisodeModal(this.app, episode, async (input) => {
@@ -1752,9 +1799,9 @@ export class ClinicalWorkspaceView extends ItemView {
           new Notice(message, outcome.kind === "already-closed" || result.tasksEscalated ? 9000 : 4000);
           await this.refresh();
         }).open();
-      }, false, false, context);
-      this.actionButton(actions, "Template", () => this.openApplyTemplate(episode), false, false, context);
-      this.actionButton(actions, "History", () => this.openEpisodeHistory(episode), false, false, context);
+      }, false, false, context, episode.id);
+      this.actionButton(actions, "Template", () => this.openApplyTemplate(episode), false, false, context, episode.id);
+      this.actionButton(actions, "History", () => this.openEpisodeHistory(episode), false, false, context, episode.id);
       this.actionButton(
         actions,
         "Discharge",
@@ -1784,7 +1831,8 @@ export class ClinicalWorkspaceView extends ItemView {
         },
         false,
         true,
-        context
+        context,
+        episode.id
       );
     }
     this.renderPagination(container, pageKey, page);
@@ -1906,8 +1954,8 @@ export class ClinicalWorkspaceView extends ItemView {
       // On phones card actions form a two-column grid in which the primary
       // action fills a row. Complete first, then pairs, leaves no half-empty
       // row, and keeps Complete and Cancel apart against a hurried mis-tap.
-      this.actionButton(actions, "Complete", () => this.completeTask(task), true, false, context);
-      this.actionButton(actions, "Reschedule", () => this.openReschedule(task), false, false, context);
+      this.actionButton(actions, "Complete", () => this.completeTask(task), true, false, context, task.id);
+      this.actionButton(actions, "Reschedule", () => this.openReschedule(task), false, false, context, task.id);
       if (episode) {
         this.actionButton(actions, "+ Task", () => {
           if (!this.canOpenWriteForm()) return;
@@ -1916,9 +1964,9 @@ export class ClinicalWorkspaceView extends ItemView {
             new Notice(taskAddedNotice(created.duplicate));
             await this.refresh();
           }).open();
-        }, false, false, this.episodeContext(episode, patient));
+        }, false, false, this.episodeContext(episode, patient), task.id);
       }
-      this.actionButton(actions, "Open", () => this.openRecord("task", task.id), false, false, context);
+      this.actionButton(actions, "Open", () => this.openRecord("task", task.id), false, false, context, task.id);
       this.actionButton(actions, "Cancel", () => {
         if (!this.canOpenWriteForm()) return;
         new CancelTaskModal(this.app, task, async (reason) => {
@@ -1926,7 +1974,7 @@ export class ClinicalWorkspaceView extends ItemView {
           new Notice("Task cancelled.");
           await this.refresh();
         }).open();
-      }, false, true, context);
+      }, false, true, context, task.id);
     }
     this.renderPagination(container, pageKey, page);
   }
@@ -2002,7 +2050,7 @@ export class ClinicalWorkspaceView extends ItemView {
     top.createEl("h4", { text: episode.case || "Case not recorded", attr: { dir: "auto" } });
     top.createSpan({ text: episode.due_date || "Not set", cls: "clinical-card-meta" });
     const label = this.patientLabel(patient);
-    if (patient && !patient.merged_into && !patient.merge_in_progress) {
+    if (hasPatientSheet(patient)) {
       // The patient line doubles as the way into the patient sheet: another
       // action button would add a fourth row to every card on a phone.
       const view = card.createEl("button", {
@@ -2012,7 +2060,15 @@ export class ClinicalWorkspaceView extends ItemView {
       view.createSpan({ text: label });
       const chevron = view.createSpan({ cls: "clinical-card-patient-chevron", attr: { "aria-hidden": "true" } });
       setIcon(chevron, "chevron-right");
-      view.addEventListener("click", () => void this.openPatientDetail(patient));
+      // Guarded like actionButton: a quick double tap opened two stacked
+      // sheets, the second showing work the first had already closed.
+      view.addEventListener("click", () => {
+        if (view.disabled) return;
+        view.disabled = true;
+        void this.openPatientDetail(patient).finally(() => {
+          view.disabled = false;
+        });
+      });
     } else {
       card.createEl("p", { text: label, cls: "clinical-card-meta" });
     }
@@ -2058,7 +2114,8 @@ export class ClinicalWorkspaceView extends ItemView {
       () => this.openRecord("procedure", procedure.id),
       false,
       false,
-      `${procedure.procedure ? bidiIsolate(procedure.procedure) : "procedure not recorded"}, ${this.patientLabel(patient)}`
+      `${procedure.procedure ? bidiIsolate(procedure.procedure) : "procedure not recorded"}, ${this.patientLabel(patient)}`,
+      procedure.id
     );
     // An episode still on OR booking logs its procedures from the booking
     // card; one that has moved on takes another here without changing its
@@ -2087,7 +2144,8 @@ export class ClinicalWorkspaceView extends ItemView {
         },
         false,
         false,
-        this.episodeContext(episode, patient)
+        this.episodeContext(episode, patient),
+        procedure.id
       );
     }
   }
@@ -2210,14 +2268,19 @@ export class ClinicalWorkspaceView extends ItemView {
     return normalizeText(value);
   }
 
+  /**
+   * The id breaks ties the same way on every device, as in
+   * priorityFirstTaskSortKey: without it tied records kept the vault's file
+   * order, which differs between devices, and moved across a page boundary.
+   */
   private episodeSortKey(episode: EpisodeRecord): string {
     const priority = { emergency: "0", urgent: "1", routine: "2" }[episode.priority] ?? "3";
-    return `${priority}|${episode.due_date || "9999-99-99"}|${this.text(episode.case).toLocaleLowerCase()}`;
+    return `${priority}|${episode.due_date || "9999-99-99"}|${this.text(episode.case).toLocaleLowerCase()}|${this.text(episode.id)}`;
   }
 
   private taskSortKey(task: TaskRecord): string {
     const priority = { emergency: "0", urgent: "1", routine: "2" }[task.priority] ?? "3";
-    return `${task.due_date || "9999-99-99"}|${priority}|${this.text(task.task).toLocaleLowerCase()}`;
+    return `${task.due_date || "9999-99-99"}|${priority}|${this.text(task.task).toLocaleLowerCase()}|${this.text(task.id)}`;
   }
 
   /**
@@ -2388,12 +2451,22 @@ export class ClinicalWorkspaceView extends ItemView {
     // Rendered lists repeat the same button text on every card, which reads
     // as an indistinguishable pile of "Discharge" buttons in a screen-reader
     // rotor. The context names the record without changing the visible label.
-    accessibleContext = ""
+    accessibleContext = "",
+    // The id of the record whose card holds the button. Focus returns to
+    // this record's control after a redraw, never to a namesake on another.
+    recordId = ""
   ): void {
+    const attr: Record<string, string> = accessibleContext
+      ? { "aria-label": `${label} — ${accessibleContext}` }
+      : {};
+    if (recordId) {
+      attr["data-record-id"] = recordId;
+      attr["data-action"] = label;
+    }
     const button = container.createEl("button", {
       text: label,
       cls: `clinical-card-button${primary ? " mod-cta" : ""}${danger ? " is-danger" : ""}`,
-      attr: accessibleContext ? { "aria-label": `${label} — ${accessibleContext}` } : {}
+      attr
     });
     button.addEventListener("click", () => {
       if (button.disabled) return;
@@ -2414,20 +2487,26 @@ export class ClinicalWorkspaceView extends ItemView {
             ownedFocusAtStart &&
             clinicalActionFocusMayReturn(button, ownerDocument)
           ) {
-            this.restoreActionFocus(accessibleName);
+            this.restoreActionFocus(accessibleName, recordId, label);
           }
         }
       })();
     });
   }
 
-  /** Keep keyboard users in the workspace after a redraw-triggering action. */
-  private restoreActionFocus(accessibleName: string): void {
+  /**
+   * Keep keyboard users in the workspace after a redraw-triggering action.
+   * A record's card action goes back only to that record's control; when the
+   * control went with its record, focus goes to the title, never a namesake.
+   */
+  private restoreActionFocus(accessibleName: string, recordId = "", action = ""): void {
     const controls = Array.from(this.contentEl.querySelectorAll("button"));
-    const target = controls.find((control) => {
-      const aria = control.getAttribute("aria-label");
-      return (aria ?? (control.textContent ?? "").trim()) === accessibleName;
-    });
+    const target = recordId
+      ? this.recordControl(recordId, action)
+      : controls.find((control) => {
+        const aria = control.getAttribute("aria-label");
+        return (aria ?? (control.textContent ?? "").trim()) === accessibleName;
+      });
     if (target?.instanceOf(HTMLElement)) {
       target.focus({ preventScroll: true });
       return;
