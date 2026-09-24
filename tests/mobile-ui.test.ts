@@ -646,6 +646,37 @@ test("Quick Entry renders four packed actions rather than stretching rows across
   );
 });
 
+test("iPhone landscape with the keyboard up leaves the form rows to type in", async () => {
+  // A 390 pt landscape screen less a ~200 pt keyboard leaves a ~174 pt sheet.
+  // The 56 pt close band, phone padding and footer spacing took all of it, so
+  // Add patient and Search showed no field at all.
+  const rules = parseCssRules(await stylesPromise);
+  const content = ".is-mobile .clinical-modal.is-virtual-keyboard-open > .modal-content";
+  const footer = ".is-mobile .clinical-modal.is-virtual-keyboard-open .clinical-modal-actions";
+  const body = ".is-mobile .clinical-modal.is-virtual-keyboard-open .clinical-modal-body";
+  const landscape = { width: 844, height: 390 };
+  const contentStyle = styleForViewport(rules, landscape, content);
+  const footerStyle = styleForViewport(rules, landscape, footer);
+  assert.equal(
+    contentStyle.get("padding-block-start"),
+    "var(--clinical-modal-close-top)",
+    "the close button needs an end gutter, not a band above the form"
+  );
+  assert.ok(numericPx(required(contentStyle, "padding-inline-end")) >= 52, "fields stay clear of the close button");
+  const chrome =
+    12 +
+    numericPx(required(contentStyle, "padding-block-end")) +
+    numericPx(required(footerStyle, "margin-top")) +
+    2 * numericPx(required(footerStyle, "padding-block")) +
+    44;
+  assert.ok(174 - chrome >= 88, `only ${174 - chrome} pt left for a labelled field`);
+  assert.ok(numericPx(required(styleForViewport(rules, landscape, body), "scroll-padding-block")) <= 8);
+  // A full-screen iPad has the height for its normal spacing.
+  for (const ipad of [{ width: 1180, height: 820 }, { width: 820, height: 1180 }]) {
+    assert.equal(styleForViewport(rules, ipad, content).get("padding-inline-end"), undefined);
+  }
+});
+
 test("the Quick Entry hub stays packed on a full-screen iPad, not only on phones", async () => {
   // The packing rule sat inside the phone media query, so on an iPad sheet
   // the four options were spread down the full height.

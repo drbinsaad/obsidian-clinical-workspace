@@ -1002,6 +1002,31 @@
   padding-block-start: var(--clinical-modal-close-reserve);
 }
 
+/* A landscape phone with the keyboard up leaves the sheet about 170 px. The
+   close band, phone padding and footer spacing took all of it and no field
+   was left to type in. Landscape has width to spare, so the close button
+   gets an end gutter instead of a band, and the chrome tightens. */
+@media (max-height: 500px) {
+  .is-mobile .clinical-modal.is-virtual-keyboard-open > .modal-content {
+    padding-block-start: var(--clinical-modal-close-top);
+    padding-block-end: 4px;
+    padding-inline-end: 56px;
+  }
+
+  .is-mobile .clinical-modal.is-virtual-keyboard-open .clinical-modal-heading {
+    padding-inline-end: 0;
+  }
+
+  .is-mobile .clinical-modal.is-virtual-keyboard-open .clinical-modal-body {
+    scroll-padding-block: 4px;
+  }
+
+  .is-mobile .clinical-modal.is-virtual-keyboard-open .clinical-modal-actions {
+    margin-top: 4px;
+    padding-block: 4px;
+  }
+}
+
 /* Phone-only compression. The height alternative catches landscape phones
    without classifying a full-size iPad as a handset. */
 @media (max-width: 700px), (max-height: 500px) {
