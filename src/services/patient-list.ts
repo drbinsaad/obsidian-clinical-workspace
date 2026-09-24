@@ -22,8 +22,9 @@ import {
 
 /**
  * Which episodes a patient list draws from. "open" is everything still on the
- * books (active, on hold, ready to close); "all" is every status except
- * entered-in-error, which marks a record created by mistake.
+ * books (any status but archived, cancelled, or entered in error, as on the
+ * Patients tab); "all" is every status except entered-in-error, which marks a
+ * record created by mistake.
  */
 export const PATIENT_LIST_SCOPES = [
   "open",
@@ -65,7 +66,8 @@ export interface PatientListRow {
   overdueTasks: number;
 }
 
-const OPEN_EPISODE_STATUSES: readonly string[] = ["active", "on-hold", "ready-to-close"];
+// Mirrors isActiveEpisode on the Patients tab: any other status counts as open.
+const CLOSED_EPISODE_STATUSES: readonly string[] = ["archived", "cancelled", "entered-in-error"];
 
 export function patientListScopeLabel(scope: PatientListScope): string {
   switch (scope) {
@@ -90,8 +92,13 @@ export function patientListFormatLabel(format: PatientListFormat): string {
   return format === "csv" ? "Spreadsheet file (.csv)" : "Note in this vault (.md)";
 }
 
+// Mirrors the Patients tab grouping: anything not exactly "inpatient" is an outpatient.
+function episodeInCareSetting(careSetting: string, filter: PatientListFilter["careSetting"]): boolean {
+  return filter === "all" || (careSetting === "inpatient") === (filter === "inpatient");
+}
+
 function episodeInScope(status: string, scope: PatientListScope): boolean {
-  if (scope === "open") return OPEN_EPISODE_STATUSES.includes(status);
+  if (scope === "open") return !CLOSED_EPISODE_STATUSES.includes(status);
   if (scope === "all") return status !== "entered-in-error";
   return status === scope;
 }
@@ -123,6 +130,20 @@ export function selectPatientListRows(
   today = todayIso()
 ): PatientListRow[] {
   const patientById = new Map(snapshot.patients.map((patient) => [patient.id, patient] as const));
+  // An episode still filed under a merged-away patient (an interrupted merge
+  // or a late Sync delivery) is listed under the surviving patient. The walk
+  // stops on a repeated id or after a few hops, so a cycle cannot loop.
+  const survivingPatient = (id: string): PatientRecord | undefined => {
+    let current = patientById.get(id);
+    const seen = new Set<string>();
+    while (current?.merged_into && !seen.has(current.id) && seen.size < 8) {
+      const next = patientById.get(current.merged_into);
+      if (!next) break;
+      seen.add(current.id);
+      current = next;
+    }
+    return current;
+  };
   const openTasksByEpisode = new Map<string, { open: number; overdue: number }>();
   for (const task of snapshot.tasks) {
     if (!taskIsOpen(task)) continue;
@@ -136,7 +157,7 @@ export function selectPatientListRows(
     .filter(
       (episode) =>
         episodeInScope(episode.status, filter.scope) &&
-        (filter.careSetting === "all" || episode.care_setting === filter.careSetting) &&
+        episodeInCareSetting(episode.care_setting, filter.careSetting) &&
         (filter.pathway === "all" || episode.pathway === filter.pathway) &&
         (filter.priority === "all" || episode.priority === filter.priority)
     )
@@ -144,7 +165,7 @@ export function selectPatientListRows(
       const counts = openTasksByEpisode.get(episode.id);
       return {
         episode,
-        patient: patientById.get(episode.patient_id),
+        patient: survivingPatient(episode.patient_id),
         openTasks: counts?.open ?? 0,
         overdueTasks: counts?.overdue ?? 0
       };
@@ -165,7 +186,7 @@ export function selectPatientListRows(
 }
 
 export function countDistinctPatients(rows: readonly PatientListRow[]): number {
-  return new Set(rows.map((row) => row.episode.patient_id)).size;
+  return new Set(rows.map((row) => row.patient?.id ?? row.episode.patient_id)).size;
 }
 
 /** Human summary of the filter, e.g. "Inpatient · OR Booking · any priority". */
@@ -211,12 +232,18 @@ function episodeStatusLabel(status: string): string {
 interface PatientListColumn {
   heading: string;
   read: (row: PatientListRow) => string;
+  /** An identifier a spreadsheet must keep as text (leading zeros, long digit runs). */
+  identifier?: boolean;
 }
 
 const COLUMNS: readonly PatientListColumn[] = [
-  { heading: "MRN", read: (row) => (row.patient ? displayMrn(row.patient.mrn) : "Patient identity missing") },
+  {
+    heading: "MRN",
+    read: (row) => (row.patient ? displayMrn(row.patient.mrn) : "Patient identity missing"),
+    identifier: true
+  },
   { heading: "Patient", read: (row) => row.patient?.patient_name || "Name not recorded" },
-  { heading: "Phone", read: (row) => (row.patient ? displayPhone(row.patient.phone) : "") },
+  { heading: "Phone", read: (row) => (row.patient ? displayPhone(row.patient.phone) : ""), identifier: true },
   { heading: "Case", read: (row) => row.episode.case || "Case not recorded" },
   { heading: "Setting", read: (row) => careSettingLabel(row.episode.care_setting) },
   { heading: "Pathway", read: (row) => pathwayLabel(row.episode.pathway) },
@@ -233,8 +260,10 @@ const COLUMNS: readonly PatientListColumn[] = [
 
 /**
  * Escapes a value for one Markdown table cell: pipes would split the cell,
- * line breaks would end the row, and brackets or angle brackets would turn
- * clinical text into links or HTML. Everything still reads the same.
+ * line breaks would end the row, brackets or angle brackets would turn
+ * clinical text into links or HTML, and Obsidian's inline syntax would turn
+ * it into tags, math, or emphasis, or a %% comment that hides later rows.
+ * Everything still reads the same.
  */
 function markdownCell(value: string): string {
   return normalizeText(value)
@@ -242,7 +271,11 @@ function markdownCell(value: string): string {
     .replace(/\|/g, "\\|")
     .replace(/</g, "\\<")
     .replace(/\[/g, "\\[")
-    .replace(/\]/g, "\\]");
+    .replace(/\]/g, "\\]")
+    .replace(/[#$*_`~=^]/g, "\\$&")
+    // An entity, not a backslash, so %% cannot open a comment. It runs after
+    // the # escape, which would otherwise break the entity.
+    .replace(/%/g, "&#37;");
 }
 
 /**
@@ -285,11 +318,14 @@ export function buildPatientListMarkdown(
 /**
  * Quotes every cell and neutralises formula-like values so Excel, Numbers,
  * Sheets, and LibreOffice cannot evaluate them. Mirrors the repository
- * logbook exporter.
+ * logbook exporter. Spreadsheets read quoted digits as numbers too, so an
+ * identifier that starts with 0 or is long gets the same apostrophe to keep
+ * its leading zeros and every digit.
  */
-export function csvCell(value: string): string {
+export function csvCell(value: string, identifier = false): string {
   const raw = normalizeText(value);
-  const safe = /^[=+\-@]/.test(raw) ? `'${raw}` : raw;
+  const keepAsText = identifier && /^(0\d*|\d{12,})$/.test(raw);
+  const safe = keepAsText || /^[=+\-@]/.test(raw) ? `'${raw}` : raw;
   return `"${safe.replaceAll('"', '""')}"`;
 }
 
@@ -301,7 +337,7 @@ export function csvCell(value: string): string {
 export function buildPatientListCsv(rows: readonly PatientListRow[]): string {
   const lines = [
     COLUMNS.map((column) => csvCell(column.heading)).join(","),
-    ...rows.map((row) => COLUMNS.map((column) => csvCell(column.read(row))).join(","))
+    ...rows.map((row) => COLUMNS.map((column) => csvCell(column.read(row), column.identifier)).join(","))
   ];
   return `\uFEFF${lines.join("\r\n")}\r\n`;
 }

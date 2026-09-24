@@ -842,16 +842,28 @@ test("without --root the exporter refuses while the plugin records an unfinished
       await assert.rejects(lstat(output), { code: "ENOENT" }, `${state}: no CSV was written`);
     }
 
-    // With every flag clear the saved folder is used as before. A healthy
-    // workspace also carries recoveryValidationRequired after any restart,
-    // because the plugin sets it at startup and never clears it; that alone
-    // must not block an export.
+    // With every flag clear, fewer procedures on disk than the plugin last
+    // confirmed still means the workspace is incomplete: refuse, naming nothing.
     await writeFile(settings, JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: safety }), "utf8");
+    const partialOutput = path.join(fixture.home, "partial.csv");
+    const partial = await expectFailure(
+      [fixture.vault, "--out", partialOutput],
+      /the workspace looks incomplete \(for example, still syncing\)\. Open the vault in Obsidian and let it finish/
+    );
+    assert.doesNotMatch(partial, /Ward Records|Synthetic|PRC-|EPI-|PAT-/);
+    await assert.rejects(lstat(partialOutput), { code: "ENOENT" }, "partial: no CSV was written");
+
+    // Once every committed record is present the saved folder is used as
+    // before. A healthy workspace also carries recoveryValidationRequired
+    // after any restart, because the plugin sets it at startup and never
+    // clears it; that alone must not block an export.
+    const complete = { ...safety, expectedEntityCounts: { patient: 1, episode: 1, task: 0, procedure: 2 } };
+    await writeFile(settings, JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: complete }), "utf8");
     const clear = await run(process.execPath, [script, fixture.vault, "--out", path.join(fixture.home, "clear.csv")]);
     assert.match(clear.stdout, /Exported 1 completed procedure record/);
     await writeFile(
       settings,
-      JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: { ...safety, recoveryValidationRequired: true } }),
+      JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: { ...complete, recoveryValidationRequired: true } }),
       "utf8"
     );
     const restarted = await run(process.execPath, [
@@ -869,7 +881,17 @@ test("without --root the exporter refuses while the plugin records an unfinished
     );
     await run(process.execPath, [script, fixture.vault, "--out", path.join(fixture.home, "other-version.csv")]);
 
-    // An explicit --root is the operator's own decision.
+    // An explicit --root is the operator's own decision, even when the saved
+    // counts say records are missing.
+    await writeFile(settings, JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: safety }), "utf8");
+    await run(process.execPath, [
+      script,
+      fixture.vault,
+      "--out",
+      path.join(fixture.home, "explicit-partial.csv"),
+      "--root",
+      "Ward Records"
+    ]);
     await writeFile(
       settings,
       JSON.stringify({ rootFolder: "Ward Records", workspaceSafety: { ...safety, baselineReviewRequired: true } }),
@@ -883,6 +905,44 @@ test("without --root the exporter refuses while the plugin records an unfinished
       "--root",
       "Ward Records"
     ]);
+  } finally {
+    await rm(fixture.home, { recursive: true, force: true });
+  }
+});
+
+test("without --root the exporter refuses when episodes or read patients fall below the saved counts", async () => {
+  const fixture = await syntheticVault();
+  try {
+    const settingsFolder = path.join(fixture.vault, ".obsidian", "plugins", "clinical-workspace");
+    await mkdir(settingsFolder, { recursive: true });
+    const settings = path.join(settingsFolder, "data.json");
+    const safety = (counts: Record<string, number>, initialized = true) => JSON.stringify({
+      workspaceSafety: {
+        version: 1,
+        initialized,
+        rootRecoveryRequired: false,
+        baselineReviewRequired: false,
+        expectedEntityCounts: { patient: 1, episode: 1, task: 0, procedure: 2, ...counts }
+      }
+    });
+    const incomplete = /the workspace looks incomplete \(for example, still syncing\)/;
+
+    await writeFile(settings, safety({ episode: 2 }), "utf8");
+    await expectFailure([fixture.vault, "--out", path.join(fixture.home, "episodes.csv")], incomplete);
+
+    // Patients are read, and so compared, only for an identified export.
+    await writeFile(settings, safety({ patient: 2 }), "utf8");
+    await run(process.execPath, [script, fixture.vault, "--out", path.join(fixture.home, "pseudonymized.csv")]);
+    const stderr = await expectFailure(
+      [fixture.vault, "--out", path.join(fixture.home, "identified.csv"), "--identifiers"],
+      incomplete
+    );
+    assert.doesNotMatch(stderr, /9000000001|Synthetic|PAT-|EPI-|PRC-/);
+    await assert.rejects(lstat(path.join(fixture.home, "identified.csv")), { code: "ENOENT" });
+
+    // Counts from a workspace the plugin has not initialized are not a commitment.
+    await writeFile(settings, safety({ episode: 2 }, false), "utf8");
+    await run(process.execPath, [script, fixture.vault, "--out", path.join(fixture.home, "uninitialized.csv")]);
   } finally {
     await rm(fixture.home, { recursive: true, force: true });
   }
