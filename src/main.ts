@@ -459,7 +459,7 @@ export const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
   "Export any patient type to a note or spreadsheet: Patients → Export list. Pick care setting, pathway, priority, or status.",
   "Safer entry: if an MRN is already recorded under a different name, you are asked before anything is saved.",
   "Complete now has Undo, and Discharge can close leftover tasks with one tick.",
-  "The ward round shows every inpatient, and tapping a patient opens their sheet.",
+  "The ward round shows every inpatient, and View on each row opens the patient's sheet.",
   "If editing pauses, the workspace still opens read-only, with a Recheck now button."
 ];
 

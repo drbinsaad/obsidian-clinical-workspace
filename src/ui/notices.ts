@@ -64,7 +64,7 @@ export function compactClinicalRecoveryNotice(message: string): string {
     return "Clinical Workspace is confirming the current records. Try again in a few seconds.";
   }
   if (message === CLINICAL_FOLDER_MOVE_OPEN_REFUSED_MESSAGE) {
-    return "Records may be incomplete while a folder move syncs. After Sync, run “Recheck records and unlock editing”.";
+    return "Clinical Workspace cannot open yet: records may be incomplete while a folder move syncs. After Sync, run “Recheck records and unlock editing”.";
   }
   if (message === CLINICAL_UNRECOGNIZED_RECORD_NOTES_MESSAGE) {
     return "A record folder holds a note that is not a valid Clinical Workspace record. Use “Run clinical data integrity check” to find it.";

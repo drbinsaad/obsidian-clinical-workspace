@@ -232,11 +232,11 @@ episodes**, **Archive**), `Tasks.base` (**Open tasks**, **Completed**), and
   tab and the logbook exporter. **Retracted** lists cancelled and
   entered-in-error procedures.
 - Generated views are versioned. A file still exactly as an earlier version
-  wrote it is upgraded when the workspace opens and after a clinical-folder
-  move; a missing file is recreated.
+  wrote it is upgraded when the workspace first opens after Obsidian starts
+  and after a clinical-folder move; a missing file is recreated then.
 - A file you have edited is never rewritten, so it does not receive later
   changes such as the completed-only filter. Either rename your copy and
-  reopen the workspace to get a fresh generated file, or give the **Surgery
+  restart Obsidian to get a fresh generated file, or give the **Surgery
   logbook** view in your copy the same filter the generated file uses:
 
   ```yaml

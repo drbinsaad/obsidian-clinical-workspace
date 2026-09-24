@@ -16,8 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not get the new "completed only" filter or the **Retracted** view. Add the
   filter yourself as shown in [Generated database
   views](docs/data-model.md#generated-database-views), or rename your copy and
-  reopen the workspace to get a fresh generated one. Untouched Bases and home
-  notes are upgraded automatically.
+  restart Obsidian to get a fresh generated one. Untouched Bases and home notes
+  are upgraded automatically.
 - **Quote MRN and phone when editing a note by hand.** Write
   `mrn: "0090000077"`, not `mrn: 0090000077`. Without quotes YAML reads a
   number and drops the leading zeros. Run **Run clinical data integrity
