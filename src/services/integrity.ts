@@ -510,11 +510,34 @@ export class IntegrityService {
     }
 
     // --- Audit-trail coverage -----------------------------------------------
+    // A procedure whose save stopped part-way keeps audit_pending and has no
+    // completion event; its episode update or follow-up task may be missing
+    // too. Retrying the form that saved it finishes it, and so does Complete
+    // surgery with the same details while the episode is on OR booking. Once
+    // the episode has moved on nothing in the workspace will: Complete
+    // surgery is not offered, and a new Add another procedure form is a
+    // separate entry by design. A pending flag beside a written
+    // completion event only means clearing the flag failed after the workflow
+    // ran to its end, so that is not reported.
+    const unfinishedProcedurePaths = new Set<string>();
+    for (const procedure of procedures) {
+      if (procedure.record.status !== "completed" || procedure.record.audit_pending !== true) continue;
+      if (actionsByTarget.get(procedure.record.id)?.has("procedure-completed")) continue;
+      unfinishedProcedurePaths.add(procedure.path);
+      issues.push({
+        code: "unfinished-procedure",
+        severity: "warning",
+        message:
+          "This procedure is in the Surgery logbook, but saving it stopped part-way, so its audit entry was never written and the episode update or follow-up task it asked for may be missing. If the episode is still on OR booking, tap Complete surgery and enter the same details to finish it. Otherwise check the episode's tasks and add any missing follow-up task, and check the Surgery logbook before logging the procedure again: a new form adds a second entry.",
+        recordId: procedure.record.id,
+        path: procedure.path
+      });
+    }
     // Event writes never fail the clinical action; the cost of that choice is
     // that a lost event must be found here, or it is lost silently forever.
     for (const list of [patients, episodes, tasks, procedures] as const) {
       for (const item of list) {
-        if (eventTargets.has(item.record.id)) continue;
+        if (eventTargets.has(item.record.id) || unfinishedProcedurePaths.has(item.path)) continue;
         issues.push({
           code: "missing-audit-event",
           severity: "warning",

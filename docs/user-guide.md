@@ -297,11 +297,15 @@ ready to close becomes active again.
 
 Each form adds its own entry, even with the same procedure and date as an
 earlier one, such as a second lesion excised the same day. If **Log
-procedure** shows an error, tap it again on the same form without changing the
-procedure or date: retrying the same form is safe and never adds a second
-entry. A new form always adds a new entry, so if you cancelled a form that
-showed an error, check the **Surgery logbook** before entering that procedure
-again.
+procedure** shows an error, tap it again on the same form without changing
+anything: retrying the same form is safe and never adds a second entry. If the
+entry was already saved before the error, it keeps the details it was saved
+with: a retry does not apply a changed role or outcome, and one with different
+follow-up details is refused. To correct a saved entry, open it from the
+**Surgery logbook**. A new form always adds a new entry, so if you cancelled a
+form that showed an error, check the **Surgery logbook** before entering that
+procedure again. A procedure whose save stopped part-way is listed by the
+integrity check as `unfinished-procedure`; check that episode's follow-up task.
 
 The **Surgery** tab counts completed procedures: total, this month, as primary
 surgeon, and awaiting OR, plus a breakdown by procedure. The **Surgery** database

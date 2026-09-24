@@ -87,9 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integrity check findings for text stored as a number, invalid repeat
   intervals, records left under a merged patient, open episodes under an
   archived or entered-in-error patient, completed procedures the logbook
-  exporter would refuse, and database views still filtering on a previous
-  clinical folder. The report now covers 24 check families. See [Integrity
-  check findings](docs/data-model.md#integrity-check-findings).
+  exporter would refuse, a procedure whose save stopped part-way (its audit
+  entry, and possibly its follow-up task, missing), and database views still
+  filtering on a previous clinical folder. The report now covers 24 check
+  families. See [Integrity check
+  findings](docs/data-model.md#integrity-check-findings).
 - Task template previews show each task's type, priority and due date, and list
   anything that was skipped or defaulted under "Check this template:".
 - Logbook exporter: `--from`, `--to` and `--role` filters, applied only after

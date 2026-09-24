@@ -2222,10 +2222,14 @@ export class ClinicalService {
           targetId: outcome.procedure.record.id,
           targetEntity: "procedure",
           summary: "Procedure completed",
-          newState: followUp.required
-            ? "postoperative follow-up"
-            : additional
-              ? "episode unchanged"
+          // An addition keeps the episode's pathway, so its follow-up is a
+          // task added, not the post-operative pathway a completion sets.
+          newState: additional
+            ? followUp.required
+              ? "follow-up task added"
+              : "episode unchanged"
+            : followUp.required
+              ? "postoperative follow-up"
               : "ready to close"
         });
         if (event) {
