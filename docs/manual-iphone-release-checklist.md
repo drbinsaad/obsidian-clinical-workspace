@@ -82,8 +82,9 @@ Open each exact URL from Apple Shortcuts **Open URLs**:
   set the expected date. Choosing a past date shows "This date is in the
   past." A new task starts at today; **Reschedule** starts at tomorrow.
 - [ ] Procedure Quick Entry lists an Episode that already has a logged
-  procedure with **Add another procedure**; saving it adds a logbook entry and
-  leaves the Episode's pathway and next action unchanged.
+  procedure with **Add another procedure**; saving it with **Follow-up
+  required** off adds a logbook entry and leaves the Episode's pathway and next
+  action unchanged.
 
 ## Everyday workflows
 

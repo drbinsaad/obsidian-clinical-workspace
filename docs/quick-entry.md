@@ -64,9 +64,10 @@ Procedure entry offers two kinds of Episode:
 - Active Episodes that already have a logged procedure and have moved on from
   OR booking, for a second procedure or a return to theatre. These rows say "A
   procedure is already logged here; this adds another." and their button reads
-  **Add another procedure**. Saving (**Log procedure**) adds a logbook entry and
-  leaves the Episode's pathway, status, and next action unchanged; a follow-up
-  task is added only when **Follow-up required** is on.
+  **Add another procedure**. Saving (**Log procedure**) adds its own logbook
+  entry and leaves the Episode's pathway unchanged. With **Follow-up
+  required** off, its status and next action stay unchanged too; with it on, a
+  follow-up task is added, which becomes the next action if it is due first.
 
 If neither kind exists, procedure Quick Entry does not broaden the workflow or
 write a logbook record. Update the intended Episode to the OR booking pathway

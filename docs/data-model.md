@@ -102,11 +102,11 @@ entity folder are outside workflow scope and must be returned before use.
 | `procedure` | The operation performed (not the booked case). |
 | `procedure_date` | Bare date, required and validated before any write. |
 | `role` | `Primary surgeon` · `Assistant surgeon` · `Supervisor` · `Observer` |
-| `status` | `completed` · `cancelled` · `entered-in-error` — the plugin only creates `completed`. An episode can hold several procedures; one logged with **Add another procedure** leaves the episode's pathway, status, and next action unchanged. |
+| `status` | `completed` · `cancelled` · `entered-in-error` — the plugin only creates `completed`. An episode can hold several procedures; one logged with **Add another procedure** completes no OR-booking task and leaves the episode's pathway unchanged; without follow-up it leaves the status and next action unchanged too. |
 | `outcome` | Optional short outcome. |
 | `follow_up_required` / `follow_up_date` / `follow_up_plan` | A required follow-up creates a `postop-follow-up` task; contradictions are flagged by the integrity check. |
 | `audit_pending` | `true` until the completion audit event is durably written; retries settle it. |
-| `idempotency_key` | Same rules as tasks. |
+| `idempotency_key` | 32-bit hash of (episode, procedure, date), with the same rules as tasks. One logged with **Add another procedure** also hashes an id unique to that form, so a second procedure with the same name and date gets its own entry, while resubmitting the same form does not. |
 
 ## Event (audit trail)
 

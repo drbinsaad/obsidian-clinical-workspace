@@ -161,14 +161,19 @@ export function taskIdempotencyKey(input: Pick<NewTaskInput, "episodeId" | "task
   )}`;
 }
 
+/**
+ * Without `additionalEntryId` the key is unchanged from earlier releases, so
+ * a retry still finds a record written by them.
+ */
 export function procedureIdempotencyKey(
   episodeId: string,
   procedure: string,
-  procedureDate: string
+  procedureDate: string,
+  additionalEntryId = ""
 ): string {
-  return `procedure-${fnv1a(
-    [episodeId, normalizeComparable(procedure), normalizeText(procedureDate)].join("|")
-  )}`;
+  const parts = [episodeId, normalizeComparable(procedure), normalizeText(procedureDate)];
+  if (additionalEntryId) parts.push(additionalEntryId);
+  return `procedure-${fnv1a(parts.join("|"))}`;
 }
 
 export function mrnStatus(mrn: string): MrnStatus {

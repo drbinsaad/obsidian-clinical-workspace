@@ -1977,7 +1977,13 @@ export class ClinicalService {
     const errors = validateProcedureInput(input);
     if (errors.length) throw new Error(errors.join(" "));
 
-    const key = procedureIdempotencyKey(input.episodeId, input.procedure, input.procedureDate);
+    const additionalEntryId = normalizeText(input.additionalEntryId);
+    const key = procedureIdempotencyKey(
+      input.episodeId,
+      input.procedure,
+      input.procedureDate,
+      additionalEntryId
+    );
     const normalizedProcedure = normalizeComparable(input.procedure);
     const normalizedProcedureDate = normalizeText(input.procedureDate);
 
@@ -2023,16 +2029,19 @@ export class ClinicalService {
       // as an addition: the pathway, status and next action the episode has
       // now stay as they are, and only a requested follow-up adds work. Also
       // decided this way on a retry of a part-failed addition, so that retry
-      // never re-runs the transition.
+      // never re-runs the transition. An Add another procedure form (it
+      // carries an entry id) is always an addition, even when the episode was
+      // put back on OR booking while it was open: that booking is completed
+      // by Complete surgery once its own surgery has happened.
+      const loggedBefore = procedures.some(
+        ({ record }) =>
+          record.episode_id === input.episodeId &&
+          record.status === "completed" &&
+          record.id !== existing?.record.id
+      );
       const additional =
-        episode.record.pathway !== "or-booking" &&
-        procedures.some(
-          ({ record }) =>
-            record.episode_id === input.episodeId &&
-            record.status === "completed" &&
-            record.id !== existing?.record.id
-        );
-      if (!existing && !additional && episode.record.pathway !== "or-booking") {
+        additionalEntryId !== "" || (episode.record.pathway !== "or-booking" && loggedBefore);
+      if (!existing && !loggedBefore && episode.record.pathway !== "or-booking") {
         throw new Error("Procedures can only be recorded from an OR booking episode.");
       }
       // A retry must never silently mix persisted and retry inputs. The
@@ -2057,7 +2066,11 @@ export class ClinicalService {
       // workflow again would redo the episode transition (overwriting what
       // the clinician has set since) and re-raise a completed follow-up,
       // while adding no logbook entry. Refused before anything is written.
+      // With an entry id the match is that same form's own entry, logged by
+      // an earlier tap whose error came afterwards; it is what this
+      // submission asked for, so it is returned with nothing written.
       if (existing && existing.record.audit_pending !== true) {
+        if (additionalEntryId) return existing;
         throw new Error(
           "This procedure is already in the logbook for this episode. To log another, use a different date or name."
         );

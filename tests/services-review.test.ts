@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type {
+  CompleteProcedureInput,
   EpisodeRecord,
   EventRecord,
   PatientRecord,
@@ -14,7 +15,13 @@ import type {
   TaskRecord
 } from "../src/domain/types";
 import { CURRENT_SCHEMA_VERSION } from "../src/domain/types";
-import { isoDateWithOffset, nowIso, todayIso } from "../src/domain/schema";
+import {
+  fnv1a,
+  isoDateWithOffset,
+  nowIso,
+  procedureIdempotencyKey,
+  todayIso
+} from "../src/domain/schema";
 import { nextOccurrenceDate, priorityRank } from "../src/domain/transitions";
 import {
   MrnIdentityConflictError,
@@ -643,6 +650,248 @@ test("another procedure can be logged once the episode's first one is recorded",
       }),
     /OR booking episode/
   );
+});
+
+test("Add another procedure with the same name and date is its own entry and never resets the episode", async () => {
+  const h = await harness();
+  const created = await h.service.createEpisode(
+    episodeInput({
+      mrn: "9000000703",
+      patientName: "Synthetic Papa",
+      phone: "0500000000",
+      caseName: "Skin lesions",
+      pathway: "or-booking",
+      nextAction: "Book theatre",
+      dueDate: "2026-09-10"
+    })
+  );
+  const episodeId = created.episode.record.id;
+  const excision = (overrides: Partial<CompleteProcedureInput> = {}): CompleteProcedureInput => ({
+    patientId: created.patient.record.id,
+    episodeId,
+    procedure: "Excision of lesion",
+    procedureDate: "2026-09-11",
+    role: "Primary surgeon",
+    outcome: "",
+    followUpRequired: false,
+    followUpDate: "",
+    followUpPlan: "",
+    ...overrides
+  });
+  const logged = async () =>
+    (await h.repository.list<ProcedureRecord>("procedure"))
+      .map((item) => item.record)
+      .filter((record) => record.episode_id === episodeId);
+  const episodeNow = async () =>
+    (await h.repository.findById<EpisodeRecord>("episode", episodeId))!.record;
+
+  const first = await h.service.completeProcedure(excision());
+  assert.equal((await episodeNow()).pathway, "discharge-ready");
+  // The clinician then moves the episode on to review the histology.
+  const reviewDue = isoDateWithOffset(7, todayIso());
+  await h.service.updateEpisode(episodeId, {
+    careSetting: "outpatient",
+    pathway: "result-review",
+    priority: "routine",
+    nextAction: "Review histology",
+    dueDate: reviewDue
+  });
+  const before = await episodeNow();
+  assert.equal(before.pathway, "result-review");
+  const tasksBefore = await tasksOf(h, episodeId);
+
+  // A second lesion, excised the same day, from its own Add another procedure form.
+  const second = await h.service.completeProcedure(excision({ additionalEntryId: "ADD-synthetic-2" }));
+  const after = await episodeNow();
+  assert.equal(after.pathway, "result-review", "the pathway is not reset to discharge-ready");
+  assert.equal(after.status, before.status);
+  assert.equal(after.next_action, "Review histology");
+  assert.equal(after.due_date, reviewDue);
+  assert.deepEqual(await tasksOf(h, episodeId), tasksBefore, "no task is completed or raised");
+  assert.notEqual(second.record.id, first.record.id, "a new entry, not the first one returned again");
+  assert.equal((await logged()).length, 2, "the second lesion has its own logbook entry");
+  assert.equal(second.record.audit_pending, false);
+  const secondEvents = await events(h, "procedure-completed", second.record.id);
+  assert.equal(secondEvents.length, 1);
+  assert.equal(secondEvents[0]?.new_state, "episode unchanged");
+
+  // Resubmitting that same form (its error line shown after the entry was
+  // written) is the same entry: nothing more is written and no event is owed.
+  const retried = await h.service.completeProcedure(excision({ additionalEntryId: "ADD-synthetic-2" }));
+  assert.equal(retried.record.id, second.record.id);
+  assert.equal((await logged()).length, 2);
+  assert.equal((await events(h, "procedure-completed", second.record.id)).length, 1);
+  assert.deepEqual(await episodeNow(), after, "the retry writes nothing");
+
+  // A third lesion from yet another form, now with two earlier entries.
+  await h.service.completeProcedure(excision({ additionalEntryId: "ADD-synthetic-3" }));
+  assert.equal((await logged()).length, 3);
+
+  // Re-submitting the original completion (no entry id) is still refused as
+  // already logged, and still re-runs nothing over the episode.
+  await assert.rejects(() => h.service.completeProcedure(excision()), /already in the logbook/);
+  assert.equal((await logged()).length, 3);
+  assert.equal((await events(h, "procedure-completed", first.record.id)).length, 1);
+  const last = await episodeNow();
+  assert.equal(last.pathway, "result-review");
+  assert.equal(last.next_action, "Review histology");
+  assert.equal(last.due_date, reviewDue);
+  assert.ok((await logged()).every((record) => record.audit_pending === false));
+});
+
+test("an Add another procedure form on an episode back on OR booking logs its own entry and leaves the booking alone", async () => {
+  const h = await harness();
+  const created = await h.service.createEpisode(
+    episodeInput({
+      mrn: "9000000704",
+      patientName: "Synthetic Quebec",
+      phone: "0500000001",
+      caseName: "Neck mass",
+      pathway: "or-booking",
+      nextAction: "Book theatre",
+      dueDate: "2026-09-10"
+    })
+  );
+  const episodeId = created.episode.record.id;
+  const input = (procedure: string, overrides: Partial<CompleteProcedureInput> = {}): CompleteProcedureInput => ({
+    patientId: created.patient.record.id,
+    episodeId,
+    procedure,
+    procedureDate: "2026-09-11",
+    role: "Primary surgeon",
+    outcome: "",
+    followUpRequired: false,
+    followUpDate: "",
+    followUpPlan: "",
+    ...overrides
+  });
+  const logged = async () =>
+    (await h.repository.list<ProcedureRecord>("procedure"))
+      .map((item) => item.record)
+      .filter((record) => record.episode_id === episodeId);
+  const episodeNow = async () =>
+    (await h.repository.findById<EpisodeRecord>("episode", episodeId))!.record;
+
+  await h.service.completeProcedure(input("Excision biopsy"));
+  // A return to theatre is booked while an Add another procedure form is open.
+  const bookingDue = isoDateWithOffset(3, todayIso());
+  await h.service.updateEpisode(episodeId, {
+    careSetting: "outpatient",
+    pathway: "or-booking",
+    priority: "routine",
+    nextAction: "Book return to theatre",
+    dueDate: bookingDue
+  });
+  const before = await episodeNow();
+  assert.equal(before.pathway, "or-booking");
+  const tasksBefore = await tasksOf(h, episodeId);
+  assert.ok(
+    tasksBefore.some((task) => task.task_type === "book-or" && task.status === "open"),
+    "the return to theatre has an open booking task"
+  );
+
+  // That form logs its own entry, and so does another with the same name and
+  // date as the first: nothing completes the new booking before its surgery.
+  const assertBookingUntouched = async (label: string) => {
+    const after = await episodeNow();
+    assert.equal(after.pathway, "or-booking", `${label}: the booking is not moved on`);
+    assert.equal(after.status, before.status, `${label}: the status is left alone`);
+    assert.equal(after.next_action, "Book return to theatre", `${label}: the next action is left alone`);
+    assert.equal(after.due_date, bookingDue, `${label}: the due date is left alone`);
+    assert.deepEqual(await tasksOf(h, episodeId), tasksBefore, `${label}: the booking task stays open`);
+  };
+  const added = await h.service.completeProcedure(
+    input("Neck exploration", { additionalEntryId: "ADD-synthetic-4" })
+  );
+  await assertBookingUntouched("another name");
+  const sameName = await h.service.completeProcedure(
+    input("Excision biopsy", { additionalEntryId: "ADD-synthetic-5" })
+  );
+  await assertBookingUntouched("the first entry's name and date");
+  assert.equal((await logged()).length, 3, "each form is its own logbook entry");
+  for (const entry of [added, sameName]) {
+    assert.equal(entry.record.audit_pending, false);
+    const [event] = await events(h, "procedure-completed", entry.record.id);
+    assert.equal(event?.new_state, "episode unchanged");
+  }
+
+  // The booking itself is still completed from Complete surgery as before.
+  await h.service.completeProcedure(input("Re-exploration of neck", { procedureDate: "2026-09-14" }));
+  const completed = await episodeNow();
+  assert.equal(completed.pathway, "discharge-ready");
+  assert.equal(completed.status, "ready-to-close");
+  assert.ok(
+    (await tasksOf(h, episodeId))
+      .filter((task) => task.task_type === "book-or")
+      .every((task) => task.status === "completed")
+  );
+});
+
+test("the first OR-booking completion keeps its key, its transition and its audit wording on retry", async () => {
+  const h = await harness();
+  const created = await h.service.createEpisode(
+    episodeInput({
+      mrn: "9000000705",
+      patientName: "Synthetic Romeo",
+      phone: "0500000000",
+      caseName: "Nasal polyps",
+      pathway: "or-booking",
+      nextAction: "Book theatre",
+      dueDate: "2026-09-10"
+    })
+  );
+  const episodeId = created.episode.record.id;
+  const input: CompleteProcedureInput = {
+    patientId: created.patient.record.id,
+    episodeId,
+    procedure: "  Polypectomy ",
+    procedureDate: "2026-09-11",
+    role: "Primary surgeon",
+    outcome: "",
+    followUpRequired: false,
+    followUpDate: "",
+    followUpPlan: ""
+  };
+  // The completion runs to its audit event and then fails to clear the debt.
+  const repo = h.repository as unknown as {
+    update: (path: string, changes: Record<string, unknown>) => Promise<unknown>;
+  };
+  const realUpdate = repo.update.bind(h.repository);
+  repo.update = async (path: string, changes: Record<string, unknown>) => {
+    if (path.includes("/Procedures/") && changes.audit_pending === false) {
+      throw new Error("Injected write failure (synthetic)");
+    }
+    return realUpdate(path, changes);
+  };
+  await assert.rejects(() => h.service.completeProcedure(input), /Injected write failure/);
+  repo.update = realUpdate;
+
+  const [pending] = await h.repository.list<ProcedureRecord>("procedure");
+  assert.equal(pending?.record.audit_pending, true);
+  assert.equal(
+    pending?.record.idempotency_key,
+    `procedure-${fnv1a([episodeId, "polypectomy", "2026-09-11"].join("|"))}`,
+    "a key without an entry id is byte-identical to earlier releases"
+  );
+  assert.equal(pending?.record.idempotency_key, procedureIdempotencyKey(episodeId, "Polypectomy", "2026-09-11"));
+
+  const retried = await h.service.completeProcedure(input);
+  assert.equal(retried.record.id, pending?.record.id);
+  assert.equal(retried.record.audit_pending, false);
+  const episode = (await h.repository.findById<EpisodeRecord>("episode", episodeId))!.record;
+  assert.equal(episode.pathway, "discharge-ready");
+  assert.equal(episode.status, "ready-to-close");
+  assert.equal(episode.next_action, "");
+  assert.ok(
+    (await tasksOf(h, episodeId))
+      .filter((task) => task.task_type === "book-or")
+      .every((task) => task.status === "completed")
+  );
+  // A failed clear can repeat the event; both name what the completion did.
+  const completions = await events(h, "procedure-completed", retried.record.id);
+  assert.equal(completions.length, 2);
+  assert.ok(completions.every((event) => event.new_state === "ready to close"));
+  assert.equal((await h.repository.list<ProcedureRecord>("procedure")).length, 1);
 });
 
 // --- Discharge with open tasks -----------------------------------------------

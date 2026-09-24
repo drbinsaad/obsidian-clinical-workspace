@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Modal } from "obsidian";
-import { isoDateWithOffset, todayIso } from "../src/domain/schema";
+import { isoDateWithOffset, procedureIdempotencyKey, todayIso } from "../src/domain/schema";
 import { DEFAULT_SETTINGS } from "../src/domain/settings";
 import type { EpisodeRecord, PatientRecord, ProcedureRecord, TaskRecord } from "../src/domain/types";
 import {
@@ -667,6 +667,184 @@ test("the procedure Quick Entry picker labels an added procedure", async () => {
   choose.dispatch("click");
   const modal = lastOpened(ProcedureModal);
   assert.equal(modal.contentEl.find("h2")?.textContent, "Add another procedure");
+});
+
+test("Add another procedure logs a same-name, same-day procedure as its own entry, once per form", async () => {
+  const h = await harness();
+  const operated = await h.service.createEpisode(
+    episodeInput({
+      mrn: "9000800117",
+      patientName: "Synthetic Oscar",
+      phone: "0500000000",
+      caseName: "Case R",
+      pathway: "or-booking"
+    })
+  );
+  const episodeId = operated.episode.record.id;
+  await h.service.completeProcedure(
+    procedureInput(operated.patient.record.id, episodeId, "Synthetic excision of lesion")
+  );
+  const reviewDue = isoDateWithOffset(7, todayIso());
+  await h.service.updateEpisode(episodeId, {
+    careSetting: "outpatient",
+    pathway: "result-review",
+    priority: "routine",
+    nextAction: "Review histology",
+    dueDate: reviewDue
+  });
+  const loggedCount = async () =>
+    (await h.repository.list<ProcedureRecord>("procedure")).filter(
+      (item) => item.record.episode_id === episodeId
+    ).length;
+  const assertEpisodeUntouched = async (label: string) => {
+    const episode = (await h.repository.findById<EpisodeRecord>("episode", episodeId))!.record;
+    assert.equal(episode.pathway, "result-review", `${label}: the pathway is left alone`);
+    assert.equal(episode.next_action, "Review histology", `${label}: the next action is left alone`);
+    assert.equal(episode.due_date, reviewDue, `${label}: the due date is left alone`);
+  };
+
+  // The first attempt writes the entry and then fails; the form stays open.
+  const repo = h.repository as unknown as {
+    update: (path: string, changes: Record<string, unknown>) => Promise<unknown>;
+  };
+  const realUpdate = repo.update.bind(h.repository);
+  let armed = true;
+  repo.update = async (path: string, changes: Record<string, unknown>) => {
+    if (armed && path.includes("/Procedures/") && changes.audit_pending === false) {
+      armed = false;
+      throw new Error("Injected write failure (synthetic)");
+    }
+    return realUpdate(path, changes);
+  };
+
+  const { root, view } = await mountView(h, "surgery");
+  buttonNamed(root, /^Add another procedure — \u2068Case R/).dispatch("click");
+  const modal = lastOpened(ProcedureModal);
+  await flush();
+  type(field(modal.contentEl, "Surgery / procedure"), "Synthetic excision of lesion");
+  const noticesBefore = StubNotice.history.length;
+  submitButton(modal.contentEl).dispatch("click");
+  const error = () => modal.contentEl.find(".clinical-modal-error");
+  await waitFor(() => modal.closes === 1 || error()?.hidden === false, "the first attempt to settle");
+  assert.equal(await loggedCount(), 2, "the first attempt wrote the second lesion's own entry");
+  await assertEpisodeUntouched("first attempt");
+  assert.equal(modal.closes, 0, "the injected failure keeps the form open to retry");
+
+  // Retrying the same form completes that entry; it does not add another.
+  submitButton(modal.contentEl).dispatch("click");
+  await waitFor(() => modal.closes === 1, "the retried procedure to be logged");
+  assert.equal(noticeTexts(noticesBefore).at(-1), "Procedure added to the logbook.");
+  assert.equal(await loggedCount(), 2, "the second lesion is its own logbook entry, written once");
+  const entries = (await h.repository.list<ProcedureRecord>("procedure")).map((item) => item.record);
+  assert.ok(entries.every((record) => record.audit_pending === false), "the retry settled the audit");
+  await assertEpisodeUntouched("logbook");
+
+  // Quick entry reaches the same form; a third lesion is a third entry.
+  await view.openProcedureQuickEntry();
+  const picker = lastOpened(QuickEntryEpisodeModal);
+  buttonNamed(picker.contentEl, /^Add another procedure to this episode: /).dispatch("click");
+  const quick = lastOpened(ProcedureModal);
+  await flush();
+  type(field(quick.contentEl, "Surgery / procedure"), "Synthetic excision of lesion");
+  const quickNotices = StubNotice.history.length;
+  submitButton(quick.contentEl).dispatch("click");
+  await waitFor(() => quick.closes === 1, "the quick-entry procedure to be logged");
+  assert.deepEqual(noticeTexts(quickNotices), ["Procedure added to the logbook."]);
+  assert.equal(await loggedCount(), 3);
+  await assertEpisodeUntouched("quick entry");
+});
+
+test("an Add another procedure form left open while its episode goes back on OR booking adds only its entry", async () => {
+  const h = await harness();
+  const operated = await h.service.createEpisode(
+    episodeInput({
+      mrn: "9000800118",
+      patientName: "Synthetic Papa",
+      phone: "0500000001",
+      caseName: "Case S",
+      pathway: "or-booking"
+    })
+  );
+  const episodeId = operated.episode.record.id;
+  await h.service.completeProcedure(
+    procedureInput(operated.patient.record.id, episodeId, "Synthetic excision biopsy")
+  );
+  await h.service.updateEpisode(episodeId, {
+    careSetting: "outpatient",
+    pathway: "result-review",
+    priority: "routine",
+    nextAction: "Review histology",
+    dueDate: isoDateWithOffset(7, todayIso())
+  });
+  const { root } = await mountView(h, "surgery");
+  buttonNamed(root, /^Add another procedure — \u2068Case S/).dispatch("click");
+  const modal = lastOpened(ProcedureModal);
+  await flush();
+  type(field(modal.contentEl, "Surgery / procedure"), "Synthetic lymph node excision");
+
+  // While the form is open, a return to theatre is booked.
+  const bookingDue = isoDateWithOffset(3, todayIso());
+  await h.service.updateEpisode(episodeId, {
+    careSetting: "outpatient",
+    pathway: "or-booking",
+    priority: "routine",
+    nextAction: "Book return to theatre",
+    dueDate: bookingDue
+  });
+  const tasksBefore = await tasksOf(h, episodeId);
+
+  const noticesBefore = StubNotice.history.length;
+  submitButton(modal.contentEl).dispatch("click");
+  const error = () => modal.contentEl.find(".clinical-modal-error");
+  await waitFor(() => modal.closes === 1 || error()?.hidden === false, "the submission to settle");
+  assert.equal(modal.closes, 1, "the form is not refused");
+  assert.deepEqual(noticeTexts(noticesBefore), ["Procedure added to the logbook."]);
+  assert.equal(
+    (await h.repository.list<ProcedureRecord>("procedure")).filter((item) => item.record.episode_id === episodeId)
+      .length,
+    2,
+    "the form added its own entry"
+  );
+  const episode = (await h.repository.findById<EpisodeRecord>("episode", episodeId))!.record;
+  assert.equal(episode.pathway, "or-booking", "the new booking is not completed");
+  assert.equal(episode.next_action, "Book return to theatre");
+  assert.equal(episode.due_date, bookingDue);
+  assert.deepEqual(await tasksOf(h, episodeId), tasksBefore, "the booking task stays open");
+});
+
+test("Complete surgery on a booking still logs with the plain key and moves the episode on", async () => {
+  const h = await harness();
+  const booked = await h.service.createEpisode(
+    episodeInput({
+      mrn: "9000800119",
+      patientName: "Synthetic Quebec",
+      phone: "0500000000",
+      caseName: "Case T",
+      pathway: "or-booking",
+      nextAction: "Book theatre",
+      dueDate: isoDateWithOffset(1, todayIso())
+    })
+  );
+  const episodeId = booked.episode.record.id;
+  const { root } = await mountView(h, "surgery");
+  buttonNamed(root, /^Complete surgery — \u2068Case T/).dispatch("click");
+  const modal = lastOpened(ProcedureModal);
+  await flush();
+  assert.equal(modal.contentEl.find("h2")?.textContent, "Complete surgery");
+  type(field(modal.contentEl, "Surgery / procedure"), "Synthetic septoplasty");
+  const noticesBefore = StubNotice.history.length;
+  submitButton(modal.contentEl).dispatch("click");
+  await waitFor(() => modal.closes === 1, "the surgery to be logged");
+  assert.deepEqual(noticeTexts(noticesBefore), ["Surgery logged and workflow updated."]);
+  const [logged] = (await h.repository.list<ProcedureRecord>("procedure")).map((item) => item.record);
+  assert.equal(
+    logged?.idempotency_key,
+    procedureIdempotencyKey(episodeId, "Synthetic septoplasty", todayIso()),
+    "Complete surgery carries no entry id"
+  );
+  const episode = (await h.repository.findById<EpisodeRecord>("episode", episodeId))!.record;
+  assert.equal(episode.pathway, "discharge-ready");
+  assert.equal(episode.status, "ready-to-close");
 });
 
 /* ------------------------------------------------------ 7. Restore ----- */

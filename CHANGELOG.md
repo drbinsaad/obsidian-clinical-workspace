@@ -66,8 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before any task is cancelled. Episode cards show "N open tasks".
 - **Add another procedure**: an episode that has moved on after surgery can log
   a further procedure from its newest Surgery logbook entry or from **Quick
-  entry → Record procedure**, without changing its pathway, status or next
-  action.
+  entry → Record procedure**. Each form adds its own entry, even with the same
+  procedure and date as an earlier one, and retrying the same form unchanged
+  after an error never adds a second. The episode's pathway stays as it is and
+  no OR-booking task is completed; turning on follow-up adds a follow-up task,
+  which becomes the next action if it is due first.
 - **Read-only banner**: while editing is paused the workspace shows **Editing
   is paused**, the reason in plain words, a warning when the list may be
   incomplete, and a **Recheck now** button. It clears by itself.
@@ -217,9 +220,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dark themes.
 - Editing a record note while the workspace was re-checking itself after an
   earlier change could let editing resume before the new change was checked.
-- Logging the same procedure again on the same date re-ran the operating-room
-  step, overwriting the episode's pathway and bringing back a completed
-  follow-up task. It is now refused with a clear message.
+- Submitting **Complete surgery** again for a procedure already logged on the
+  same date re-ran the operating-room step, overwriting the episode's pathway
+  and bringing back a completed follow-up task. It is now refused with a clear
+  message.
 - Undo or Reopen on the last task of an episode that was on hold made the
   episode active; it now goes back on hold.
 - Undo or Reopen on a repeating task is refused once a later occurrence was

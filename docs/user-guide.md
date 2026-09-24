@@ -287,9 +287,21 @@ return to theatre on an episode that has already moved on from OR booking:
   already logged here; this adds another." and have an **Add another
   procedure** button.
 
-Fill in the form and tap **Log procedure**. The episode's pathway, status and
-next action stay as they are; a follow-up task is added only if you turn on
-follow-up. The notice says "Procedure added to the logbook."
+Fill in the form and tap **Log procedure**. The notice says "Procedure added to
+the logbook." The episode's pathway stays as it is and no OR-booking task is
+completed, even if the episode was put back on OR booking while the form was
+open. With follow-up off, its status, next action and due date stay as they
+are too. Turning on follow-up adds a follow-up task like any other: it
+becomes the episode's next action if it is due first, and an episode that was
+ready to close becomes active again.
+
+Each form adds its own entry, even with the same procedure and date as an
+earlier one, such as a second lesion excised the same day. If **Log
+procedure** shows an error, tap it again on the same form without changing the
+procedure or date: retrying the same form is safe and never adds a second
+entry. A new form always adds a new entry, so if you cancelled a form that
+showed an error, check the **Surgery logbook** before entering that procedure
+again.
 
 The **Surgery** tab counts completed procedures: total, this month, as primary
 surgeon, and awaiting OR, plus a breakdown by procedure. The **Surgery** database

@@ -26,6 +26,7 @@ import {
 import {
   canonicalOption,
   careSettingLabel,
+  createId,
   displayMrn,
   displayPhone,
   formatLocalDateTime,
@@ -1834,7 +1835,8 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
     onSubmit: AsyncSubmit<CompleteProcedureInput>,
     /**
      * `additional`: the episode already has a logged procedure and has moved
-     * on from OR booking; this logs another without changing its workflow.
+     * on from OR booking; this logs another as its own entry without changing
+     * its pathway.
      */
     options: { additional?: boolean } = {}
   ) {
@@ -1853,7 +1855,11 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
       outcome: "",
       followUpRequired: false,
       followUpDate: "",
-      followUpPlan: ""
+      followUpPlan: "",
+      // One id for the life of this form: resubmitting it after an error is
+      // the same entry, while the next form logs a separate one even with the
+      // same procedure and date.
+      ...(this.additional ? { additionalEntryId: createId("ADD") } : {})
     };
   }
 
@@ -1864,7 +1870,7 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
     );
     if (this.additional) {
       form.createEl("p", {
-        text: "This episode already has a logged procedure. This adds another logbook entry; the episode's pathway, status and next action stay as they are, and a follow-up task is added only if you ask for one.",
+        text: "This episode already has a logged procedure. This adds another logbook entry and keeps the episode's pathway. Turning on follow-up adds a follow-up task, which becomes the episode's next action if it is due first.",
         cls: "clinical-section-note"
       });
     }
