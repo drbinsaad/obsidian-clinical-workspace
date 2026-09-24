@@ -105,11 +105,14 @@ function isTextEntry(element: Element | null | undefined): element is HTMLInputE
 
 /**
  * Enabled fields a person can reach now, in document order. A field in a
- * hidden group (the follow-up fields while follow-up is off) does not count.
+ * hidden group (the follow-up fields while follow-up is off) does not count,
+ * and neither does one kept out of the tab order: Obsidian's toggle hides a
+ * checkbox inside its label, and Return there would flip the toggle.
  */
 function reachableFormControls(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>("input, select, textarea")).filter((control) => {
     if ((control as HTMLInputElement).disabled) return false;
+    if (control.getAttribute("tabindex") === "-1") return false;
     for (let node: HTMLElement | null = control; node && node !== root; node = node.parentElement) {
       if (node.hidden) return false;
     }

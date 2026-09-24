@@ -289,7 +289,7 @@ export class Modal {}
 interface StubSettingElement {
   value: string;
   createDiv(options?: { cls?: string }): StubSettingElement;
-  createEl(tagName: string, options?: { text?: string; attr?: Record<string, string> }): StubSettingElement;
+  createEl(tagName: string, options?: { text?: string; cls?: string; attr?: Record<string, string> }): StubSettingElement;
   setText(text: string): void;
   setAttribute(name: string, value: string): void;
   addEventListener(type: string, listener: () => void): void;
@@ -373,7 +373,10 @@ export class Setting {
   }
 
   addToggle(build: (component: unknown) => void): this {
-    const toggleEl = this.controlEl.createDiv({ cls: "checkbox-container" });
+    // Obsidian 1.14 renders a focusable label around a checkbox kept out of
+    // the tab order; the label toggles on click and on Enter or Space.
+    const toggleEl = this.controlEl.createEl("LABEL", { cls: "checkbox-container", attr: { tabindex: "0" } });
+    toggleEl.createEl("INPUT", { attr: { type: "checkbox", tabindex: "-1" } });
     let enabled = false;
     const listeners: Array<(value: boolean) => void> = [];
     const component = {
@@ -388,10 +391,15 @@ export class Setting {
         return component;
       }
     };
-    toggleEl.addEventListener("click", () => {
+    const toggle = (): void => {
       enabled = !enabled;
       for (const listener of listeners) listener(enabled);
-    });
+    };
+    toggleEl.addEventListener("click", toggle);
+    (toggleEl as unknown as { addEventListener(type: string, listener: (event: KeyboardEvent) => void): void })
+      .addEventListener("keydown", (event) => {
+        if (event.key === " " || event.key === "Enter") toggle();
+      });
     build(component);
     return this;
   }
