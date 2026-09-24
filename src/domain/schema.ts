@@ -199,6 +199,32 @@ export function pathwayLabel(pathway: string): string {
   return labels[pathway] ?? "Unknown pathway";
 }
 
+/**
+ * Task-type labels are spelled out: title-casing each hyphenated part showed
+ * "book-or" as "Book Or", which reads as the English word. A value outside
+ * the list keeps the title-case rule so a hand-edited type stays readable.
+ */
+export function taskTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    "clinical-review": "Clinical Review",
+    "call-patient": "Call Patient",
+    "review-result": "Review Result",
+    "book-or": "Book OR",
+    "postop-follow-up": "Post-op Follow-Up",
+    consultation: "Consultation",
+    "wound-care": "Wound Care",
+    medication: "Medication",
+    other: "Other"
+  };
+  return (
+    labels[type] ??
+    type
+      .split("-")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ")
+  );
+}
+
 export function careSettingLabel(value: string): string {
   if (value === "inpatient") return "Inpatient";
   if (value === "outpatient") return "Outpatient";
