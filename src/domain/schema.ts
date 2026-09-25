@@ -188,6 +188,15 @@ export function displayMrn(mrn: string): string {
   return mrn || "MRN needed";
 }
 
+/**
+ * An MRN that says what it is, for text with no MRN heading: "MRN " and the
+ * number, or "MRN needed". Putting "MRN " before displayMrn read "MRN MRN
+ * needed" for a patient without one.
+ */
+export function mrnLabel(mrn: string): string {
+  return mrn ? `MRN ${mrn}` : displayMrn(mrn);
+}
+
 export function displayPhone(phone: string): string {
   return phone || "NFN";
 }

@@ -27,10 +27,10 @@ import {
   canonicalOption,
   careSettingLabel,
   createId,
-  displayMrn,
   displayPhone,
   formatLocalDateTime,
   isoDateWithOffset,
+  mrnLabel,
   mrnMatchKey,
   normalizeIsoDate,
   pathwayLabel,
@@ -1135,7 +1135,7 @@ export class DuplicatePatientModal extends ClinicalResponsiveModal {
     for (const candidate of this.candidates) {
       const card = list.createDiv({ cls: "clinical-card" });
       card.createEl("h4", { text: candidate.patient_name || "Name not recorded", attr: { dir: "auto" } });
-      card.createEl("p", { text: `MRN ${displayMrn(candidate.mrn)}`, cls: "clinical-card-meta" });
+      card.createEl("p", { text: mrnLabel(candidate.mrn), cls: "clinical-card-meta" });
       card.createEl("p", { text: `Phone ${displayPhone(candidate.phone)}`, cls: "clinical-card-meta" });
       if (enteredMrn && !candidate.mrn) {
         card.createEl("p", {
@@ -1200,12 +1200,12 @@ export class MrnOwnerConflictModal extends ClinicalResponsiveModal {
     const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
     body.createEl("h2", { text: "Check the MRN", cls: "clinical-modal-heading" });
     body.createEl("p", {
-      text: `MRN ${displayMrn(stored.mrn)} is already recorded for ${bidiIsolate(stored.patient_name)}, but the form names ${bidiIsolate(this.typedName.trim())}. A one-digit slip in the MRN would file this episode in someone else's record.`,
+      text: `${mrnLabel(stored.mrn)} is already recorded for ${bidiIsolate(stored.patient_name)}, but the form names ${bidiIsolate(this.typedName.trim())}. A one-digit slip in the MRN would file this episode in someone else's record.`,
       cls: "clinical-section-note"
     });
     const card = body.createDiv({ cls: "clinical-card" });
     card.createEl("h4", { text: stored.patient_name || "Name not recorded", attr: { dir: "auto" } });
-    card.createEl("p", { text: `MRN ${displayMrn(stored.mrn)}`, cls: "clinical-card-meta" });
+    card.createEl("p", { text: mrnLabel(stored.mrn), cls: "clinical-card-meta" });
     card.createEl("p", { text: `Phone ${displayPhone(stored.phone)}`, cls: "clinical-card-meta" });
     body.createEl("p", {
       text: "If this is the same person, use this patient: the episode is added to their record and the stored name is kept. A wrong name can be corrected later from the patient's record.",
@@ -2663,5 +2663,5 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
 }
 
 export function patientIdentityLabel(mrn: string, patientName: string): string {
-  return `MRN ${displayMrn(mrn)} · ${patientName ? bidiIsolate(patientName) : "Name not recorded"}`;
+  return `${mrnLabel(mrn)} · ${patientName ? bidiIsolate(patientName) : "Name not recorded"}`;
 }

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A patient without an MRN was named "MRN MRN needed" on episode and task
+  cards, ward-round rows, Search, the patient sheet, the possible-duplicate
+  dialog, button names read by VoiceOver, and the ward handover note. It now
+  reads "MRN needed" and the name.
+
 ## [0.7.0] - 2026-09-24
 
 ### Upgrade notes

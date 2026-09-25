@@ -3,7 +3,8 @@
  * focus across redraws, card action layout, ward-round paging, Today order,
  * date defaults, patient sheet entry points, filters, paging scroll, search
  * folding, modal safe areas, identity inputs, RTL isolation, contrast,
- * accessible names, and audit times.
+ * accessible names, audit times, and the identity label of a patient with no
+ * MRN.
  *
  * Synthetic data only; MRNs use the 9000 series.
  */
@@ -23,6 +24,7 @@ import type {
   TaskRecord
 } from "../src/domain/types";
 import type { ClinicalService } from "../src/services/clinical-service";
+import { buildHandoverNote } from "../src/services/handover";
 import type { IntegrityService } from "../src/services/integrity";
 import {
   ApplyTemplateModal,
@@ -32,6 +34,7 @@ import {
   DuplicatePatientModal,
   EpisodeHistoryModal,
   IntegrityReportModal,
+  MrnOwnerConflictModal,
   NewEpisodeModal,
   NewTaskModal,
   PatientDetailModal,
@@ -1108,4 +1111,113 @@ test("an episode card's patient line opens the patient sheet without adding a bu
   const rules = parseCssRules(await readFile(new URL("../styles.css", import.meta.url), "utf8"));
   const mobile = computedDeclarations(rules, [".clinical-card-patient-link", ".is-mobile .clinical-card-patient-link"], { width: 390, height: 844 });
   assert.equal(mobile.get("min-height"), "44px", "a touch-sized target on phones");
+});
+
+/* ---------------------------------------------- 20. Identity without an MRN ----- */
+
+/** Every visible text and accessible name under a rendered element. */
+function spokenText(root: TestElement): string[] {
+  const out: string[] = [];
+  const visit = (node: TestElement): void => {
+    if (node.text) out.push(node.text);
+    const label = node.getAttribute("aria-label");
+    if (label) out.push(label);
+    for (const child of node.children) visit(child);
+  };
+  visit(root);
+  return out;
+}
+
+test("a patient without an MRN reads \"MRN needed\" once wherever the patient is named", () => {
+  const withMrn = `MRN ${MRN_ALPHA} · ⁨Synthetic Alpha⁩`;
+  const withoutMrn = "MRN needed · ⁨Synthetic Beta⁩";
+  assert.equal(patientIdentityLabel(MRN_ALPHA, "Synthetic Alpha"), withMrn);
+  assert.equal(patientIdentityLabel("", "Synthetic Beta"), withoutMrn);
+  assert.equal(patientIdentityLabel("", ""), "MRN needed · Name not recorded");
+
+  const alpha = patient("PAT-alpha");
+  const beta = patient("PAT-beta", { mrn: "", mrn_status: "missing", patient_name: "Synthetic Beta" });
+  const snapshot = snapshotOf({
+    patients: [alpha, beta],
+    episodes: [
+      episode("EPI-alpha", "PAT-alpha", { care_setting: "inpatient", case: "Synthetic alpha case" }),
+      episode("EPI-beta", "PAT-beta", { care_setting: "inpatient", case: "Synthetic beta case" }),
+      episode("EPI-orphan", "PAT-missing", { care_setting: "inpatient", case: "Synthetic orphan case" })
+    ],
+    tasks: [
+      task("TSK-beta", "EPI-beta", { patient_id: "PAT-beta", task: "Synthetic beta review", due_date: todayIso() })
+    ]
+  });
+  const rendered: TestElement[] = [];
+
+  // Today: the ward-round row, its buttons' names, and the task card.
+  const today = createView("today", snapshot);
+  today.view.render(snapshot);
+  rendered.push(today.root);
+  const wardNames = today.root.findAll(".clinical-ward-row").map((row) => row.find("strong")?.textContent);
+  assert.ok(wardNames.includes(withoutMrn), `ward rows: ${wardNames.join(" | ")}`);
+  assert.ok(wardNames.includes(withMrn), "a recorded MRN keeps its label");
+  assert.ok(
+    wardNames.includes("MRN needed · Patient identity missing"),
+    "an episode whose patient note is gone keeps its fallback"
+  );
+  buttonNamed(today.root, /^View — ⁨Synthetic beta case⁩, MRN needed · ⁨Synthetic Beta⁩$/);
+  const taskCard = today.root
+    .findAll(".clinical-card")
+    .find((card) => card.find("h4")?.textContent === "Synthetic beta review");
+  assert.ok(taskCard);
+  assert.ok(taskCard.findAll("p").some((line) => line.textContent === withoutMrn), "the task card names the patient");
+  buttonNamed(taskCard, /^Complete — ⁨Synthetic beta review⁩, MRN needed · ⁨Synthetic Beta⁩$/);
+
+  // Patients: the tappable patient line on the episode card and its name.
+  const patients = createView("patients", snapshot);
+  patients.view.render(snapshot);
+  rendered.push(patients.root);
+  const link = patients.root
+    .findAll(".clinical-card-patient-link")
+    .find((candidate) => candidate.textContent === withoutMrn);
+  assert.ok(link, "the patient line reads MRN needed and the name");
+  assert.equal(link.getAttribute("aria-label"), `${withoutMrn} — view patient`);
+
+  // Search: the patient row, a record row's patient, and their names.
+  const search = openModal(new ClinicalSearchModal(new App(), snapshot, () => undefined)).content;
+  const found = searchFor(search, "Synthetic Beta");
+  rendered.push(search);
+  assert.ok(found.labels.includes(withoutMrn));
+  assert.ok(found.metas.some((meta) => meta.startsWith(`${withoutMrn} · `)));
+  assert.ok(
+    search
+      .findAll(".clinical-quick-entry-option")
+      .some((row) => row.getAttribute("aria-label") === `Open patient: ${withoutMrn}`)
+  );
+
+  // The patient sheet's identity line.
+  const sheet = openModal(new PatientDetailModal(
+    new App(),
+    { patient: beta, episodes: [], tasks: [], procedures: [], events: [] },
+    () => undefined,
+    () => undefined
+  )).content;
+  rendered.push(sheet);
+  assert.ok(sheet.find(".clinical-section-note")?.textContent.startsWith(`${withoutMrn} · Phone NFN`));
+
+  // Possible duplicate and Check the MRN: the card line and the button's name.
+  const duplicate = openModal(new DuplicatePatientModal(new App(), [beta], () => undefined)).content;
+  rendered.push(duplicate);
+  assert.ok(duplicate.findAll("p").some((line) => line.textContent === "MRN needed"));
+  buttonNamed(duplicate, new RegExp(`^Use this patient — ${withoutMrn}$`));
+  const conflict = openModal(new MrnOwnerConflictModal(new App(), alpha, "Synthetic Gamma", () => undefined)).content;
+  rendered.push(conflict);
+  assert.ok(conflict.findAll("p").some((line) => line.textContent === `MRN ${MRN_ALPHA}`));
+  buttonNamed(conflict, new RegExp(`^Use this patient — ${withMrn}$`));
+
+  for (const root of rendered) {
+    for (const line of spokenText(root)) assert.doesNotMatch(line, /MRN MRN/, line);
+  }
+
+  // The ward handover note names the patient the same way.
+  const handover = buildHandoverNote(snapshot, todayIso());
+  assert.match(handover, /\*\*MRN needed · Synthetic Beta\*\*/);
+  assert.match(handover, new RegExp(`\\*\\*MRN ${MRN_ALPHA} · Synthetic Alpha\\*\\*`));
+  assert.doesNotMatch(handover, /MRN MRN/);
 });
