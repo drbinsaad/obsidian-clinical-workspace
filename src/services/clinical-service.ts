@@ -2068,14 +2068,19 @@ export class ClinicalService {
       // while adding no logbook entry. Refused before anything is written.
       // With an entry id the match is that same form's own entry, logged by
       // an earlier tap whose error came afterwards; it is what this
-      // submission asked for, so it is returned with nothing written. The
-      // refusal names Add another procedure for a genuine second one with
-      // the same name and date (a same-day return to theatre), so the
-      // clinician is never pushed to alter the logbook's name or date.
+      // submission asked for, so it is returned with nothing written. On an
+      // episode that has moved on, the refusal names Add another procedure
+      // for a genuine second one with the same name and date (a same-day
+      // return to theatre), so the clinician is never pushed to alter the
+      // logbook's name or date. On an episode back on OR booking that button
+      // is not offered, and naming it read as advice to take the episode off
+      // OR booking, so the refusal says only that the operation is logged.
       if (existing && existing.record.audit_pending !== true) {
         if (additionalEntryId) return existing;
         throw new Error(
-          "This procedure is already in the logbook for this episode, so nothing was changed. To log a second one with the same name and date, use Add another procedure on the episode's newest entry in the Surgery logbook; it is offered once the episode has moved on from OR booking."
+          episode.record.pathway === "or-booking"
+            ? "This operation is already in the logbook for this episode with the same procedure name and date, so nothing was changed."
+            : "This procedure is already in the logbook for this episode, so nothing was changed. To log a second one with the same name and date, use Add another procedure on the episode's newest entry in the Surgery logbook."
         );
       }
       // The persisted record is the write authority for every later step.

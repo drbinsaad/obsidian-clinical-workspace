@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stored status values such as `ready-to-close` and `completed`. They now
   show words such as "Ready to Close" and "Completed"; a status typed by hand
   is shown in words too.
+- **Complete surgery** for a procedure already in the logbook, on an episode
+  put back on OR booking, was refused with advice that read as taking the
+  episode off OR booking. The refusal now says only that the operation is
+  already logged and nothing was changed. On an episode that has moved on it
+  still points to **Add another procedure**.
 
 ## [0.7.0] - 2026-09-24
 
