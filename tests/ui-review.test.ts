@@ -3,7 +3,8 @@
  * focus across redraws, card action layout, ward-round paging, Today order,
  * date defaults, patient sheet entry points, filters, paging scroll, search
  * folding, modal safe areas, identity inputs, RTL isolation, contrast,
- * accessible names, and audit times.
+ * accessible names, audit times, the identity label of a patient with no
+ * MRN, and statuses shown in words.
  *
  * Synthetic data only; MRNs use the 9000 series.
  */
@@ -23,6 +24,7 @@ import type {
   TaskRecord
 } from "../src/domain/types";
 import type { ClinicalService } from "../src/services/clinical-service";
+import { buildHandoverNote } from "../src/services/handover";
 import type { IntegrityService } from "../src/services/integrity";
 import {
   ApplyTemplateModal,
@@ -32,6 +34,7 @@ import {
   DuplicatePatientModal,
   EpisodeHistoryModal,
   IntegrityReportModal,
+  MrnOwnerConflictModal,
   NewEpisodeModal,
   NewTaskModal,
   PatientDetailModal,
@@ -1046,6 +1049,17 @@ test("episode history and the patient sheet show audit times in local time", () 
   }
 });
 
+test("episode history spells out statuses without rewriting free-form audit states", () => {
+  const events = [
+    { ...auditEvent("EVT-status", STAMP), previous_state: "in-progress", new_state: "ready-to-close" },
+    { ...auditEvent("EVT-text", STAMP), previous_state: "custom-state: Keep THIS", new_state: "completed|opd-follow-up" }
+  ];
+  const root = openModal(new EpisodeHistoryModal(new App(), "Synthetic case", events)).content;
+  const changes = root.findAll(".clinical-integrity-issue").map((row) => row.find("p")?.textContent);
+  assert.match(changes[0]!, /In Progress → Ready to Close/);
+  assert.match(changes[1]!, /custom-state: Keep THIS → completed\|opd-follow-up/);
+});
+
 /* ---------------------------------------------- 19. Template preview ----- */
 
 test("the template preview shows each item's type, priority and date, and the bundle's warnings", () => {
@@ -1108,4 +1122,191 @@ test("an episode card's patient line opens the patient sheet without adding a bu
   const rules = parseCssRules(await readFile(new URL("../styles.css", import.meta.url), "utf8"));
   const mobile = computedDeclarations(rules, [".clinical-card-patient-link", ".is-mobile .clinical-card-patient-link"], { width: 390, height: 844 });
   assert.equal(mobile.get("min-height"), "44px", "a touch-sized target on phones");
+});
+
+/* ---------------------------------------------- 20. Identity without an MRN ----- */
+
+/** Every visible text and accessible name under a rendered element. */
+function spokenText(root: TestElement): string[] {
+  const out: string[] = [];
+  const visit = (node: TestElement): void => {
+    if (node.text) out.push(node.text);
+    const label = node.getAttribute("aria-label");
+    if (label) out.push(label);
+    for (const child of node.children) visit(child);
+  };
+  visit(root);
+  return out;
+}
+
+test("a patient without an MRN reads \"MRN needed\" once wherever the patient is named", () => {
+  const withMrn = `MRN ${MRN_ALPHA} · ⁨Synthetic Alpha⁩`;
+  const withoutMrn = "MRN needed · ⁨Synthetic Beta⁩";
+  assert.equal(patientIdentityLabel(MRN_ALPHA, "Synthetic Alpha"), withMrn);
+  assert.equal(patientIdentityLabel("", "Synthetic Beta"), withoutMrn);
+  assert.equal(patientIdentityLabel("", ""), "MRN needed · Name not recorded");
+
+  const alpha = patient("PAT-alpha");
+  const beta = patient("PAT-beta", { mrn: "", mrn_status: "missing", patient_name: "Synthetic Beta" });
+  const snapshot = snapshotOf({
+    patients: [alpha, beta],
+    episodes: [
+      episode("EPI-alpha", "PAT-alpha", { care_setting: "inpatient", case: "Synthetic alpha case" }),
+      episode("EPI-beta", "PAT-beta", { care_setting: "inpatient", case: "Synthetic beta case" }),
+      episode("EPI-orphan", "PAT-missing", { care_setting: "inpatient", case: "Synthetic orphan case" })
+    ],
+    tasks: [
+      task("TSK-beta", "EPI-beta", { patient_id: "PAT-beta", task: "Synthetic beta review", due_date: todayIso() })
+    ]
+  });
+  const rendered: TestElement[] = [];
+
+  // Today: the ward-round row, its buttons' names, and the task card.
+  const today = createView("today", snapshot);
+  today.view.render(snapshot);
+  rendered.push(today.root);
+  const wardNames = today.root.findAll(".clinical-ward-row").map((row) => row.find("strong")?.textContent);
+  assert.ok(wardNames.includes(withoutMrn), `ward rows: ${wardNames.join(" | ")}`);
+  assert.ok(wardNames.includes(withMrn), "a recorded MRN keeps its label");
+  assert.ok(
+    wardNames.includes("MRN needed · Patient identity missing"),
+    "an episode whose patient note is gone keeps its fallback"
+  );
+  buttonNamed(today.root, /^View — ⁨Synthetic beta case⁩, MRN needed · ⁨Synthetic Beta⁩$/);
+  const taskCard = today.root
+    .findAll(".clinical-card")
+    .find((card) => card.find("h4")?.textContent === "Synthetic beta review");
+  assert.ok(taskCard);
+  assert.ok(taskCard.findAll("p").some((line) => line.textContent === withoutMrn), "the task card names the patient");
+  buttonNamed(taskCard, /^Complete — ⁨Synthetic beta review⁩, MRN needed · ⁨Synthetic Beta⁩$/);
+
+  // Patients: the tappable patient line on the episode card and its name.
+  const patients = createView("patients", snapshot);
+  patients.view.render(snapshot);
+  rendered.push(patients.root);
+  const link = patients.root
+    .findAll(".clinical-card-patient-link")
+    .find((candidate) => candidate.textContent === withoutMrn);
+  assert.ok(link, "the patient line reads MRN needed and the name");
+  assert.equal(link.getAttribute("aria-label"), `${withoutMrn} — view patient`);
+
+  // Search: the patient row, a record row's patient, and their names.
+  const search = openModal(new ClinicalSearchModal(new App(), snapshot, () => undefined)).content;
+  const found = searchFor(search, "Synthetic Beta");
+  rendered.push(search);
+  assert.ok(found.labels.includes(withoutMrn));
+  assert.ok(found.metas.some((meta) => meta.startsWith(`${withoutMrn} · `)));
+  assert.ok(
+    search
+      .findAll(".clinical-quick-entry-option")
+      .some((row) => row.getAttribute("aria-label") === `Open patient: ${withoutMrn}`)
+  );
+
+  // The patient sheet's identity line.
+  const sheet = openModal(new PatientDetailModal(
+    new App(),
+    { patient: beta, episodes: [], tasks: [], procedures: [], events: [] },
+    () => undefined,
+    () => undefined
+  )).content;
+  rendered.push(sheet);
+  assert.ok(sheet.find(".clinical-section-note")?.textContent.startsWith(`${withoutMrn} · Phone NFN`));
+
+  // Possible duplicate and Check the MRN: the card line and the button's name.
+  const duplicate = openModal(new DuplicatePatientModal(new App(), [beta], () => undefined)).content;
+  rendered.push(duplicate);
+  assert.ok(duplicate.findAll("p").some((line) => line.textContent === "MRN needed"));
+  buttonNamed(duplicate, new RegExp(`^Use this patient — ${withoutMrn}$`));
+  const conflict = openModal(new MrnOwnerConflictModal(new App(), alpha, "Synthetic Gamma", () => undefined)).content;
+  rendered.push(conflict);
+  assert.ok(conflict.findAll("p").some((line) => line.textContent === `MRN ${MRN_ALPHA}`));
+  buttonNamed(conflict, new RegExp(`^Use this patient — ${withMrn}$`));
+
+  for (const root of rendered) {
+    for (const line of spokenText(root)) assert.doesNotMatch(line, /MRN MRN/, line);
+  }
+
+  // The ward handover note names the patient the same way.
+  const handover = buildHandoverNote(snapshot, todayIso());
+  assert.match(handover, /\*\*MRN needed · Synthetic Beta\*\*/);
+  assert.match(handover, new RegExp(`\\*\\*MRN ${MRN_ALPHA} · Synthetic Alpha\\*\\*`));
+  assert.doesNotMatch(handover, /MRN MRN/);
+});
+
+/* ---------------------------------------------- 21. Statuses in words ----- */
+
+test("the patient sheet, Search and Patient records show statuses in words, including a hand-edited one", () => {
+  const opened = (day: number): string => `2026-09-${String(day).padStart(2, "0")}T08:00:00.000Z`;
+  const statusByCase: Record<string, string> = {
+    "Synthetic active case": "Active",
+    "Synthetic on-hold case": "On Hold",
+    "Synthetic ready case": "Ready to Close",
+    "Synthetic archived case": "Archived",
+    "Synthetic cancelled case": "Cancelled",
+    "Synthetic error case": "Entered in Error",
+    "Synthetic hand-edited case": "Awaiting Bed",
+    "Synthetic blank case": "Unknown"
+  };
+  const records = {
+    patient: patient("PAT-alpha"),
+    episodes: [
+      episode("EPI-active", "PAT-alpha", { case: "Synthetic active case", opened_at: opened(8) }),
+      episode("EPI-hold", "PAT-alpha", { case: "Synthetic on-hold case", status: "on-hold", opened_at: opened(7) }),
+      episode("EPI-ready", "PAT-alpha", { case: "Synthetic ready case", status: "ready-to-close", opened_at: opened(6) }),
+      episode("EPI-archived", "PAT-alpha", { case: "Synthetic archived case", status: "archived", opened_at: opened(5) }),
+      episode("EPI-cancelled", "PAT-alpha", { case: "Synthetic cancelled case", status: "cancelled", opened_at: opened(4) }),
+      episode("EPI-error", "PAT-alpha", { case: "Synthetic error case", status: "entered-in-error", opened_at: opened(3) }),
+      // Typed by hand in the Properties panel: not a status the plugin writes.
+      episode("EPI-hand", "PAT-alpha", {
+        case: "Synthetic hand-edited case",
+        status: "awaiting-bed" as never,
+        opened_at: opened(2)
+      }),
+      episode("EPI-blank", "PAT-alpha", { case: "Synthetic blank case", status: "" as never, opened_at: opened(1) })
+    ],
+    tasks: [
+      task("TSK-done", "EPI-active", { task: "Synthetic done task", status: "completed", completed_at: opened(9) }),
+      task("TSK-dropped", "EPI-active", { task: "Synthetic dropped task", status: "cancelled", cancelled_at: opened(8) }),
+      task("TSK-waiting", "EPI-active", { task: "Synthetic waiting task", status: "waiting" })
+    ],
+    procedures: [],
+    events: []
+  };
+  const sheet = openModal(new PatientDetailModal(new App(), records, () => undefined, () => undefined)).content;
+  assert.ok(sheet.find(".clinical-section-note")?.textContent.endsWith(" · Active"), "the patient's own status");
+  const cardStatus = (heading: string): string | undefined =>
+    sheet
+      .findAll(".clinical-card")
+      .find((card) => card.find("h4")?.textContent === heading)
+      ?.find(".clinical-card-top")
+      ?.children.find((child) => child.classes.has("clinical-card-meta"))?.textContent;
+  for (const [caseName, label] of Object.entries(statusByCase)) {
+    assert.equal(cardStatus(caseName), label, caseName);
+  }
+  assert.equal(cardStatus("Synthetic done task"), "Completed");
+  assert.equal(cardStatus("Synthetic dropped task"), "Cancelled");
+
+  const search = openModal(new ClinicalSearchModal(
+    new App(),
+    snapshotOf({ patients: [records.patient], episodes: records.episodes, tasks: records.tasks }),
+    () => undefined
+  )).content;
+  const found = searchFor(search, "Synthetic");
+  assert.ok(found.metas.includes("Active"), "the patient row");
+  assert.ok(found.metas.some((meta) => meta.endsWith("· Assessment · Ready to Close")), found.metas.join(" | "));
+  assert.ok(found.metas.some((meta) => meta.endsWith("· Assessment · Entered in Error")));
+  assert.ok(found.metas.some((meta) => meta.endsWith("· Waiting")), "an open task's status");
+
+  // More → Patient records names each patient's status the same way.
+  const onFile = snapshotOf({ patients: [records.patient] });
+  const more = createView("more", onFile);
+  more.view.render(onFile);
+  const recordTop = listUnder(more.root, "more-patients").find(".clinical-card-top");
+  assert.equal(recordTop?.children.find((child) => child.classes.has("clinical-card-meta"))?.textContent, "Active");
+
+  // No stored value leaks through as the label.
+  const stored = /^(?:active|on-hold|ready-to-close|archived|cancelled|entered-in-error|awaiting-bed|completed|waiting)$|· (?:active|on-hold|ready-to-close|archived|cancelled|entered-in-error|awaiting-bed|completed|waiting)\b/;
+  for (const root of [sheet, search]) {
+    for (const line of spokenText(root)) assert.doesNotMatch(line, stored, line);
+  }
 });

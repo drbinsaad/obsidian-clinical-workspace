@@ -111,3 +111,33 @@ test("the lockfile holds only packages npm installs", async () => {
   }
   assert.deepEqual(stray, []);
 });
+
+test("typescript-eslint resolves one shared TypeScript API while typecheck uses the native compiler", async () => {
+  const require = createRequire(import.meta.url);
+  const api = require("typescript") as { version: string; createProgram?: unknown };
+  assert.match(api.version, /^6\./);
+  assert.equal(typeof api.createProgram, "function", "ESLint needs the JavaScript compiler API");
+  const manifest = JSON.parse(await read("package.json")) as { scripts: { typecheck: string } };
+  assert.equal(manifest.scripts.typecheck, "node node_modules/@typescript/native/bin/tsc --noEmit");
+  const native = JSON.parse(await read("node_modules/@typescript/native/package.json")) as { version: string };
+  assert.match(native.version, /^7\./);
+  const locations = Object.keys(await lockedPackages()).filter((location) =>
+    /node_modules\/(?:@typescript-eslint\/[^/]+|typescript-eslint)$/.test(location)
+  );
+  assert.ok(locations.includes("node_modules/@typescript-eslint/parser"));
+  assert.ok(locations.includes("node_modules/@typescript-eslint/typescript-estree"));
+  for (const location of locations) {
+    assert.match(location, /^node_modules\/(?:@typescript-eslint\/[^/]+|typescript-eslint)$/, "no nested parser stack");
+    const consumer = createRequire(new URL(`../${location}/package.json`, import.meta.url));
+    assert.equal(consumer.resolve("typescript"), require.resolve("typescript"), location);
+    assert.equal(consumer("typescript"), api, `${location} shares the same compiler API object`);
+  }
+});
+
+test("contributor setup explains the compiler/API split and unsupported Node ranges", async () => {
+  const guide = (await read("CONTRIBUTING.md")).replace(/\s+/g, " ");
+  assert.match(guide, /outside (?:that|this) supported range/);
+  assert.match(guide, /TypeScript 7/);
+  assert.match(guide, /TypeScript 6/);
+  assert.match(guide, /npm run typecheck/);
+});

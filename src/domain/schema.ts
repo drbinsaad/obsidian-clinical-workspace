@@ -188,6 +188,15 @@ export function displayMrn(mrn: string): string {
   return mrn || "MRN needed";
 }
 
+/**
+ * An MRN that says what it is, for text with no MRN heading: "MRN " and the
+ * number, or "MRN needed". Putting "MRN " before displayMrn read "MRN MRN
+ * needed" for a patient without one.
+ */
+export function mrnLabel(mrn: string): string {
+  return mrn ? `MRN ${mrn}` : displayMrn(mrn);
+}
+
 export function displayPhone(phone: string): string {
   return phone || "NFN";
 }
@@ -224,6 +233,35 @@ export function taskTypeLabel(type: string): string {
   return (
     labels[type] ??
     type
+      .split("-")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ")
+  );
+}
+
+/**
+ * Patient, episode and task statuses in words, spelled out like task types
+ * so "ready-to-close" reads "Ready to Close". A hand-edited value outside the
+ * list keeps the title-case rule, so it still reads as words.
+ */
+export function statusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    active: "Active",
+    "on-hold": "On Hold",
+    "ready-to-close": "Ready to Close",
+    archived: "Archived",
+    open: "Open",
+    "in-progress": "In Progress",
+    waiting: "Waiting",
+    completed: "Completed",
+    cancelled: "Cancelled",
+    "entered-in-error": "Entered in Error"
+  };
+  const text = normalizeText(status);
+  if (!text) return "Unknown";
+  if (Object.hasOwn(labels, text)) return labels[text]!;
+  return (
+    text
       .split("-")
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join(" ")

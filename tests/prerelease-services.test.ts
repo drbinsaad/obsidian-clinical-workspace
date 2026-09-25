@@ -82,9 +82,16 @@ const procedureInput = (
 });
 
 // The refusal names the truthful way to log a second procedure with the same
-// name and date, never altering the logbook's name or date.
+// name and date, never altering the logbook's name or date. On an episode
+// that has moved on, Add another procedure is on its newest logbook entry.
 const REFUSAL =
-  /^Error: This procedure is already in the logbook for this episode, so nothing was changed\. To log a second one with the same name and date, use Add another procedure on the episode's newest entry in the Surgery logbook; it is offered once the episode has moved on from OR booking\.$/;
+  /^Error: This procedure is already in the logbook for this episode, so nothing was changed\. To log a second one with the same name and date, use Add another procedure on the episode's newest entry in the Surgery logbook\.$/;
+// On an episode back on OR booking that button is not offered, so the
+// refusal only says the operation is already logged: nothing in it may read
+// as advice to take the episode off OR booking.
+const REBOOKED_REFUSAL =
+  /^Error: This operation is already in the logbook for this episode with the same procedure name and date, so nothing was changed\.$/;
+const PATHWAY_ADVICE = /Add another procedure|moved on|OR booking|pathway/i;
 
 test("re-submitting a fully logged procedure is refused and changes nothing", async () => {
   const h = await harness();
@@ -134,8 +141,9 @@ test("a same-name, same-day procedure on a re-booked episode is refused without 
   const tasksBefore = await tasksOf(h, episodeId);
 
   await assert.rejects(() => h.service.completeProcedure(input), (error: unknown) => {
-    assert.match(String(error), REFUSAL);
+    assert.match(String(error), REBOOKED_REFUSAL);
     assert.doesNotMatch(String(error), /different date or name/);
+    assert.doesNotMatch(String(error), PATHWAY_ADVICE, "the booking is left alone, so is the pathway");
     return true;
   });
   assert.deepEqual(await episodeOf(h, episodeId), before, "the new booking is untouched");
