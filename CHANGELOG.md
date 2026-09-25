@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Repository development and the desktop logbook exporter now need Node.js
+  22.13 or later on the 22 line, or Node.js 24 or later. The development
+  toolchain moved to ESLint 10, which does not support earlier releases, and
+  on them `npm ci` warns `EBADENGINE`. The installed plugin does not use
+  Node.js and is unaffected.
+
 ## [0.7.0] - 2026-09-24
 
 ### Upgrade notes
