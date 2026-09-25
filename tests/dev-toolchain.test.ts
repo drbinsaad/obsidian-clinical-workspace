@@ -1,9 +1,9 @@
 /**
  * The repository's development toolchain: every Node.js release that
  * package.json's engines.node accepts must also be one that each locked
- * package accepts, and the public guides must name that same floor. Reads
- * package.json, package-lock.json and the Markdown guides only; installs and
- * runs nothing.
+ * package accepts, the public guides must name that same floor, and the
+ * lockfile must hold only packages npm installs. Reads package.json,
+ * package-lock.json and the Markdown guides only; installs and runs nothing.
  */
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
@@ -22,6 +22,7 @@ const semver = createRequire(import.meta.url)("semver") as {
 interface LockEntry {
   version?: string;
   engines?: { node?: string };
+  extraneous?: boolean;
 }
 
 const read = (path: string): Promise<string> => readFile(new URL(`../${path}`, import.meta.url), "utf8");
@@ -95,4 +96,18 @@ test("the public guides name the Node.js floor package.json declares", async () 
     if (!mentions(changelog, floor)) problems.push(`CHANGELOG.md does not name Node.js ${floor}`);
   }
   assert.deepEqual(problems, [], `package.json engines.node is "${range}"`);
+});
+
+test("the lockfile holds only packages npm installs", async () => {
+  // Pruning two nested @typescript-eslint entries by hand left the packages
+  // nested under them behind, marked extraneous. npm skips such entries, and
+  // neither `npm install --package-lock-only` nor `npm prune` removes them.
+  const packages = await lockedPackages();
+  const stray: string[] = [];
+  for (const [location, entry] of Object.entries(packages)) {
+    if (entry.extraneous === true) stray.push(`${location} is extraneous`);
+    const nested = location.lastIndexOf("/node_modules/");
+    if (nested > 0 && !(location.slice(0, nested) in packages)) stray.push(`${location} has no parent entry`);
+  }
+  assert.deepEqual(stray, []);
 });
