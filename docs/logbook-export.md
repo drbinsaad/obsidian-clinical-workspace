@@ -11,7 +11,8 @@ The installed Obsidian plugin consists only of `main.js`, `manifest.json`, and
 `scripts/export-logbook.mjs`, and there is no exporter command in the Obsidian
 interface.
 
-To export, use a trusted desktop checkout of this repository with Node.js 22.
+To export, use a trusted desktop checkout of this repository with Node.js
+22.13 or later on the 22 line, or Node.js 24 or later.
 The utility cannot be run from the installed plugin on iPhone or iPad.
 
 ## Before exporting
@@ -31,9 +32,12 @@ as a bug-report attachment, test fixture, or example file.
 
 Do this once, on an institutionally managed desktop.
 
-1. Install **Node.js 22** from [nodejs.org](https://nodejs.org/) or your
-   organization's software catalogue. In a terminal, `node --version` should
-   print a version starting with `v22`.
+1. Install **Node.js 22.13 or later on the 22 line, or Node.js 24 or later**
+   from [nodejs.org](https://nodejs.org/) or your organization's software
+   catalogue. In a terminal, `node --version` should print `v22.13.0` or a
+   later 22 release, such as `v22.20.0`, or `v24.0.0` or later. On an earlier
+   release step 3 warns `EBADENGINE` (unsupported engine); update Node.js
+   before you continue.
 2. Get the source code: either
    `git clone https://github.com/drbinsaad/obsidian-clinical-workspace.git`,
    or download **Source code (zip)** from the [latest

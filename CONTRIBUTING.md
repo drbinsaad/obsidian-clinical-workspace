@@ -17,8 +17,17 @@ information, even when the report is private.
 
 ## Development setup
 
-Repository tooling requires Node.js 22 or later. The installed Obsidian plugin
-does not require Node.js.
+Repository tooling requires Node.js 22.13 or later on the 22 line, or Node.js
+24 or later. Releases outside this supported range are unsupported by the
+toolchain, and `npm ci` warns `EBADENGINE` on them. The installed Obsidian plugin does not
+require Node.js.
+
+Run `npm run typecheck` to use the native TypeScript 7 compiler. ESLint's
+typescript-eslint parser stack shares the TypeScript 6 JavaScript API through
+the `typescript` alias; it must not resolve a second compiler API instance.
+The Obsidian lint plugin has its own older TypeScript dependency, separate
+from that parser stack. Do not replace the explicit typecheck command with
+`npx tsc`, which can select the API alias instead of the native compiler.
 
 ```bash
 npm ci

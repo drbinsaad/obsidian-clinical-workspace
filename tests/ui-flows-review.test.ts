@@ -710,7 +710,7 @@ for (const entry of ["surgery", "quick entry"] as const) {
     confirm.dispatch("click");
     submitButton(modal.contentEl).dispatch("click");
     await waitFor(() => modal.closes === 1 || modal.contentEl.find(".clinical-modal-error")?.hidden === false, "confirmed return completion");
-    assert.equal(modal.closes, 1, modal.contentEl.find(".clinical-modal-error")?.textContent);
+    assert.equal(modal.closes, 1, modal.contentEl.find(".clinical-modal-error")?.textContent ?? "completion should close the form");
     const entries = await h.repository.list<ProcedureRecord>("procedure");
     assert.equal(entries.length, 2);
     assert.equal(entries.filter((item) => item.record.completion_booking_task_id === booking.id).length, 1);

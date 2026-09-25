@@ -43,13 +43,13 @@ This repository contains two different components:
    and `styles.css`. Community plugins, BRAT, and manual installation deliver
    only these files. This runtime supports desktop and mobile.
 2. The **repository-only logbook exporter** is `scripts/export-logbook.mjs`. It
-   requires a trusted desktop source checkout, Node.js 22, and an explicit
-   terminal command. It is not bundled into the plugin, has no Obsidian command
-   or interface, and is unavailable from a Community/BRAT/manual installation or
-   on iPhone/iPad. When `--root` is omitted it also reads the vault's plugin
-   settings file, `.obsidian/plugins/clinical-workspace/data.json`, to find the
-   configured clinical folder; that is the only file it reads outside the
-   clinical folder.
+   requires a trusted desktop source checkout, Node.js 22.13 or later on the 22
+   line or Node.js 24 or later, and an explicit terminal command. It is not
+   bundled into the plugin, has no Obsidian command or interface, and is
+   unavailable from a Community/BRAT/manual installation or on iPhone/iPad.
+   When `--root` is omitted it also reads the vault's plugin settings file,
+   `.obsidian/plugins/clinical-workspace/data.json`, to find the configured
+   clinical folder; that is the only file it reads outside the clinical folder.
 
 The runtime's vault confinement does not mean an export stays in the vault. The
 exporter's purpose is to create a separate confidential CSV at an approved

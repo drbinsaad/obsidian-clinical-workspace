@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Repository development and the desktop logbook exporter now need Node.js
+  22.13 or later on the 22 line, or Node.js 24 or later. The development
+  toolchain moved to ESLint 10, which does not support earlier releases, and
+  on them `npm ci` warns `EBADENGINE`. The installed plugin does not use
+  Node.js and is unaffected.
 - The patient list's **Status** column uses the same words as the patient
   sheet, for example "Ready to Close" instead of "Ready To Close".
 - Export filenames and episode-history status transitions use the same labels;

@@ -233,8 +233,9 @@ The installed plugin runtime requires **Obsidian 1.13.0 or later** and supports
 Obsidian desktop and mobile. Test the complete workflow with synthetic records
 on every device and Obsidian version you plan to use.
 
-Node.js is not required for the installed plugin. **Node.js 22 is required only
-for repository development and the separate desktop logbook-export command.**
+Node.js is not required for the installed plugin. **Node.js 22.13 or later on
+the 22 line, or Node.js 24 or later, is required only for repository
+development and the separate desktop logbook-export command.**
 
 Community installation is the recommended stable route. Alternatives:
 
@@ -289,7 +290,7 @@ stored without provenance. See the [0.6.9 recovery compatibility notes](CHANGELO
 
 ## Surgery logbook exports
 
-The repository includes a separate Node.js 22 command that joins completed
+The repository includes a separate Node.js command that joins completed
 Procedure notes to their Episode context. It is desktop-only, is not bundled in
 the plugin, and cannot be run from an installed Community, BRAT, or manual
 plugin.
@@ -309,7 +310,8 @@ command.
 
 ## Development
 
-Development and repository utilities use Node.js 22:
+Development and repository utilities need Node.js 22.13 or later on the 22
+line, or Node.js 24 or later:
 
 ```bash
 npm ci

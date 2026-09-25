@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "dev": "node esbuild.config.mjs --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node node_modules/@typescript/native/bin/tsc --noEmit",
     "lint": "eslint src scripts/*.mjs",
     "test": "node --import tsx --import ./tests/support/register.mjs --test tests/*.test.ts",
     "check": "npm run typecheck && npm run lint && npm run build && npm test",
@@ -19,16 +19,18 @@
     "export:logbook": "node scripts/export-logbook.mjs"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
-    "esbuild": "^0.25.0",
-    "eslint": "^9.39.5",
-    "eslint-plugin-obsidianmd": "^0.4.1",
-    "globals": "^17.9.0",
+    "@types/node": "^26.6.2",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.11.0",
+    "eslint-plugin-obsidianmd": "^0.4.2",
+    "globals": "^17.12.0",
     "jiti": "^2.7.0",
     "obsidian": "^1.8.7",
-    "tsx": "^4.20.0",
-    "typescript": "^5.8.0",
-    "yaml": "^2.9.0"
+    "semver": "^7.8.5",
+    "tsx": "^4.23.15",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "yaml": "^2.9.1"
   },
   "description": "Mobile-first local clinical workflow for patients, care episodes, tasks and surgery logbook entries.",
   "author": {
@@ -46,7 +48,7 @@
     "typescript"
   ],
   "engines": {
-    "node": ">=22"
+    "node": "^22.13.0 || >=24"
   },
   "repository": {
     "type": "git",
