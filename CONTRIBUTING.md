@@ -17,8 +17,9 @@ information, even when the report is private.
 
 ## Development setup
 
-Repository tooling requires Node.js 22 or later. The installed Obsidian plugin
-does not require Node.js.
+Repository tooling requires Node.js 22.13 or later on the 22 line, or Node.js
+24 or later; ESLint 10 does not run on earlier releases. The installed Obsidian
+plugin does not require Node.js.
 
 ```bash
 npm ci
