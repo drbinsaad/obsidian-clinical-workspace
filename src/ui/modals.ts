@@ -19,23 +19,27 @@ import type {
 } from "../domain/types";
 import {
   CARE_SETTINGS,
+  EPISODE_STATUSES,
+  PATIENT_STATUSES,
   PATHWAYS,
   PRIORITIES,
+  TASK_STATUSES,
   TASK_TYPES
 } from "../domain/types";
 import {
   canonicalOption,
   careSettingLabel,
   createId,
-  displayMrn,
   displayPhone,
   formatLocalDateTime,
   isoDateWithOffset,
+  mrnLabel,
   mrnMatchKey,
   normalizeIsoDate,
   pathwayLabel,
   priorityLabel,
   searchKey,
+  statusLabel,
   taskIsOpen,
   taskTypeLabel,
   todayIso
@@ -584,6 +588,8 @@ export interface QuickEntryEpisodeChoice {
    * a logged procedure, so choosing it adds another procedure.
    */
   additionalProcedure?: boolean;
+  returnToTheatre?: boolean;
+  completionBookingTaskId?: string;
 }
 
 /**
@@ -1135,7 +1141,7 @@ export class DuplicatePatientModal extends ClinicalResponsiveModal {
     for (const candidate of this.candidates) {
       const card = list.createDiv({ cls: "clinical-card" });
       card.createEl("h4", { text: candidate.patient_name || "Name not recorded", attr: { dir: "auto" } });
-      card.createEl("p", { text: `MRN ${displayMrn(candidate.mrn)}`, cls: "clinical-card-meta" });
+      card.createEl("p", { text: mrnLabel(candidate.mrn), cls: "clinical-card-meta" });
       card.createEl("p", { text: `Phone ${displayPhone(candidate.phone)}`, cls: "clinical-card-meta" });
       if (enteredMrn && !candidate.mrn) {
         card.createEl("p", {
@@ -1200,12 +1206,12 @@ export class MrnOwnerConflictModal extends ClinicalResponsiveModal {
     const body = this.contentEl.createDiv({ cls: "clinical-modal-body" });
     body.createEl("h2", { text: "Check the MRN", cls: "clinical-modal-heading" });
     body.createEl("p", {
-      text: `MRN ${displayMrn(stored.mrn)} is already recorded for ${bidiIsolate(stored.patient_name)}, but the form names ${bidiIsolate(this.typedName.trim())}. A one-digit slip in the MRN would file this episode in someone else's record.`,
+      text: `${mrnLabel(stored.mrn)} is already recorded for ${bidiIsolate(stored.patient_name)}, but the form names ${bidiIsolate(this.typedName.trim())}. A one-digit slip in the MRN would file this episode in someone else's record.`,
       cls: "clinical-section-note"
     });
     const card = body.createDiv({ cls: "clinical-card" });
     card.createEl("h4", { text: stored.patient_name || "Name not recorded", attr: { dir: "auto" } });
-    card.createEl("p", { text: `MRN ${displayMrn(stored.mrn)}`, cls: "clinical-card-meta" });
+    card.createEl("p", { text: mrnLabel(stored.mrn), cls: "clinical-card-meta" });
     card.createEl("p", { text: `Phone ${displayPhone(stored.phone)}`, cls: "clinical-card-meta" });
     body.createEl("p", {
       text: "If this is the same person, use this patient: the episode is added to their record and the stored name is kept. A wrong name can be corrected later from the patient's record.",
@@ -1827,6 +1833,8 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
   private readonly episode: EpisodeRecord;
   private readonly patientLabel: string;
   private readonly additional: boolean;
+  private readonly returnToTheatre: boolean;
+  private newOperationConfirmed = false;
 
   constructor(
     app: App,
@@ -1838,10 +1846,11 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
      * on from OR booking; this logs another as its own entry without changing
      * its pathway.
      */
-    options: { additional?: boolean } = {}
+    options: { additional?: boolean; returnToTheatre?: boolean; completionBookingTaskId?: string } = {}
   ) {
     super(app, options.additional ? "Log procedure" : "Complete surgery", onSubmit);
     this.additional = options.additional === true;
+    this.returnToTheatre = !this.additional && options.returnToTheatre === true;
     this.episode = episode;
     this.patientLabel = patientLabel;
     this.input = {
@@ -1859,7 +1868,8 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
       // One id for the life of this form: resubmitting it after an error is
       // the same entry, while the next form logs a separate one even with the
       // same procedure and date.
-      ...(this.additional ? { additionalEntryId: createId("ADD") } : {})
+      ...(this.additional ? { additionalEntryId: createId("ADD") } : {}),
+      ...(this.returnToTheatre ? { completionBookingTaskId: options.completionBookingTaskId ?? "" } : {})
     };
   }
 
@@ -1872,6 +1882,16 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
       form.createEl("p", {
         text: "This episode already has a logged procedure. This adds another logbook entry and keeps the episode's pathway. Turning on follow-up adds a follow-up task, which becomes the episode's next action if it is due first.",
         cls: "clinical-section-note"
+      });
+    }
+    if (this.returnToTheatre) {
+      form.createEl("p", {
+        text: "An earlier operation is already logged. This completes the current return-to-theatre booking as a separate operation, even with the same name and date. Earlier entries are kept.",
+        cls: "clinical-section-note"
+      });
+      namedSetting(form, "This is a new operation for this booking").addToggle((field) => {
+        field.toggleEl.setAttribute("aria-label", "This is a new operation for this booking");
+        field.setValue(false).onChange((value) => { this.newOperationConfirmed = value; });
       });
     }
     namedSetting(form, "Surgery / procedure")
@@ -1918,6 +1938,12 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
   }
 
   protected value(): CompleteProcedureInput {
+    if (this.returnToTheatre && !this.input.completionBookingTaskId) {
+      throw new Error("This episode needs one unambiguous open Book OR task. Review its booking, then reopen this form. Nothing was saved.");
+    }
+    if (this.returnToTheatre && !this.newOperationConfirmed) {
+      throw new Error("Confirm that this is a new operation for this booking. Nothing was saved.");
+    }
     return this.input;
   }
 }
@@ -2236,7 +2262,11 @@ export class EpisodeHistoryModal extends ClinicalResponsiveModal {
       const head = row.createDiv({ cls: "clinical-card-top" });
       head.createEl("strong", { text: event.summary || event.action });
       head.createSpan({ text: formatLocalDateTime(event.created_at), cls: "clinical-card-meta" });
-      const change = [event.previous_state, event.new_state].filter(Boolean).join(" → ");
+      const knownStatuses: readonly string[] = [...EPISODE_STATUSES, ...PATIENT_STATUSES, ...TASK_STATUSES];
+      const change = [event.previous_state, event.new_state]
+        .filter(Boolean)
+        .map((state) => knownStatuses.includes(state) ? statusLabel(state) : state)
+        .join(" → ");
       row.createEl("p", {
         text: `${event.action}${change ? ` · ${change}` : ""} · ${event.actor}`,
         cls: "clinical-card-meta"
@@ -2295,7 +2325,7 @@ export class PatientDetailModal extends ClinicalResponsiveModal {
       attr: { dir: "auto" }
     });
     body.createEl("p", {
-      text: `${patientIdentityLabel(patient.mrn, patient.patient_name)} · Phone ${displayPhone(patient.phone)} · ${patient.status}`,
+      text: `${patientIdentityLabel(patient.mrn, patient.patient_name)} · Phone ${displayPhone(patient.phone)} · ${statusLabel(patient.status)}`,
       cls: "clinical-section-note"
     });
 
@@ -2313,7 +2343,7 @@ export class PatientDetailModal extends ClinicalResponsiveModal {
       const card = episodeList.createDiv({ cls: "clinical-card" });
       const top = card.createDiv({ cls: "clinical-card-top" });
       top.createEl("h4", { text: episode.case || "Case not recorded", attr: { dir: "auto" } });
-      top.createSpan({ text: episode.status, cls: "clinical-card-meta" });
+      top.createSpan({ text: statusLabel(episode.status), cls: "clinical-card-meta" });
       card.createEl("p", { text: pathwayLabel(episode.pathway), cls: "clinical-card-meta" });
       const actions = card.createDiv({ cls: "clinical-card-actions" });
       const open = actions.createEl("button", {
@@ -2377,7 +2407,7 @@ export class PatientDetailModal extends ClinicalResponsiveModal {
       const card = closedList.createDiv({ cls: "clinical-card" });
       const top = card.createDiv({ cls: "clinical-card-top" });
       top.createEl("h4", { text: task.task || "Task not recorded", attr: { dir: "auto" } });
-      top.createSpan({ text: task.status, cls: "clinical-card-meta" });
+      top.createSpan({ text: statusLabel(task.status), cls: "clinical-card-meta" });
       if (closableEpisodes.has(task.episode_id)) {
         const actions = card.createDiv({ cls: "clinical-card-actions" });
         const reopen = actions.createEl("button", {
@@ -2538,7 +2568,7 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
         title: "Patients",
         rows: this.data.patients.map((patient): ClinicalSearchRow => ({
           label: patientIdentityLabel(patient.mrn, patient.patient_name),
-          meta: patient.status,
+          meta: statusLabel(patient.status),
           entity: "patient",
           id: patient.id,
           patientLabel: "",
@@ -2553,7 +2583,7 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
             "episode",
             episode.id,
             episode.case || "Case not recorded",
-            `${pathwayLabel(episode.pathway)} · ${episode.status}`,
+            `${pathwayLabel(episode.pathway)} · ${statusLabel(episode.status)}`,
             episode.case,
             episode.patient_id
           )
@@ -2566,7 +2596,7 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
             "task",
             task.id,
             task.task || "Task not recorded",
-            `${task.status}${task.due_date ? ` · due ${task.due_date}` : ""}`,
+            `${statusLabel(task.status)}${task.due_date ? ` · due ${task.due_date}` : ""}`,
             task.task,
             task.patient_id
           )
@@ -2663,5 +2693,5 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
 }
 
 export function patientIdentityLabel(mrn: string, patientName: string): string {
-  return `MRN ${displayMrn(mrn)} · ${patientName ? bidiIsolate(patientName) : "Name not recorded"}`;
+  return `${mrnLabel(mrn)} · ${patientName ? bidiIsolate(patientName) : "Name not recorded"}`;
 }

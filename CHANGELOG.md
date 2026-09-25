@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The patient list's **Status** column uses the same words as the patient
+  sheet, for example "Ready to Close" instead of "Ready To Close".
+- Export filenames and episode-history status transitions use the same labels;
+  free-form audit text is preserved. Hand-edited status names cannot resolve
+  inherited JavaScript properties.
+
+### Fixed
+
+- A rebooked episode can now record a separate return-to-theatre operation with
+  the same procedure name and date. **Complete surgery**, including Quick Entry,
+  requires confirmation that this is a new operation and binds it to the current
+  Book OR task. Repeated submissions reuse that operation; stale or ambiguous
+  bookings are refused, and earlier logbook entries are retained.
+- A patient without an MRN was named "MRN MRN needed" on episode and task
+  cards, ward-round rows, Search, the patient sheet, the possible-duplicate
+  dialog, button names read by VoiceOver, and the ward handover note. It now
+  reads "MRN needed" and the name.
+- The patient sheet, Search results and **More → Patient records** showed
+  stored status values such as `ready-to-close` and `completed`. They now
+  show words such as "Ready to Close" and "Completed"; a status typed by hand
+  is shown in words too.
+- **Complete surgery** for a procedure already in the logbook, on an episode
+  put back on OR booking, was refused with advice that read as taking the
+  episode off OR booking. The refusal now says only that the operation is
+  already logged and nothing was changed. On an episode that has moved on it
+  still points to **Add another procedure**.
+
 ## [0.7.0] - 2026-09-24
 
 ### Upgrade notes

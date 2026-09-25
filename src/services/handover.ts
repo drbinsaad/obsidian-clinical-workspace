@@ -1,7 +1,7 @@
 import type { ClinicalSnapshot, EpisodeRecord, PatientRecord, TaskRecord } from "../domain/types";
 import {
   careSettingLabel,
-  displayMrn,
+  mrnLabel,
   normalizeIsoDate,
   normalizeText,
   pathwayLabel,
@@ -46,7 +46,7 @@ export function buildHandoverNote(snapshot: ClinicalSnapshot, today = todayIso()
     normalizeText(value) ? escapeMarkdownInline(value ?? "") : fallback;
   const label = (patient: PatientRecord | undefined): string =>
     patient
-      ? `MRN ${escapeMarkdownInline(displayMrn(patient.mrn))} · ${text(patient.patient_name, "Name not recorded")}`
+      ? `${escapeMarkdownInline(mrnLabel(patient.mrn))} · ${text(patient.patient_name, "Name not recorded")}`
       : "Patient identity missing";
 
   const activeEpisodes = snapshot.episodes.filter(

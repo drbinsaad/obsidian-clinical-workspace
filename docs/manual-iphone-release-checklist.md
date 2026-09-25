@@ -88,6 +88,10 @@ Open each exact URL from Apple Shortcuts **Open URLs**:
 
 ## Everyday workflows
 
+- [ ] After a synthetic completed operation, rebook the same episode with a
+  Book OR task. **Complete surgery** and procedure Quick Entry require the new
+  operation confirmation and accept the same name/date once. Retrying does not
+  add another entry or complete a newer booking.
 - [ ] **Complete** on a task shows "Task completed." with an **Undo** button
   that stays tappable for about 9 seconds above the keyboard and toolbar.
   **Undo** reopens the task. For a weekly repeating task, **Undo** reports that

@@ -11,6 +11,7 @@ import {
   pathwayLabel,
   priorityLabel,
   procedureIdempotencyKey,
+  statusLabel,
   taskIdempotencyKey,
   taskIsDueToday,
   taskIsOverdue,
@@ -26,6 +27,15 @@ import {
   statusAfterTaskCompletion
 } from "../src/domain/transitions";
 import { episodeInput } from "./support/harness";
+
+test("status labels never return inherited object properties", () => {
+  for (const [stored, label] of Object.entries({
+    constructor: "Constructor", toString: "ToString", hasOwnProperty: "HasOwnProperty"
+  })) assert.equal(statusLabel(stored), label);
+  assert.equal(statusLabel("__proto__"), "__proto__");
+  assert.equal(statusLabel(" ready-to-close "), "Ready to Close");
+  assert.equal(statusLabel(""), "Unknown");
+});
 
 function task(overrides: Partial<TaskRecord> = {}): TaskRecord {
   return {

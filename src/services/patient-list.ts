@@ -15,6 +15,7 @@ import {
   normalizeText,
   pathwayLabel,
   priorityLabel,
+  statusLabel,
   taskIsOpen,
   taskIsOverdue,
   todayIso
@@ -217,7 +218,7 @@ export function patientListFileBaseName(filter: PatientListFilter, today = today
     filter.careSetting === "all" ? "" : careSettingLabel(filter.careSetting),
     filter.pathway === "all" ? "" : pathwayLabel(filter.pathway),
     filter.priority === "all" ? "" : priorityLabel(filter.priority),
-    filter.scope === "open" ? "" : filter.scope === "all" ? "All statuses" : titleCase(filter.scope)
+    filter.scope === "open" ? "" : filter.scope === "all" ? "All statuses" : statusLabel(filter.scope)
   ].filter(Boolean);
   const descriptor = parts
     .join(" ")
@@ -225,17 +226,6 @@ export function patientListFileBaseName(filter: PatientListFilter, today = today
     .replace(/\s+/g, " ")
     .trim();
   return descriptor ? `Patient list ${today} ${descriptor}` : `Patient list ${today}`;
-}
-
-function titleCase(value: string): string {
-  return value
-    .split("-")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function episodeStatusLabel(status: string): string {
-  return normalizeText(status) ? titleCase(normalizeText(status)) : "Unknown";
 }
 
 interface PatientListColumn {
@@ -257,7 +247,7 @@ const COLUMNS: readonly PatientListColumn[] = [
   { heading: "Setting", read: (row) => careSettingLabel(row.episode.care_setting) },
   { heading: "Pathway", read: (row) => pathwayLabel(row.episode.pathway) },
   { heading: "Priority", read: (row) => priorityLabel(row.episode.priority) },
-  { heading: "Status", read: (row) => episodeStatusLabel(row.episode.status) },
+  { heading: "Status", read: (row) => statusLabel(row.episode.status) },
   { heading: "Next action", read: (row) => row.episode.next_action },
   { heading: "Due", read: (row) => row.episode.due_date },
   // The stored timestamp is UTC; its first ten characters are the wrong day

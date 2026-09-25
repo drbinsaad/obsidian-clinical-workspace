@@ -601,6 +601,123 @@ function procedureInput(patientId: string, episodeId: string, procedure: string)
   };
 }
 
+for (const hasEarlierOperation of [false, true]) test(`reopening an unfinished default operation retries it (earlier entry: ${hasEarlierOperation})`, async () => {
+  const h = await harness();
+  const created = await h.service.createEpisode(episodeInput({
+    mrn: "9000997102", patientName: "Synthetic Interrupted", phone: "0500000001", pathway: "or-booking",
+    nextAction: "Book theatre", dueDate: todayIso()
+  }));
+  const input = procedureInput(created.patient.record.id, created.episode.record.id, "Synthetic interrupted operation");
+  if (hasEarlierOperation) {
+    await h.service.completeProcedure({ ...input, procedure: "Synthetic earlier operation" });
+    await h.service.updateEpisode(input.episodeId, {
+      careSetting: "inpatient", pathway: "or-booking", priority: "urgent",
+      nextAction: "Return to theatre", dueDate: todayIso()
+    });
+  }
+  const realUpdate = h.repository.update.bind(h.repository);
+  h.repository.update = async (...args) => {
+    if (args[0].includes("/Tasks/") && args[1].status === "completed") throw new Error("Synthetic interruption");
+    return realUpdate(...args);
+  };
+  await assert.rejects(h.service.completeProcedure(input), /Synthetic interruption/);
+  h.repository.update = realUpdate;
+  const { root } = await mountView(h, "surgery");
+  buttonNamed(root, /^Complete surgery —/).dispatch("click");
+  const modal = lastOpened(ProcedureModal);
+  await flush();
+  assert.equal(modal.contentEl.findAll(".checkbox-container").some((toggle) =>
+    toggle.getAttribute("aria-label") === "This is a new operation for this booking"), false);
+  type(field(modal.contentEl, "Surgery / procedure"), input.procedure);
+  submitButton(modal.contentEl).dispatch("click");
+  await waitFor(() => modal.closes === 1, "pending original operation to resume");
+  const entries = await h.repository.list<ProcedureRecord>("procedure");
+  assert.equal(entries.length, hasEarlierOperation ? 2 : 1);
+  assert.ok(entries.every((item) => item.record.audit_pending === false));
+});
+
+test("reopening a bound completion after booking close resumes its saved booking", async () => {
+  const h = await harness();
+  const created = await h.service.createEpisode(episodeInput({ mrn: "9000997103", patientName: "Synthetic Retry", pathway: "or-booking" }));
+  const input = procedureInput(created.patient.record.id, created.episode.record.id, "Synthetic repeat operation");
+  await h.service.completeProcedure(input);
+  await h.service.updateEpisode(input.episodeId, { careSetting: "inpatient", pathway: "or-booking", priority: "urgent", nextAction: "Return to theatre", dueDate: todayIso() });
+  const booking = (await tasksOf(h, input.episodeId)).find(task => task.task_type === "book-or" && task.status === "open");
+  assert.ok(booking);
+  const real = h.repository.update.bind(h.repository);
+  h.repository.update = async (...args) => {
+    if (args[1].last_completion_booking_task_id) throw new Error("Synthetic transition failure");
+    return real(...args);
+  };
+  await assert.rejects(h.service.completeProcedure({ ...input, completionBookingTaskId: booking.id }), /Synthetic transition failure/);
+  h.repository.update = real;
+  const snapshot = await h.repository.snapshot();
+  const pending = snapshot.procedures.find(procedure => procedure.audit_pending === true);
+  assert.ok(pending);
+  assert.equal(quickEntryEpisodeChoices(snapshot, "", "procedure")[0]?.completionBookingTaskId, booking.id);
+  const ambiguous = { ...snapshot, procedures: [...snapshot.procedures, { ...pending, id: "PRC-synthetic-ambiguous" }] };
+  assert.equal(quickEntryEpisodeChoices(ambiguous, "", "procedure")[0]?.completionBookingTaskId, "");
+  const currentBooking = { ...booking, id: "TSK-synthetic-current", status: "open" as const };
+  assert.equal(quickEntryEpisodeChoices({ ...snapshot, tasks: [...snapshot.tasks, currentBooking] }, "", "procedure")[0]?.completionBookingTaskId, currentBooking.id);
+  assert.equal(quickEntryEpisodeChoices({ ...snapshot, tasks: [...snapshot.tasks, currentBooking, { ...currentBooking, id: "TSK-synthetic-other" }] }, "", "procedure")[0]?.completionBookingTaskId, "");
+  const { root } = await mountView(h, "surgery");
+  buttonNamed(root, /^Complete surgery —/).dispatch("click");
+  const modal = lastOpened(ProcedureModal);
+  await flush();
+  type(field(modal.contentEl, "Surgery / procedure"), input.procedure);
+  const confirmation = modal.contentEl.findAll(".checkbox-container").find(toggle => toggle.getAttribute("aria-label") === "This is a new operation for this booking");
+  assert.ok(confirmation);
+  confirmation.dispatch("click");
+  submitButton(modal.contentEl).dispatch("click");
+  await waitFor(() => modal.closes === 1, "saved bound operation to resume");
+  const entries = await h.repository.list<ProcedureRecord>("procedure");
+  assert.equal(entries.length, 2);
+  assert.ok(entries.every(entry => entry.record.audit_pending === false));
+});
+
+for (const entry of ["surgery", "quick entry"] as const) {
+  test(`${entry} completes an explicitly confirmed same-day return against its captured booking`, async () => {
+    const h = await harness();
+    const created = await h.service.createEpisode(episodeInput({
+      mrn: "9000997101", patientName: "Synthetic Return", phone: "0500000000",
+      caseName: "Synthetic repeat case", pathway: "or-booking"
+    }));
+    const episodeId = created.episode.record.id;
+    const input = procedureInput(created.patient.record.id, episodeId, "Synthetic repeat operation");
+    await h.service.completeProcedure(input);
+    await h.service.updateEpisode(episodeId, {
+      careSetting: "inpatient", pathway: "or-booking", priority: "urgent",
+      nextAction: "Return to theatre", dueDate: todayIso()
+    });
+    const booking = (await tasksOf(h, episodeId)).find((task) => task.task_type === "book-or" && task.status === "open")!;
+    assert.ok(booking);
+    const { root, view } = await mountView(h, "surgery");
+    if (entry === "surgery") buttonNamed(root, /^Complete surgery —/).dispatch("click");
+    else {
+      await view.openProcedureQuickEntry();
+      buttonNamed(lastOpened(QuickEntryEpisodeModal).contentEl, /^Use this episode for a procedure:/).dispatch("click");
+    }
+    const modal = lastOpened(ProcedureModal);
+    await flush();
+    const confirm = modal.contentEl.findAll(".checkbox-container")
+      .find((toggle) => toggle.getAttribute("aria-label") === "This is a new operation for this booking");
+    assert.ok(confirm, "a rebooked operation needs an explicit confirmation");
+    type(field(modal.contentEl, "Surgery / procedure"), input.procedure);
+    submitButton(modal.contentEl).dispatch("click");
+    await waitFor(() => modal.contentEl.find(".clinical-modal-error")?.hidden === false, "confirmation refusal");
+    await waitFor(() => !submitButton(modal.contentEl).disabled, "confirmation refusal to settle");
+    assert.equal((await h.repository.list<ProcedureRecord>("procedure")).length, 1);
+    confirm.dispatch("click");
+    submitButton(modal.contentEl).dispatch("click");
+    await waitFor(() => modal.closes === 1 || modal.contentEl.find(".clinical-modal-error")?.hidden === false, "confirmed return completion");
+    assert.equal(modal.closes, 1, modal.contentEl.find(".clinical-modal-error")?.textContent);
+    const entries = await h.repository.list<ProcedureRecord>("procedure");
+    assert.equal(entries.length, 2);
+    assert.equal(entries.filter((item) => item.record.completion_booking_task_id === booking.id).length, 1);
+    assert.equal((await h.repository.findById<TaskRecord>("task", booking.id))?.record.status, "completed");
+  });
+}
+
 test("an episode past OR booking with a logged procedure offers Add another procedure", async () => {
   const h = await harness();
   const operated = await h.service.createEpisode(

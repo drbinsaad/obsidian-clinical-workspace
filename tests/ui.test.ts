@@ -519,7 +519,7 @@ test("new-episode modal retains its seeded mobile form values", () => {
 });
 
 test("modal identity labels remain explicit when fields are missing", () => {
-  assert.equal(patientIdentityLabel("", ""), "MRN MRN needed · Name not recorded");
+  assert.equal(patientIdentityLabel("", ""), "MRN needed · Name not recorded");
   // User-entered names are wrapped in first-strong isolates so Arabic text
   // cannot visually reorder the LTR template around it.
   assert.equal(
