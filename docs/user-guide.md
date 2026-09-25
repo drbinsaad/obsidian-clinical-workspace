@@ -278,6 +278,16 @@ The procedure joins the logbook, and open OR-booking tasks (task type
 with a post-op follow-up task. Without it, the episode moves to Discharge
 Ready and is ready to close once no other work is open.
 
+**Return to theatre after rebooking.** Use **Update** to put the episode back on
+OR Booking with a next action and date, creating its Book OR task. After that
+operation has happened, choose **Complete surgery** (or the same episode in
+procedure Quick Entry), enter its actual details and tick **This is a new
+operation for this booking**. The earlier entry stays in the logbook; the new
+operation may have the same name and date. Only this booking is completed.
+Repeated submissions for the same booking reuse its entry. Keep the details
+unchanged when retrying a failed save. If the booking changed or is ambiguous,
+review it and reopen the form; a stale form cannot complete a newer booking.
+
 **Add another procedure.** For a second procedure from the same operation or a
 return to theatre on an episode that has already moved on from OR booking:
 

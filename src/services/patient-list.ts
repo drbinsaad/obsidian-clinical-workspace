@@ -218,7 +218,7 @@ export function patientListFileBaseName(filter: PatientListFilter, today = today
     filter.careSetting === "all" ? "" : careSettingLabel(filter.careSetting),
     filter.pathway === "all" ? "" : pathwayLabel(filter.pathway),
     filter.priority === "all" ? "" : priorityLabel(filter.priority),
-    filter.scope === "open" ? "" : filter.scope === "all" ? "All statuses" : titleCase(filter.scope)
+    filter.scope === "open" ? "" : filter.scope === "all" ? "All statuses" : statusLabel(filter.scope)
   ].filter(Boolean);
   const descriptor = parts
     .join(" ")
@@ -226,13 +226,6 @@ export function patientListFileBaseName(filter: PatientListFilter, today = today
     .replace(/\s+/g, " ")
     .trim();
   return descriptor ? `Patient list ${today} ${descriptor}` : `Patient list ${today}`;
-}
-
-function titleCase(value: string): string {
-  return value
-    .split("-")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }
 
 interface PatientListColumn {

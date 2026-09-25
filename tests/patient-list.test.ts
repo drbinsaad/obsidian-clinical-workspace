@@ -279,6 +279,10 @@ test("the Status column uses the patient sheet's words, and a hand-edited status
 });
 
 test("list names describe the filter, never a patient, and are safe filenames", () => {
+  assert.equal(
+    patientListFileBaseName(filter({ scope: "ready-to-close" }), TODAY),
+    "Patient list 2026-09-23 Ready to Close"
+  );
   assert.equal(patientListFileBaseName(filter(), TODAY), "Patient list 2026-09-23");
   assert.equal(
     patientListFileBaseName(filter({ careSetting: "inpatient", pathway: "result-review", priority: "urgent" }), TODAY),

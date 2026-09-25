@@ -19,8 +19,11 @@ import type {
 } from "../domain/types";
 import {
   CARE_SETTINGS,
+  EPISODE_STATUSES,
+  PATIENT_STATUSES,
   PATHWAYS,
   PRIORITIES,
+  TASK_STATUSES,
   TASK_TYPES
 } from "../domain/types";
 import {
@@ -585,6 +588,8 @@ export interface QuickEntryEpisodeChoice {
    * a logged procedure, so choosing it adds another procedure.
    */
   additionalProcedure?: boolean;
+  returnToTheatre?: boolean;
+  completionBookingTaskId?: string;
 }
 
 /**
@@ -1828,6 +1833,8 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
   private readonly episode: EpisodeRecord;
   private readonly patientLabel: string;
   private readonly additional: boolean;
+  private readonly returnToTheatre: boolean;
+  private newOperationConfirmed = false;
 
   constructor(
     app: App,
@@ -1839,10 +1846,11 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
      * on from OR booking; this logs another as its own entry without changing
      * its pathway.
      */
-    options: { additional?: boolean } = {}
+    options: { additional?: boolean; returnToTheatre?: boolean; completionBookingTaskId?: string } = {}
   ) {
     super(app, options.additional ? "Log procedure" : "Complete surgery", onSubmit);
     this.additional = options.additional === true;
+    this.returnToTheatre = !this.additional && options.returnToTheatre === true;
     this.episode = episode;
     this.patientLabel = patientLabel;
     this.input = {
@@ -1860,7 +1868,8 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
       // One id for the life of this form: resubmitting it after an error is
       // the same entry, while the next form logs a separate one even with the
       // same procedure and date.
-      ...(this.additional ? { additionalEntryId: createId("ADD") } : {})
+      ...(this.additional ? { additionalEntryId: createId("ADD") } : {}),
+      ...(this.returnToTheatre ? { completionBookingTaskId: options.completionBookingTaskId ?? "" } : {})
     };
   }
 
@@ -1873,6 +1882,16 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
       form.createEl("p", {
         text: "This episode already has a logged procedure. This adds another logbook entry and keeps the episode's pathway. Turning on follow-up adds a follow-up task, which becomes the episode's next action if it is due first.",
         cls: "clinical-section-note"
+      });
+    }
+    if (this.returnToTheatre) {
+      form.createEl("p", {
+        text: "An earlier operation is already logged. This completes the current return-to-theatre booking as a separate operation, even with the same name and date. Earlier entries are kept.",
+        cls: "clinical-section-note"
+      });
+      namedSetting(form, "This is a new operation for this booking").addToggle((field) => {
+        field.toggleEl.setAttribute("aria-label", "This is a new operation for this booking");
+        field.setValue(false).onChange((value) => { this.newOperationConfirmed = value; });
       });
     }
     namedSetting(form, "Surgery / procedure")
@@ -1919,6 +1938,12 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
   }
 
   protected value(): CompleteProcedureInput {
+    if (this.returnToTheatre && !this.input.completionBookingTaskId) {
+      throw new Error("This episode needs one unambiguous open Book OR task. Review its booking, then reopen this form. Nothing was saved.");
+    }
+    if (this.returnToTheatre && !this.newOperationConfirmed) {
+      throw new Error("Confirm that this is a new operation for this booking. Nothing was saved.");
+    }
     return this.input;
   }
 }
@@ -2237,7 +2262,11 @@ export class EpisodeHistoryModal extends ClinicalResponsiveModal {
       const head = row.createDiv({ cls: "clinical-card-top" });
       head.createEl("strong", { text: event.summary || event.action });
       head.createSpan({ text: formatLocalDateTime(event.created_at), cls: "clinical-card-meta" });
-      const change = [event.previous_state, event.new_state].filter(Boolean).join(" → ");
+      const knownStatuses: readonly string[] = [...EPISODE_STATUSES, ...PATIENT_STATUSES, ...TASK_STATUSES];
+      const change = [event.previous_state, event.new_state]
+        .filter(Boolean)
+        .map((state) => knownStatuses.includes(state) ? statusLabel(state) : state)
+        .join(" → ");
       row.createEl("p", {
         text: `${event.action}${change ? ` · ${change}` : ""} · ${event.actor}`,
         cls: "clinical-card-meta"

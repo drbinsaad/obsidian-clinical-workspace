@@ -1049,6 +1049,17 @@ test("episode history and the patient sheet show audit times in local time", () 
   }
 });
 
+test("episode history spells out statuses without rewriting free-form audit states", () => {
+  const events = [
+    { ...auditEvent("EVT-status", STAMP), previous_state: "in-progress", new_state: "ready-to-close" },
+    { ...auditEvent("EVT-text", STAMP), previous_state: "custom-state: Keep THIS", new_state: "completed|opd-follow-up" }
+  ];
+  const root = openModal(new EpisodeHistoryModal(new App(), "Synthetic case", events)).content;
+  const changes = root.findAll(".clinical-integrity-issue").map((row) => row.find("p")?.textContent);
+  assert.match(changes[0]!, /In Progress → Ready to Close/);
+  assert.match(changes[1]!, /custom-state: Keep THIS → completed\|opd-follow-up/);
+});
+
 /* ---------------------------------------------- 19. Template preview ----- */
 
 test("the template preview shows each item's type, priority and date, and the bundle's warnings", () => {

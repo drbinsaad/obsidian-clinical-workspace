@@ -75,6 +75,7 @@ Patient ──< Episode ──< Task
 | `opened_at` / `closed_at` / `outcome` | Lifecycle bookkeeping; `outcome` survives restore. |
 | `pathway_before_archive` / `status_before_archive` | What archiving overwrote, so restore can put it back. |
 | `status_before_ready` | The status a task completion replaced when it left the episode ready to close, so Undo or Reopen can put it back (for example on hold). Empty when none. |
+| `last_completion_booking_task_id` | Optional internal marker written with a booking-bound post-operative transition. Prevents an interrupted older completion from replacing a newer operation's workflow. Do not edit by hand. |
 
 An episode cannot be archived while it has an open task, or while any task
 note inside the configured `Tasks/` record folder is unreadable (unreadable
@@ -106,7 +107,9 @@ entity folder are outside workflow scope and must be returned before use.
 | `outcome` | Optional short outcome. |
 | `follow_up_required` / `follow_up_date` / `follow_up_plan` | A required follow-up creates a `postop-follow-up` task; contradictions are flagged by the integrity check. |
 | `audit_pending` | `true` until the completion audit event is durably written; a retry of the same form settles it. One left `true` with no completion event is reported by the integrity check: as `unfinished-procedure` when something besides the audit entry needs checking, otherwise as `missing-audit-event`. |
-| `idempotency_key` | 32-bit hash of (episode, procedure, date), with the same rules as tasks. One logged with **Add another procedure** also hashes an id unique to that form, so a second procedure with the same name and date gets its own entry, while resubmitting the same form does not. |
+| `idempotency_key` | Normally a 32-bit hash of (episode, procedure, date), with the same rules as tasks. **Add another procedure** also hashes an id unique to that form. An explicitly confirmed return after rebooking uses `booking:<episode-id>:<task-id>`, so the booking owns one operation independently of editable procedure details. |
+| `completion_booking_task_id` | Optional Book OR task captured for an explicitly confirmed return-to-theatre completion. Retrying this booking reuses its entry; conflicting inputs or a newer booking are refused. Do not edit this workflow identity by hand. |
+| `completion_predecessor_booking_task_id` | Internal episode completion marker captured before the operation's first write. Together with the episode marker, distinguishes an interrupted transition from a later completed operation. |
 
 ## Event (audit trail)
 

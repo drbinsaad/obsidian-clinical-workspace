@@ -124,6 +124,8 @@ export interface EpisodeRecord extends BaseRecord {
    * written before it existed, when nothing was recorded.
    */
   status_before_ready?: string;
+  /** Written atomically with a booking-bound post-operative transition. */
+  last_completion_booking_task_id?: string;
 }
 
 export interface TaskRecord extends BaseRecord {
@@ -177,6 +179,10 @@ export interface ProcedureRecord extends BaseRecord {
    * Absent on older records, which fall back to the episode state.
    */
   logged_as?: "completion" | "addition";
+  /** The unique OR booking consumed by an explicitly booking-bound completion. */
+  completion_booking_task_id?: string;
+  /** Episode completion marker observed before this operation's first write. */
+  completion_predecessor_booking_task_id?: string;
   idempotency_key: string;
 }
 
@@ -289,6 +295,8 @@ export interface CompleteProcedureInput {
    * Such an entry never runs the OR-booking completion.
    */
   additionalEntryId?: string;
+  /** Captured when the completion form opens; never inferred at submission. */
+  completionBookingTaskId?: string;
 }
 
 export interface IntegrityIssue {

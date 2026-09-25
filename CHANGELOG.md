@@ -11,9 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The patient list's **Status** column uses the same words as the patient
   sheet, for example "Ready to Close" instead of "Ready To Close".
+- Export filenames and episode-history status transitions use the same labels;
+  free-form audit text is preserved. Hand-edited status names cannot resolve
+  inherited JavaScript properties.
 
 ### Fixed
 
+- A rebooked episode can now record a separate return-to-theatre operation with
+  the same procedure name and date. **Complete surgery**, including Quick Entry,
+  requires confirmation that this is a new operation and binds it to the current
+  Book OR task. Repeated submissions reuse that operation; stale or ambiguous
+  bookings are refused, and earlier logbook entries are retained.
 - A patient without an MRN was named "MRN MRN needed" on episode and task
   cards, ward-round rows, Search, the patient sheet, the possible-duplicate
   dialog, button names read by VoiceOver, and the ward handover note. It now

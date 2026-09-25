@@ -398,6 +398,7 @@ export function quickEntryEpisodeChoices(
         patientLabel: patientIdentityLabel(patient.mrn, patient.patient_name),
         isCurrent: episode.id === currentEpisodeId,
         patientMrn: patient.mrn,
+        ...(purpose === "procedure" ? returnToTheatreOptions(snapshot, episode) : {}),
         ...(purpose === "procedure" && episode.pathway !== "or-booking"
           ? { additionalProcedure: true }
           : {})
@@ -409,6 +410,30 @@ export function quickEntryEpisodeChoices(
         `${b.patientLabel}|${b.episode.case}`
       );
     });
+}
+
+/** Captured from the displayed snapshot, never silently replaced on submission. */
+function returnToTheatreOptions(snapshot: ClinicalSnapshot, episode: EpisodeRecord): {
+  returnToTheatre?: boolean; completionBookingTaskId?: string;
+} {
+  // Resume an unfinished older-format completion with its original key. A
+  // booking-bound key would represent a different operation, not its retry.
+  if (snapshot.procedures.some((procedure) => procedure.episode_id === episode.id &&
+    procedure.status === "completed" && procedure.audit_pending === true &&
+    !procedure.completion_booking_task_id && procedure.logged_as !== "addition")) return {};
+  if (episode.pathway !== "or-booking" || !snapshot.procedures.some((procedure) =>
+    procedure.episode_id === episode.id && procedure.status === "completed" && procedure.audit_pending !== true)) return {};
+  const bookings = snapshot.tasks.filter((task) => task.episode_id === episode.id &&
+    task.patient_id === episode.patient_id && task.task_type === "book-or" && taskIsOpen(task));
+  // A partially completed operation may already have closed its task. Keep
+  // its persisted operation identity on a reopened form; never invent one or
+  // let an older pending record take precedence over a current open booking.
+  const pending = snapshot.procedures.filter((procedure) => procedure.episode_id === episode.id &&
+    procedure.patient_id === episode.patient_id && procedure.status === "completed" &&
+    procedure.audit_pending === true && procedure.completion_booking_task_id);
+  const completionBookingTaskId = bookings.length === 1 ? bookings[0]!.id
+    : bookings.length === 0 && pending.length === 1 ? (pending[0]!.completion_booking_task_id ?? "") : "";
+  return { returnToTheatre: true, completionBookingTaskId };
 }
 
 export class ClinicalWorkspaceView extends ItemView {
@@ -654,7 +679,7 @@ export class ClinicalWorkspaceView extends ItemView {
           new Notice(additional ? "Procedure added to the logbook." : "Procedure logged and workflow updated.");
           this.activeTab = "surgery";
           await this.refresh();
-        }, { additional }).open();
+        }, { additional, returnToTheatre: choice.returnToTheatre === true, completionBookingTaskId: choice.completionBookingTaskId ?? "" }).open();
       }).open();
     } catch (error) {
       showClinicalErrorNotice(error, "Could not open procedure quick entry.");
@@ -690,10 +715,11 @@ export class ClinicalWorkspaceView extends ItemView {
     activeEpisodePath: string,
     purpose: "task" | "procedure"
   ): Promise<QuickEntryEpisodeChoice[]> {
-    const [patients, episodes, procedures] = await Promise.all([
+    const [patients, episodes, procedures, tasks] = await Promise.all([
       this.repository.list<PatientRecord>("patient"),
       this.repository.list<EpisodeRecord>("episode"),
-      purpose === "procedure" ? this.repository.list<ProcedureRecord>("procedure") : Promise.resolve([])
+      purpose === "procedure" ? this.repository.list<ProcedureRecord>("procedure") : Promise.resolve([]),
+      purpose === "procedure" ? this.repository.list<TaskRecord>("task") : Promise.resolve([])
     ]);
     const currentEpisodeId = episodes.find(
       (item) => item.path === activeEpisodePath
@@ -702,7 +728,7 @@ export class ClinicalWorkspaceView extends ItemView {
       {
         patients: patients.map((item) => item.record),
         episodes: episodes.map((item) => item.record),
-        tasks: [],
+        tasks: tasks.map((item) => item.record),
         procedures: procedures.map((item) => item.record)
       },
       currentEpisodeId,
@@ -1386,7 +1412,7 @@ export class ClinicalWorkspaceView extends ItemView {
             await this.service.completeProcedure(input);
             new Notice("Surgery logged and workflow updated.");
             await this.refresh();
-          }).open();
+          }, returnToTheatreOptions(snapshot, episode)).open();
         },
         true,
         false,

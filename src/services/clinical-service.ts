@@ -1978,7 +1978,14 @@ export class ClinicalService {
     if (errors.length) throw new Error(errors.join(" "));
 
     const additionalEntryId = normalizeText(input.additionalEntryId);
-    const key = procedureIdempotencyKey(
+    const bookingId = normalizeText(input.completionBookingTaskId);
+    if (input.completionBookingTaskId !== undefined && !bookingId) {
+      throw new Error("An explicit operating-room booking is required. Reopen the completion form.");
+    }
+    if (bookingId && additionalEntryId) {
+      throw new Error("A booking completion cannot also be an additional procedure.");
+    }
+    const key = bookingId ? `booking:${input.episodeId}:${bookingId}` : procedureIdempotencyKey(
       input.episodeId,
       input.procedure,
       input.procedureDate,
@@ -2015,6 +2022,32 @@ export class ClinicalService {
       }
 
       const procedures = await this.repository.list<ProcedureRecord>("procedure");
+      if (bookingId && procedures.some(({ record }) =>
+        record.episode_id === input.episodeId && record.status === "completed" &&
+        record.audit_pending === true && !record.completion_booking_task_id &&
+        record.logged_as !== "addition" &&
+        normalizeComparable(record.procedure) === normalizedProcedure &&
+        normalizeText(record.procedure_date) === normalizedProcedureDate
+      )) {
+        throw new Error("An earlier completion is still pending. Retry that saved operation before recording a new booking completion.");
+      }
+      const bound = bookingId ? procedures.filter(({ record }) =>
+        record.completion_booking_task_id === bookingId || record.idempotency_key === key
+      ) : [];
+      const boundRecord = bound[0]?.record;
+      if (bound.length > 1 || (boundRecord && (
+        boundRecord.patient_id !== input.patientId ||
+        boundRecord.episode_id !== input.episodeId ||
+        boundRecord.idempotency_key !== key ||
+        boundRecord.completion_booking_task_id !== bookingId ||
+        boundRecord.status !== "completed" ||
+        normalizeComparable(boundRecord.procedure) !== normalizedProcedure ||
+        normalizeText(boundRecord.procedure_date) !== normalizedProcedureDate ||
+        normalizeText(boundRecord.role) !== (normalizeText(input.role) || "Not specified") ||
+        normalizeText(boundRecord.outcome) !== normalizeText(input.outcome)
+      ))) {
+        throw new Error("This booking already has a different or conflicting procedure entry. Review the saved record.");
+      }
       const existing = procedures.find(
         ({ record }) =>
           record.episode_id === input.episodeId &&
@@ -2040,7 +2073,7 @@ export class ClinicalService {
           record.id !== existing?.record.id
       );
       const additional =
-        additionalEntryId !== "" || (episode.record.pathway !== "or-booking" && loggedBefore);
+        additionalEntryId !== "" || (!bookingId && episode.record.pathway !== "or-booking" && loggedBefore);
       if (!existing && !loggedBefore && episode.record.pathway !== "or-booking") {
         throw new Error("Procedures can only be recorded from an OR booking episode.");
       }
@@ -2076,13 +2109,44 @@ export class ClinicalService {
       // is not offered, and naming it read as advice to take the episode off
       // OR booking, so the refusal says only that the operation is logged.
       if (existing && existing.record.audit_pending !== true) {
-        if (additionalEntryId) return existing;
+        if (additionalEntryId || bookingId) return existing;
         throw new Error(
           episode.record.pathway === "or-booking"
             ? "This operation is already in the logbook for this episode with the same procedure name and date, so nothing was changed."
             : "This procedure is already in the logbook for this episode, so nothing was changed. To log a second one with the same name and date, use Add another procedure on the episode's newest entry in the Surgery logbook."
         );
       }
+      const predecessorBookingId = existing
+        ? existing.record.completion_predecessor_booking_task_id
+        : episode.record.last_completion_booking_task_id ?? "";
+      const assertCompletionMarker = (current: EpisodeRecord): void => {
+        if (!bookingId) return;
+        const marker = current.last_completion_booking_task_id ?? "";
+        if (typeof predecessorBookingId !== "string" || typeof marker !== "string" ||
+          (marker !== bookingId && marker !== predecessorBookingId)) {
+          throw new Error("A newer booking completion changed this episode. Review the saved procedure before retrying.");
+        }
+      };
+      assertCompletionMarker(episode.record);
+      // A booking ID is a single-use operation identity, not an unrestricted
+      // duplicate bypass. A pending retry may consume only its original task.
+      const assertBooking = async (allowCompleted: boolean): Promise<void> => {
+        if (!bookingId) return;
+        const tasks = await this.repository.list<TaskRecord>("task");
+        const booking = tasks.find(({ record }) => record.id === bookingId);
+        const open = tasks.filter(({ record }) => record.episode_id === input.episodeId &&
+          record.task_type === "book-or" && taskIsOpen(record));
+        if (!booking || booking.record.patient_id !== input.patientId ||
+          booking.record.episode_id !== input.episodeId || booking.record.task_type !== "book-or" ||
+          (!taskIsOpen(booking.record) && !(allowCompleted && booking.record.status === "completed")) ||
+          open.some(({ record }) => record.id !== bookingId) || open.length > 1) {
+          throw new Error("The operating-room booking changed or is ambiguous. Reopen the completion form and review the booking.");
+        }
+      };
+      if (bookingId && !existing && episode.record.pathway !== "or-booking") {
+        throw new Error("The operating-room booking is no longer current. Reopen the completion form.");
+      }
+      await assertBooking(Boolean(existing));
       // The persisted record is the write authority for every later step.
       const followUp = existing
         ? {
@@ -2096,6 +2160,15 @@ export class ClinicalService {
             plan: input.followUpRequired ? normalizeText(input.followUpPlan) : ""
           };
       const timestamp = nowIso();
+      const bookingTransitionApplied = Boolean(bookingId &&
+        episode.record.last_completion_booking_task_id === bookingId);
+      if (bookingTransitionApplied && episode.record.pathway !== pathwayAfterProcedure(followUp.required)) {
+        throw new Error("The episode changed after this booking was completed. Its newer booking or pathway was not changed.");
+      }
+      if (bookingId && existing && episode.record.pathway !== "or-booking" &&
+        episode.record.pathway !== pathwayAfterProcedure(followUp.required)) {
+        throw new Error("The episode changed after this booking's partial completion. Review the saved procedure before retrying.");
+      }
       const outcome = existing
         ? { procedure: existing, alreadyLogged: true }
         : {
@@ -2122,6 +2195,10 @@ export class ClinicalService {
               // written, so a retry knows the trail still owes an entry.
               audit_pending: true,
               logged_as: additional ? "addition" : "completion",
+              ...(bookingId ? {
+                completion_booking_task_id: bookingId,
+                completion_predecessor_booking_task_id: predecessorBookingId
+              } : {}),
               idempotency_key: key
             }),
             alreadyLogged: false
@@ -2136,6 +2213,7 @@ export class ClinicalService {
         if (
           task.record.episode_id === episode.record.id &&
           task.record.task_type === "book-or" &&
+          (!bookingId || task.record.id === bookingId) &&
           taskIsOpen(task.record)
         ) {
           await this.repository.withLock(`task-state:${task.record.id}`, async () => {
@@ -2143,7 +2221,8 @@ export class ClinicalService {
             if (!latest) throw new Error("The operating-room task was not found.");
             if (
               latest.record.patient_id !== patient.record.id ||
-              latest.record.episode_id !== episode.record.id
+              latest.record.episode_id !== episode.record.id ||
+              (bookingId && (latest.record.task_type !== "book-or" || !taskIsOpen(latest.record)))
             ) {
               throw new Error("The task context changed. Retry the operation.");
             }
@@ -2195,8 +2274,15 @@ export class ClinicalService {
 
       // Care setting is the clinician's to decide. A post-operative inpatient
       // is still an inpatient, so it is left exactly as recorded.
-      if (!additional) {
+      await assertBooking(true);
+      assertCompletionMarker(latestEpisode.record);
+      if (bookingId && latestEpisode.record.last_completion_booking_task_id === bookingId &&
+        latestEpisode.record.pathway !== pathwayAfterProcedure(followUp.required)) {
+        throw new Error("The episode changed after this booking was completed. Review the saved procedure.");
+      }
+      if (!additional && !(bookingId && latestEpisode.record.last_completion_booking_task_id === bookingId)) {
         await this.repository.update<EpisodeRecord>(latestEpisode.path, {
+          ...(bookingId ? { last_completion_booking_task_id: bookingId } : {}),
           pathway: pathwayAfterProcedure(followUp.required),
           status: stillOpen ? "active" : "ready-to-close",
           next_action: followUp.required

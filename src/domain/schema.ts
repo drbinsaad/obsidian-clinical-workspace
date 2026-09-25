@@ -259,8 +259,8 @@ export function statusLabel(status: string): string {
   };
   const text = normalizeText(status);
   if (!text) return "Unknown";
+  if (Object.hasOwn(labels, text)) return labels[text]!;
   return (
-    labels[text] ??
     text
       .split("-")
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
