@@ -15,6 +15,7 @@ import {
   normalizeText,
   pathwayLabel,
   priorityLabel,
+  statusLabel,
   taskIsOpen,
   taskIsOverdue,
   todayIso
@@ -234,10 +235,6 @@ function titleCase(value: string): string {
     .join(" ");
 }
 
-function episodeStatusLabel(status: string): string {
-  return normalizeText(status) ? titleCase(normalizeText(status)) : "Unknown";
-}
-
 interface PatientListColumn {
   heading: string;
   read: (row: PatientListRow) => string;
@@ -257,7 +254,7 @@ const COLUMNS: readonly PatientListColumn[] = [
   { heading: "Setting", read: (row) => careSettingLabel(row.episode.care_setting) },
   { heading: "Pathway", read: (row) => pathwayLabel(row.episode.pathway) },
   { heading: "Priority", read: (row) => priorityLabel(row.episode.priority) },
-  { heading: "Status", read: (row) => episodeStatusLabel(row.episode.status) },
+  { heading: "Status", read: (row) => statusLabel(row.episode.status) },
   { heading: "Next action", read: (row) => row.episode.next_action },
   { heading: "Due", read: (row) => row.episode.due_date },
   // The stored timestamp is UTC; its first ten characters are the wrong day

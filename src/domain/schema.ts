@@ -240,6 +240,35 @@ export function taskTypeLabel(type: string): string {
 }
 
 /**
+ * Patient, episode and task statuses in words, spelled out like task types
+ * so "ready-to-close" reads "Ready to Close". A hand-edited value outside the
+ * list keeps the title-case rule, so it still reads as words.
+ */
+export function statusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    active: "Active",
+    "on-hold": "On Hold",
+    "ready-to-close": "Ready to Close",
+    archived: "Archived",
+    open: "Open",
+    "in-progress": "In Progress",
+    waiting: "Waiting",
+    completed: "Completed",
+    cancelled: "Cancelled",
+    "entered-in-error": "Entered in Error"
+  };
+  const text = normalizeText(status);
+  if (!text) return "Unknown";
+  return (
+    labels[text] ??
+    text
+      .split("-")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ")
+  );
+}
+
+/**
  * Reads a stored choice the way a clinician meant it: a value typed by hand
  * in the Properties panel ("Emergency", "OR booking") matches its option
  * ignoring case and spacing. Returns undefined when nothing matches.

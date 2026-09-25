@@ -258,6 +258,26 @@ test("the CSV list opens cleanly in spreadsheets and cannot run formulas", () =>
   assert.equal(csvCell('He said "hi"'), `"He said ""hi"""`);
 });
 
+test("the Status column uses the patient sheet's words, and a hand-edited status stays readable", () => {
+  const snapshot = mixedSnapshot();
+  snapshot.episodes.push(
+    episode("EPI-ready", "PAT-alpha", { case: "Synthetic ready case", status: "ready-to-close" }),
+    episode("EPI-hand", "PAT-alpha", { case: "Synthetic hand-edited case", status: "awaiting-bed" as never })
+  );
+  const csv = buildPatientListCsv(selectPatientListRows(snapshot, filter({ scope: "all" }), TODAY));
+  // Status is the eighth column.
+  const statusOf = (caseName: string): string | undefined =>
+    csv
+      .split("\r\n")
+      .find((line) => line.includes(`"${caseName}"`))
+      ?.split('","')[7];
+  assert.equal(statusOf("Synthetic airway watch"), "Active");
+  assert.equal(statusOf("Synthetic clinic review"), "On Hold");
+  assert.equal(statusOf("Synthetic ready case"), "Ready to Close");
+  assert.equal(statusOf("Synthetic discharged case"), "Archived");
+  assert.equal(statusOf("Synthetic hand-edited case"), "Awaiting Bed");
+});
+
 test("list names describe the filter, never a patient, and are safe filenames", () => {
   assert.equal(patientListFileBaseName(filter(), TODAY), "Patient list 2026-09-23");
   assert.equal(

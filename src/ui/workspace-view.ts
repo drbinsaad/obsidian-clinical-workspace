@@ -23,6 +23,7 @@ import {
   normalizeText,
   pathwayLabel,
   priorityLabel,
+  statusLabel,
   taskIsDueToday,
   taskIsOpen,
   taskIsOverdue,
@@ -1709,7 +1710,7 @@ export class ClinicalWorkspaceView extends ItemView {
     const card = container.createDiv({ cls: "clinical-card" });
     const top = card.createDiv({ cls: "clinical-card-top" });
     top.createEl("h4", { text: patient.patient_name || "Name not recorded", attr: { dir: "auto" } });
-    top.createSpan({ text: patient.status, cls: "clinical-card-meta" });
+    top.createSpan({ text: statusLabel(patient.status), cls: "clinical-card-meta" });
     card.createEl("p", { text: this.patientLabel(patient), cls: "clinical-card-meta" });
     card.createEl("p", { text: `Phone ${displayPhone(patient.phone)}`, cls: "clinical-card-meta" });
     const episodes = snapshot.episodes.filter((episode) => episode.patient_id === patient.id).length;

@@ -3,8 +3,8 @@
  * focus across redraws, card action layout, ward-round paging, Today order,
  * date defaults, patient sheet entry points, filters, paging scroll, search
  * folding, modal safe areas, identity inputs, RTL isolation, contrast,
- * accessible names, audit times, and the identity label of a patient with no
- * MRN.
+ * accessible names, audit times, the identity label of a patient with no
+ * MRN, and statuses shown in words.
  *
  * Synthetic data only; MRNs use the 9000 series.
  */
@@ -1220,4 +1220,82 @@ test("a patient without an MRN reads \"MRN needed\" once wherever the patient is
   assert.match(handover, /\*\*MRN needed · Synthetic Beta\*\*/);
   assert.match(handover, new RegExp(`\\*\\*MRN ${MRN_ALPHA} · Synthetic Alpha\\*\\*`));
   assert.doesNotMatch(handover, /MRN MRN/);
+});
+
+/* ---------------------------------------------- 21. Statuses in words ----- */
+
+test("the patient sheet, Search and Patient records show statuses in words, including a hand-edited one", () => {
+  const opened = (day: number): string => `2026-09-${String(day).padStart(2, "0")}T08:00:00.000Z`;
+  const statusByCase: Record<string, string> = {
+    "Synthetic active case": "Active",
+    "Synthetic on-hold case": "On Hold",
+    "Synthetic ready case": "Ready to Close",
+    "Synthetic archived case": "Archived",
+    "Synthetic cancelled case": "Cancelled",
+    "Synthetic error case": "Entered in Error",
+    "Synthetic hand-edited case": "Awaiting Bed",
+    "Synthetic blank case": "Unknown"
+  };
+  const records = {
+    patient: patient("PAT-alpha"),
+    episodes: [
+      episode("EPI-active", "PAT-alpha", { case: "Synthetic active case", opened_at: opened(8) }),
+      episode("EPI-hold", "PAT-alpha", { case: "Synthetic on-hold case", status: "on-hold", opened_at: opened(7) }),
+      episode("EPI-ready", "PAT-alpha", { case: "Synthetic ready case", status: "ready-to-close", opened_at: opened(6) }),
+      episode("EPI-archived", "PAT-alpha", { case: "Synthetic archived case", status: "archived", opened_at: opened(5) }),
+      episode("EPI-cancelled", "PAT-alpha", { case: "Synthetic cancelled case", status: "cancelled", opened_at: opened(4) }),
+      episode("EPI-error", "PAT-alpha", { case: "Synthetic error case", status: "entered-in-error", opened_at: opened(3) }),
+      // Typed by hand in the Properties panel: not a status the plugin writes.
+      episode("EPI-hand", "PAT-alpha", {
+        case: "Synthetic hand-edited case",
+        status: "awaiting-bed" as never,
+        opened_at: opened(2)
+      }),
+      episode("EPI-blank", "PAT-alpha", { case: "Synthetic blank case", status: "" as never, opened_at: opened(1) })
+    ],
+    tasks: [
+      task("TSK-done", "EPI-active", { task: "Synthetic done task", status: "completed", completed_at: opened(9) }),
+      task("TSK-dropped", "EPI-active", { task: "Synthetic dropped task", status: "cancelled", cancelled_at: opened(8) }),
+      task("TSK-waiting", "EPI-active", { task: "Synthetic waiting task", status: "waiting" })
+    ],
+    procedures: [],
+    events: []
+  };
+  const sheet = openModal(new PatientDetailModal(new App(), records, () => undefined, () => undefined)).content;
+  assert.ok(sheet.find(".clinical-section-note")?.textContent.endsWith(" · Active"), "the patient's own status");
+  const cardStatus = (heading: string): string | undefined =>
+    sheet
+      .findAll(".clinical-card")
+      .find((card) => card.find("h4")?.textContent === heading)
+      ?.find(".clinical-card-top")
+      ?.children.find((child) => child.classes.has("clinical-card-meta"))?.textContent;
+  for (const [caseName, label] of Object.entries(statusByCase)) {
+    assert.equal(cardStatus(caseName), label, caseName);
+  }
+  assert.equal(cardStatus("Synthetic done task"), "Completed");
+  assert.equal(cardStatus("Synthetic dropped task"), "Cancelled");
+
+  const search = openModal(new ClinicalSearchModal(
+    new App(),
+    snapshotOf({ patients: [records.patient], episodes: records.episodes, tasks: records.tasks }),
+    () => undefined
+  )).content;
+  const found = searchFor(search, "Synthetic");
+  assert.ok(found.metas.includes("Active"), "the patient row");
+  assert.ok(found.metas.some((meta) => meta.endsWith("· Assessment · Ready to Close")), found.metas.join(" | "));
+  assert.ok(found.metas.some((meta) => meta.endsWith("· Assessment · Entered in Error")));
+  assert.ok(found.metas.some((meta) => meta.endsWith("· Waiting")), "an open task's status");
+
+  // More → Patient records names each patient's status the same way.
+  const onFile = snapshotOf({ patients: [records.patient] });
+  const more = createView("more", onFile);
+  more.view.render(onFile);
+  const recordTop = listUnder(more.root, "more-patients").find(".clinical-card-top");
+  assert.equal(recordTop?.children.find((child) => child.classes.has("clinical-card-meta"))?.textContent, "Active");
+
+  // No stored value leaks through as the label.
+  const stored = /^(?:active|on-hold|ready-to-close|archived|cancelled|entered-in-error|awaiting-bed|completed|waiting)$|· (?:active|on-hold|ready-to-close|archived|cancelled|entered-in-error|awaiting-bed|completed|waiting)\b/;
+  for (const root of [sheet, search]) {
+    for (const line of spokenText(root)) assert.doesNotMatch(line, stored, line);
+  }
 });

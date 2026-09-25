@@ -7,12 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The patient list's **Status** column uses the same words as the patient
+  sheet, for example "Ready to Close" instead of "Ready To Close".
+
 ### Fixed
 
 - A patient without an MRN was named "MRN MRN needed" on episode and task
   cards, ward-round rows, Search, the patient sheet, the possible-duplicate
   dialog, button names read by VoiceOver, and the ward handover note. It now
   reads "MRN needed" and the name.
+- The patient sheet, Search results and **More → Patient records** showed
+  stored status values such as `ready-to-close` and `completed`. They now
+  show words such as "Ready to Close" and "Completed"; a status typed by hand
+  is shown in words too.
 
 ## [0.7.0] - 2026-09-24
 

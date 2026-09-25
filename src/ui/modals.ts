@@ -36,6 +36,7 @@ import {
   pathwayLabel,
   priorityLabel,
   searchKey,
+  statusLabel,
   taskIsOpen,
   taskTypeLabel,
   todayIso
@@ -2295,7 +2296,7 @@ export class PatientDetailModal extends ClinicalResponsiveModal {
       attr: { dir: "auto" }
     });
     body.createEl("p", {
-      text: `${patientIdentityLabel(patient.mrn, patient.patient_name)} · Phone ${displayPhone(patient.phone)} · ${patient.status}`,
+      text: `${patientIdentityLabel(patient.mrn, patient.patient_name)} · Phone ${displayPhone(patient.phone)} · ${statusLabel(patient.status)}`,
       cls: "clinical-section-note"
     });
 
@@ -2313,7 +2314,7 @@ export class PatientDetailModal extends ClinicalResponsiveModal {
       const card = episodeList.createDiv({ cls: "clinical-card" });
       const top = card.createDiv({ cls: "clinical-card-top" });
       top.createEl("h4", { text: episode.case || "Case not recorded", attr: { dir: "auto" } });
-      top.createSpan({ text: episode.status, cls: "clinical-card-meta" });
+      top.createSpan({ text: statusLabel(episode.status), cls: "clinical-card-meta" });
       card.createEl("p", { text: pathwayLabel(episode.pathway), cls: "clinical-card-meta" });
       const actions = card.createDiv({ cls: "clinical-card-actions" });
       const open = actions.createEl("button", {
@@ -2377,7 +2378,7 @@ export class PatientDetailModal extends ClinicalResponsiveModal {
       const card = closedList.createDiv({ cls: "clinical-card" });
       const top = card.createDiv({ cls: "clinical-card-top" });
       top.createEl("h4", { text: task.task || "Task not recorded", attr: { dir: "auto" } });
-      top.createSpan({ text: task.status, cls: "clinical-card-meta" });
+      top.createSpan({ text: statusLabel(task.status), cls: "clinical-card-meta" });
       if (closableEpisodes.has(task.episode_id)) {
         const actions = card.createDiv({ cls: "clinical-card-actions" });
         const reopen = actions.createEl("button", {
@@ -2538,7 +2539,7 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
         title: "Patients",
         rows: this.data.patients.map((patient): ClinicalSearchRow => ({
           label: patientIdentityLabel(patient.mrn, patient.patient_name),
-          meta: patient.status,
+          meta: statusLabel(patient.status),
           entity: "patient",
           id: patient.id,
           patientLabel: "",
@@ -2553,7 +2554,7 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
             "episode",
             episode.id,
             episode.case || "Case not recorded",
-            `${pathwayLabel(episode.pathway)} · ${episode.status}`,
+            `${pathwayLabel(episode.pathway)} · ${statusLabel(episode.status)}`,
             episode.case,
             episode.patient_id
           )
@@ -2566,7 +2567,7 @@ export class ClinicalSearchModal extends ClinicalResponsiveModal {
             "task",
             task.id,
             task.task || "Task not recorded",
-            `${task.status}${task.due_date ? ` · due ${task.due_date}` : ""}`,
+            `${statusLabel(task.status)}${task.due_date ? ` · due ${task.due_date}` : ""}`,
             task.task,
             task.patient_id
           )
