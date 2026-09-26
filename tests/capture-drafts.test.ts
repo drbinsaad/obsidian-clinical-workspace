@@ -3,7 +3,7 @@ import test from "node:test";
 import { CAPTURE_KINDS, captureInboxPath, captureTemplateFolderPath, captureTemplates, isCaptureDraftPath, parseCaptureDraft, setCaptureState } from "../src/capture/drafts";
 
 const draft = '---\nclinical_capture: 1\ncapture_kind: "patient"\nmrn: "9000"\nphone: "0500000000"\npatient_name: "Synthetic patient"\n---\n\nCaptured text: keep **all** formatting.\n';
-const attempt = "CAP-0123456789abcdef0123";
+const attempt = "CAP-abcdefabcdefabcdefab";
 
 test("capture parser preserves body and leading zeros without inferring identity", () => {
   const parsed = parseCaptureDraft(draft);
@@ -43,9 +43,9 @@ test("capture state changes preserve content and reject invalid input", () => {
   assert.throws(() => setCaptureState("plain text", "processing"));
   assert.throws(() => setCaptureState(draft, "processing"));
   assert.throws(() => setCaptureState(draft, "processing", "bad-attempt"));
-  const filed = setCaptureState(draft, "filed", attempt, "TASK-0123456789abcdef0123");
+  const filed = setCaptureState(draft, "filed", attempt, "TASK-abcdefabcdefabcdefab");
   assert.equal(parseCaptureDraft(filed).attemptId, attempt);
-  assert.equal(parseCaptureDraft(filed).result, "TASK-0123456789abcdef0123");
+  assert.equal(parseCaptureDraft(filed).result, "TASK-abcdefabcdefabcdefab");
   const rolledBack = parseCaptureDraft(setCaptureState(filed, "draft"));
   assert.equal(rolledBack.state, "draft");
   assert.equal(rolledBack.attemptId, "");
