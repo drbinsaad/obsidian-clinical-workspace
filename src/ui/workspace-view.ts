@@ -32,7 +32,12 @@ import {
   taskTypeLabel,
   todayIso
 } from "../domain/schema";
-import { clinicalFolder } from "../data/paths";
+import { validateNewEpisodeInput, validateTaskInput, validateProcedureInput } from "../domain/schema";
+import { CaptureStore, type CaptureItem } from "../capture/store";
+import { isCaptureDraftPath } from "../capture/drafts";
+import { CaptureInboxModal, CaptureReviewModal, captureSeed } from "./capture-modals";
+import { BookOrModal } from "./or-booking-modal";
+import { clinicalFolder, clinicalRootFolder } from "../data/paths";
 import { listTaskBundles, type TaskBundle } from "../data/templates";
 import { buildHandoverNote } from "../services/handover";
 import {
@@ -466,6 +471,7 @@ export class ClinicalWorkspaceView extends ItemView {
   private refreshesStarted = 0;
   private renderingRefresh = 0;
   private writeBlockSlot: HTMLElement | null = null;
+  private captureItems: CaptureItem[] = [];
 
   private tabId(tab: WorkspaceTab): string {
     return `clinical-workspace-${this.instanceId}-tab-${tab}`;
@@ -549,6 +555,7 @@ export class ClinicalWorkspaceView extends ItemView {
     const started = ++this.refreshesStarted;
     try {
       const snapshot = await this.repository.snapshot();
+      if (this.app?.vault) this.captureItems = await new CaptureStore(this.app, this.repository).list();
       this.renderingRefresh = started;
       this.render(snapshot);
     } catch (error) {
@@ -562,7 +569,7 @@ export class ClinicalWorkspaceView extends ItemView {
     }
   }
 
-  openAddPatient(seed?: Partial<NewEpisodeInput>): void {
+  openAddPatient(seed?: Partial<NewEpisodeInput>, capture?: CaptureItem): void {
     // The workspace can open read-only; never collect input it cannot save.
     if (!this.canOpenWriteForm()) return;
     const settings = this.getSettings();
@@ -572,7 +579,7 @@ export class ClinicalWorkspaceView extends ItemView {
       priority: settings.defaultPriority,
       ...seed
     };
-    new NewEpisodeModal(this.app, (input) => this.submitNewEpisode(input), defaults).open();
+    new NewEpisodeModal(this.app, (input) => this.submitNewEpisode(input, capture), defaults).open();
   }
 
   /**
@@ -581,16 +588,20 @@ export class ClinicalWorkspaceView extends ItemView {
    * form with everything still typed. Each resubmission carries only the
    * answer the user gave; the form's own values are never changed.
    */
-  private async submitNewEpisode(input: NewEpisodeInput): Promise<void> {
+  private async submitNewEpisode(input: NewEpisodeInput, capture?: CaptureItem): Promise<void> {
     let result: CreateEpisodeResult;
     try {
-      result = await this.service.createEpisode(input);
+      if (capture) this.validateCaptureInput(validateNewEpisodeInput(input));
+      result = capture
+        ? await new CaptureStore(this.app, this.repository).run(capture, () => this.service.createEpisode(input),
+          (saved) => `Patient ${saved.patient.record.id}; episode ${saved.episode.record.id}${saved.task ? `; task ${saved.task.record.id}` : ""}`)
+        : await this.service.createEpisode(input);
     } catch (error) {
       if (error instanceof PossibleDuplicatePatientError) {
         const patientId = await this.askWhichPatient(error.candidates, input.mrn);
         if (patientId === undefined) throw new ClinicalSubmitCancelled();
         return this.submitNewEpisode(
-          patientId ? { ...input, existingPatientId: patientId } : { ...input, forceNewPatient: true }
+          patientId ? { ...input, existingPatientId: patientId } : { ...input, forceNewPatient: true }, capture
         );
       }
       if (error instanceof MrnIdentityConflictError) {
@@ -598,7 +609,7 @@ export class ClinicalWorkspaceView extends ItemView {
         if (!useStoredPatient) {
           throw new ClinicalSubmitCancelled("Nothing was saved. Check the MRN, then submit again.", "MRN");
         }
-        return this.submitNewEpisode({ ...input, confirmMrnOwner: error.patient.id });
+        return this.submitNewEpisode({ ...input, confirmMrnOwner: error.patient.id }, capture);
       }
       throw error;
     }
@@ -627,7 +638,8 @@ export class ClinicalWorkspaceView extends ItemView {
   openQuickEntry(activeEpisodePath = ""): void {
     new QuickEntryModal(
       this.app,
-      (action) => this.runQuickEntryAction(action, activeEpisodePath)
+      (action) => this.runQuickEntryAction(action, activeEpisodePath),
+      () => { void this.openCaptureInbox().catch((error: unknown) => showClinicalErrorNotice(error, "Could not open capture inbox.")); }
     ).open();
   }
 
@@ -638,7 +650,7 @@ export class ClinicalWorkspaceView extends ItemView {
   }
 
   /** Always shows an unselected Episode picker before opening the task form. */
-  async openAddTaskQuickEntry(activeEpisodePath = ""): Promise<void> {
+  async openAddTaskQuickEntry(activeEpisodePath = "", capture?: CaptureItem): Promise<void> {
     if (!this.canOpenWriteForm()) return;
     try {
       const choices = await this.quickEntryChoices(activeEpisodePath, "task");
@@ -649,11 +661,14 @@ export class ClinicalWorkspaceView extends ItemView {
       new QuickEntryEpisodeModal(this.app, "a task / follow-up", choices, (choice) => {
         if (!this.canOpenWriteForm()) return;
         new NewTaskModal(this.app, choice.episode, choice.patientLabel, async (input) => {
-          const created = await this.service.createTask(input);
+          if (capture) this.validateCaptureInput(validateTaskInput(input));
+          const created = capture
+            ? await new CaptureStore(this.app, this.repository).run(capture, () => this.service.createTask(input), (saved) => `Task ${saved.task.record.id}`)
+            : await this.service.createTask(input);
           new Notice(taskAddedNotice(created.duplicate));
           this.activeTab = "tasks";
           await this.refresh();
-        }).open();
+        }, capture?.draft ? captureSeed(capture.draft).task : {}).open();
       }).open();
     } catch (error) {
       showClinicalErrorNotice(error, "Could not open task quick entry.");
@@ -661,7 +676,7 @@ export class ClinicalWorkspaceView extends ItemView {
   }
 
   /** Always shows an unselected Episode picker before opening the procedure form. */
-  async openProcedureQuickEntry(activeEpisodePath = ""): Promise<void> {
+  async openProcedureQuickEntry(activeEpisodePath = "", capture?: CaptureItem): Promise<void> {
     if (!this.canOpenWriteForm()) return;
     try {
       const choices = await this.quickEntryChoices(activeEpisodePath, "procedure");
@@ -675,15 +690,91 @@ export class ClinicalWorkspaceView extends ItemView {
         if (!this.canOpenWriteForm()) return;
         const additional = choice.additionalProcedure === true;
         new ProcedureModal(this.app, choice.episode, choice.patientLabel, async (input) => {
-          await this.service.completeProcedure(input);
+          if (capture) this.validateCaptureInput(validateProcedureInput(input));
+          if (capture) await new CaptureStore(this.app, this.repository).run(capture,
+            () => this.service.completeProcedure(input), (saved) => `Procedure ${saved.record.id}`);
+          else await this.service.completeProcedure(input);
           new Notice(additional ? "Procedure added to the logbook." : "Procedure logged and workflow updated.");
           this.activeTab = "surgery";
           await this.refresh();
-        }, { additional, returnToTheatre: choice.returnToTheatre === true, completionBookingTaskId: choice.completionBookingTaskId ?? "" }).open();
+        }, { additional, returnToTheatre: choice.returnToTheatre === true, completionBookingTaskId: choice.completionBookingTaskId ?? "",
+          ...(capture?.draft ? { seed: captureSeed(capture.draft).procedure } : {}) }).open();
       }).open();
     } catch (error) {
       showClinicalErrorNotice(error, "Could not open procedure quick entry.");
     }
+  }
+
+  /** Planned surgery is a workflow update, never a logbook entry. */
+  async openBookOrQuickEntry(activeEpisodePath = "", capture?: CaptureItem): Promise<void> {
+    if (!this.canOpenWriteForm()) return;
+    const choices = await this.quickEntryChoices(activeEpisodePath, "task");
+    if (!choices.length) { new Notice("No active patient episode is available. Create an episode first."); return; }
+    new QuickEntryEpisodeModal(this.app, "an OR booking", choices, (choice) => {
+      if (!this.canOpenWriteForm()) return;
+      new BookOrModal(this.app, choice.episode, async (input) => {
+        if (capture) await new CaptureStore(this.app, this.repository).run(capture,
+          () => this.service.updateEpisode(choice.episode.id, input), (saved) => `Episode ${saved.episode.record.id}`);
+        else await this.service.updateEpisode(choice.episode.id, input);
+        new Notice("Operating-room booking saved. No performed procedure was recorded.");
+        this.activeTab = "surgery";
+        await this.refresh();
+      }, capture?.draft ? captureSeed(capture.draft).booking : {}, choice.patientLabel).open();
+    }).open();
+  }
+
+  async setupNativeCapture(): Promise<void> {
+    await new CaptureStore(this.app, this.repository).setup();
+    new Notice("Capture folder and four templates are ready. Existing templates were kept.");
+    await this.openCaptureInbox();
+  }
+
+  async openCaptureInbox(): Promise<void> {
+    const store = new CaptureStore(this.app, this.repository);
+    this.captureItems = await store.list();
+    new CaptureInboxModal(this.app, this.captureItems,
+      (item) => { void this.reviewCapture(item).catch((error: unknown) => showClinicalErrorNotice(error, "Could not open capture review.")); },
+      (item) => { void this.openCaptureSource(item); },
+      () => store.setup(), () => this.openCaptureInbox()).open();
+  }
+
+  private async openCaptureSource(item: CaptureItem): Promise<void> {
+    try {
+      const file = this.app.vault.getAbstractFileByPath(item.path);
+      if (!isCaptureDraftPath(item.path, clinicalRootFolder()) || !(file instanceof TFile) || file.path !== item.path) {
+        new Notice("This draft is no longer available. Refresh the capture inbox.");
+        return;
+      }
+      await this.app.workspace.getLeaf(false).openFile(file);
+    } catch {
+      new Notice("Could not open this draft. Refresh the capture inbox and try again.");
+    }
+  }
+
+  private async reviewCapture(selected: CaptureItem): Promise<void> {
+    const store = new CaptureStore(this.app, this.repository);
+    const item = await store.read(selected.path);
+    if (!item.draft || !["draft", "processing"].includes(item.draft.state)) {
+      new Notice("This capture is not ready to file. Reopen its draft or receipt."); return;
+    }
+    new CaptureReviewModal(this.app, item, async () => {
+      if (item.draft?.state === "processing") {
+        await store.markReviewed(item);
+        new Notice("Capture marked reviewed. No clinical record was changed.");
+        await this.refresh();
+        return;
+      }
+      switch (item.draft?.kind) {
+        case "patient": this.openAddPatient(captureSeed(item.draft).patient, item); break;
+        case "task": await this.openAddTaskQuickEntry("", item); break;
+        case "procedure": await this.openProcedureQuickEntry("", item); break;
+        case "or-booking": await this.openBookOrQuickEntry("", item); break;
+      }
+    }).open();
+  }
+
+  private validateCaptureInput(errors: string[]): void {
+    if (errors.length) throw new Error(errors.join(" "));
   }
 
   private runQuickEntryAction(
@@ -699,6 +790,9 @@ export class ClinicalWorkspaceView extends ItemView {
         break;
       case "record-procedure":
         void this.openProcedureQuickEntry(activeEpisodePath);
+        break;
+      case "book-or":
+        void this.openBookOrQuickEntry(activeEpisodePath).catch((error: unknown) => showClinicalErrorNotice(error, "Could not open OR booking."));
         break;
       case "today":
         void this.openTodayPendingWork();
@@ -951,6 +1045,14 @@ export class ClinicalWorkspaceView extends ItemView {
     setIcon(quickEntryIcon, "square-pen");
     quickEntry.createSpan({ text: "Quick entry", cls: "clinical-quick-entry-label" });
     quickEntry.addEventListener("click", () => this.openQuickEntry());
+    const pending = this.captureItems.filter((item) => !item.draft || ["draft", "processing"].includes(item.draft.state)).length;
+    const capture = actions.createEl("button", {
+      attr: { "aria-label": `Capture inbox — ${pending} to review`, title: "Capture inbox" },
+      cls: "clickable-icon clinical-refresh-button"
+    });
+    setIcon(capture, "inbox");
+    if (pending) capture.createSpan({ text: String(pending), cls: "clinical-capture-count", attr: { "aria-hidden": "true" } });
+    capture.addEventListener("click", () => { void this.openCaptureInbox().catch((error: unknown) => showClinicalErrorNotice(error, "Could not open capture inbox.")); });
     const refresh = actions.createEl("button", {
       attr: { "aria-label": "Refresh Clinical Workspace" },
       cls: "clickable-icon clinical-refresh-button"

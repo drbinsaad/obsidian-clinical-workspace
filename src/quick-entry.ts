@@ -7,6 +7,7 @@ export const QUICK_ENTRY_ACTIONS = [
   "hub",
   "new-patient-episode",
   "add-task-follow-up",
+  "book-or",
   "record-procedure",
   "today"
 ] as const;
@@ -17,6 +18,7 @@ export const QUICK_ENTRY_COMMAND_IDS: Readonly<Record<QuickEntryAction, string>>
   hub: "open-quick-entry",
   "new-patient-episode": "add-patient-episode",
   "add-task-follow-up": "add-task-follow-up",
+  "book-or": "book-or",
   "record-procedure": "record-procedure",
   today: "open-today-pending-work"
 };
@@ -30,6 +32,7 @@ export const QUICK_ENTRY_PROTOCOL_ACTIONS: Readonly<Record<QuickEntryAction, str
   hub: "clinical-workspace-quick-entry",
   "new-patient-episode": "clinical-workspace-new-patient-episode",
   "add-task-follow-up": "clinical-workspace-add-task-follow-up",
+  "book-or": "clinical-workspace-book-or",
   "record-procedure": "clinical-workspace-record-procedure",
   today: "clinical-workspace-today"
 };

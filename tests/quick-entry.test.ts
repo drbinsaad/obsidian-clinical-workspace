@@ -1220,6 +1220,7 @@ test("commands intentionally ship without default hotkeys", async () => {
   assert.match(source, /QUICK_ENTRY_COMMAND_IDS\.hub/);
   assert.match(source, /QUICK_ENTRY_COMMAND_IDS\["new-patient-episode"\]/);
   assert.match(source, /QUICK_ENTRY_COMMAND_IDS\["add-task-follow-up"\]/);
+  assert.match(source, /QUICK_ENTRY_COMMAND_IDS\["book-or"\]/);
   assert.match(source, /QUICK_ENTRY_COMMAND_IDS\["record-procedure"\]/);
   assert.match(source, /QUICK_ENTRY_COMMAND_IDS\.today/);
   assert.match(source, /addRibbonIcon\("square-pen", "Clinical Workspace quick entry"/);
@@ -1239,12 +1240,14 @@ test("active Markdown context is captured before workspace activation", async ()
   const fakeView = {
     openQuickEntry: (path: string) => received.push(`hub:${path}`),
     openAddTaskQuickEntry: (path: string) => received.push(`task:${path}`),
+    openBookOrQuickEntry: (path: string) => received.push(`booking:${path}`),
     openProcedureQuickEntry: (path: string) => received.push(`procedure:${path}`)
   } as unknown as ClinicalWorkspaceView;
   const plugin = new ClinicalWorkspacePlugin(app, {} as never) as unknown as {
     app: App;
     openQuickEntry: () => Promise<void>;
     openAddTask: () => Promise<void>;
+    openBookOr: () => Promise<void>;
     openRecordProcedure: () => Promise<void>;
     runWorkspaceEntry: (
       action: (view: ClinicalWorkspaceView) => void | Promise<void>,
@@ -1261,12 +1264,15 @@ test("active Markdown context is captured before workspace activation", async ()
 
   await plugin.openAddTask();
   activeView = { file: new StubTFile(episodePath) };
+  await plugin.openBookOr();
+  activeView = { file: new StubTFile(episodePath) };
   await plugin.openRecordProcedure();
   activeView = { file: new StubTFile(episodePath) };
   await plugin.openQuickEntry();
 
   assert.deepEqual(received, [
     `task:${episodePath}`,
+    `booking:${episodePath}`,
     `procedure:${episodePath}`,
     `hub:${episodePath}`
   ]);

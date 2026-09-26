@@ -403,6 +403,7 @@ test("recovery guidance names only real commands and stays identifier-free and p
       "add-patient-episode",
       "add-task-follow-up",
       "adopt-current-baseline",
+      "book-or",
       "export-patient-list",
       "generate-handover-note",
       "initialize-new-workspace",
@@ -412,8 +413,10 @@ test("recovery guidance names only real commands and stays identifier-free and p
       "record-procedure",
       "remove-identifiers-from-generated-bodies",
       "retry-folder-move-recovery",
+      "review-capture-inbox",
       "run-integrity-check",
-      "search-clinical-records"
+      "search-clinical-records",
+      "setup-native-capture"
     ]);
     assert.equal(
       commands.get("retry-folder-move-recovery")?.name,

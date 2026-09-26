@@ -492,7 +492,7 @@
 .clinical-workspace-view.is-narrow .clinical-workspace-header-actions {
   display: grid;
   width: 100%;
-  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  grid-template-columns: 44px minmax(0, 1fr) 44px 44px;
 }
 
 .clinical-workspace-view.is-narrow .clinical-quick-entry-button {
@@ -1422,4 +1422,17 @@
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
   resize: vertical;
+}
+.clinical-modal .clinical-capture-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-inline-size: 100%;
+  user-select: text;
+  font-family: var(--font-text);
+  font-size: var(--font-ui-small);
+}
+
+.clinical-workspace-view .clinical-capture-count {
+  font-size: var(--font-ui-smaller);
+  margin-inline-start: 2px;
 }

@@ -73,6 +73,13 @@ and procedure actions always require a visible Episode choice before their blank
 See [Quick Entry, hotkeys, mobile toolbar, and safe local
 links](docs/quick-entry.md). Obsidian may vary the exact setting labels by version.
 
+The [native iPhone capture inbox](docs/native-capture.md) accepts patient,
+task, procedure, and OR-booking drafts saved before the vault loads. Review
+them through **Capture inbox** before submitting a clinical form. **Quick
+entry → Book OR** also opens a planned booking directly. Native capture needs
+the supported iOS/Obsidian version; physical iPhone widget testing remains
+outstanding, so begin with synthetic data in a disposable vault.
+
 ## Everyday use
 
 The [everyday-use guide](docs/user-guide.md) has short, step-by-step recipes

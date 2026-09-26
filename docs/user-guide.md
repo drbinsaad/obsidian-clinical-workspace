@@ -16,8 +16,8 @@ the **Clinical Workspace: Open workspace** command. On iPhone and iPad the
 icon is in Obsidian's mobile **Open menu**. You can also put any command on the
 mobile toolbar; see [Quick Entry and mobile shortcuts](quick-entry.md).
 
-The header has three buttons: **Search** (magnifier), **Quick entry**, and
-**Refresh**. Below it are five tabs:
+The header includes **Search** (magnifier), **Quick entry**, **Capture inbox**,
+and **Refresh**. Below it are five tabs:
 
 | Tab | Use it for |
 |---|---|
@@ -29,6 +29,20 @@ The header has three buttons: **Search** (magnifier), **Quick entry**, and
 
 Long lists show 40 items per page with **Previous** and **Next** at the bottom.
 Changing a filter chip starts the list again at page 1.
+
+## How do I capture something before the vault opens?
+
+Run **Set up native capture** once, then configure native iPhone Quick Capture
+Locations using the generated inbox folder and the patient, task, procedure,
+or OR-booking template. After capture, open **Capture inbox**, review the text,
+choose the intended episode when required, and submit the ordinary form.
+Capturing a note alone creates no clinical record. See the
+[native capture setup and interrupted-save guide](native-capture.md), including
+version requirements and the physical-device testing limitation.
+
+For immediate entry with the plugin loaded, **Quick entry → Book OR** opens
+an episode picker and a booking form. It plans surgery without logging an
+operation; use **Record procedure** only for the procedure workflow.
 
 ## How do I do a ward round on my iPhone?
 
@@ -443,6 +457,9 @@ mobile toolbar. No command has a default hotkey.
 | **Quick entry: new patient / episode** | Opens a blank Add patient form. | Always |
 | **Quick entry: add task / follow-up** | Asks you to choose an episode, then opens a blank task form. | Always |
 | **Quick entry: record procedure** | Asks you to choose an OR booking, or an episode with a logged procedure, then opens the procedure form. | Always |
+| **Quick entry: book operating room** | Asks you to choose an episode, then opens a planned booking form. | Always |
+| **Review capture inbox** | Reviews native capture drafts before explicit form submission. | Always |
+| **Set up native capture** | Creates the capture inbox and four templates; existing files are preserved. | Always |
 | **Open today's pending work** | Opens the **Today** tab, freshly read from the vault. | Always |
 | **Search clinical records** | Opens search. | Always |
 | **Export patient list** | Opens the patient-list export form. | Always |
