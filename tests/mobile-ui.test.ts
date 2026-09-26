@@ -174,14 +174,15 @@ function assertNearestInlineReveal(element: TestElement, direction: "ltr" | "rtl
   );
 }
 
-test("iPhone header renders three controls into three non-wrapping narrow tracks", async () => {
+test("iPhone header renders four controls into four non-wrapping narrow tracks", async () => {
   const root = renderWorkspace("today");
   const actions = root.find(".clinical-workspace-header-actions");
   assert.ok(actions);
-  assert.equal(actions.children.length, 3);
+  assert.equal(actions.children.length, 4);
   assert.deepEqual(actions.children.map(accessibleName), [
     "Search clinical records",
     "Open Clinical Workspace quick entry",
+    "Capture inbox — 0 to review",
     "Refresh Clinical Workspace"
   ]);
 
@@ -318,7 +319,7 @@ test("Quick entry remains contained at extreme narrow width with a complete acce
     ".clinical-workspace-view.is-narrow .clinical-workspace-header-actions"
   );
   const template = normalized(required(actionsStyle, "grid-template-columns"));
-  assert.equal(gridTrackCount(template), 3);
+  assert.equal(gridTrackCount(template), 4);
   assert.equal(actionsStyle.get("width"), "100%");
 
   const quickEntryStyle = styleForViewport(
@@ -331,7 +332,7 @@ test("Quick entry remains contained at extreme narrow width with a complete acce
   assert.equal(quickEntryStyle.get("width"), "100%");
   assert.equal(quickEntryStyle.get("min-width"), "0");
 
-  const centerTrack = /^44px\s+(.+)\s+44px$/.exec(template)?.[1] ?? "";
+  const centerTrack = /^44px\s+(.+)\s+44px\s+44px$/.exec(template)?.[1] ?? "";
   const centerHasUsableFloor = Boolean(centerTrack) &&
     !/^minmax\(\s*0(?:px)?\s*,/i.test(centerTrack);
   const buttonContainsOverflow = ["clip", "hidden"].includes(
@@ -617,10 +618,10 @@ test("Obsidian 1.14's close button also stays below the status area, without an 
   assert.equal(styleFor(rules, ".is-mobile .clinical-modal > .modal-header").get("display"), "none");
 });
 
-test("Quick Entry renders four packed actions rather than stretching rows across the sheet", async () => {
+test("Quick Entry renders six packed actions rather than stretching rows across the sheet", async () => {
   const content = new TestElement();
   const modalElement = new TestElement();
-  const modal = new QuickEntryModal(new App(), () => undefined) as unknown as RenderableModal;
+  const modal = new QuickEntryModal(new App(), () => undefined, () => undefined) as unknown as RenderableModal;
   modal.contentEl = content as unknown as HTMLElement;
   modal.modalEl = modalElement as unknown as HTMLElement;
   modal.onOpen();
@@ -630,8 +631,8 @@ test("Quick Entry renders four packed actions rather than stretching rows across
   const grid = content.find(".clinical-quick-entry-grid");
   assert.ok(grid);
   const options = grid.findAll(".clinical-quick-entry-option");
-  assert.equal(options.length, 4);
-  assert.deepEqual(options.map((option) => option.tagName), ["button", "button", "button", "button"]);
+  assert.equal(options.length, 6);
+  assert.ok(options.every((option) => option.tagName === "button"));
 
   const rules = parseCssRules(await stylesPromise);
   const gridStyle = styleFor(
@@ -655,8 +656,8 @@ test("Quick Entry renders four packed actions rather than stretching rows across
   const minimumOptionHeight = numericPx(required(optionStyle, "min-height"));
   const gap = numericPx(required(gridStyle, "gap"));
   assert.ok(
-    minimumOptionHeight * options.length + gap * (options.length - 1) <= 320,
-    "the four minimum-height options and gaps should remain compact"
+    minimumOptionHeight <= 72 && gap <= 10,
+    "each option stays compact; the larger six-option hub scrolls instead of stretching rows"
   );
 });
 

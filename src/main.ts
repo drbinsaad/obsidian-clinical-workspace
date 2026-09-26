@@ -456,6 +456,8 @@ async function retiredRootFingerprint(root: string): Promise<string> {
  * clinicians: no Sync-recovery internals, only what changes for them.
  */
 export const WHATS_NEW_HIGHLIGHTS: readonly string[] = [
+  "Native capture inbox: set up four widget templates, then review captured patients, tasks, procedures or OR plans before filing.",
+  "Book OR is now a separate Quick entry action. Planned surgery never becomes a performed procedure until you record it.",
   "Export any patient type to a note or spreadsheet: Patients → Export list. Pick care setting, pathway, priority, or status.",
   "Safer entry: if an MRN is already recorded under a different name, you are asked before anything is saved.",
   "Complete now has Undo, and Discharge can close leftover tasks with one tick.",
@@ -675,6 +677,12 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       callback: () => void this.openAddTask()
     });
     this.addCommand({
+      id: QUICK_ENTRY_COMMAND_IDS["book-or"],
+      name: "Quick entry: book operating room",
+      icon: "calendar-plus",
+      callback: () => void this.openBookOr()
+    });
+    this.addCommand({
       id: QUICK_ENTRY_COMMAND_IDS["record-procedure"],
       name: "Quick entry: record procedure",
       icon: "clipboard-plus",
@@ -690,6 +698,18 @@ export default class ClinicalWorkspacePlugin extends Plugin {
       id: "run-integrity-check",
       name: "Run clinical data integrity check",
       callback: () => void this.runIntegrityCheck()
+    });
+    this.addCommand({
+      id: "setup-native-capture",
+      name: "Set up native capture",
+      icon: "inbox",
+      callback: () => void this.runWorkspaceEntry((view) => view.setupNativeCapture(), "Could not prepare native capture.")
+    });
+    this.addCommand({
+      id: "review-capture-inbox",
+      name: "Review capture inbox",
+      icon: "inbox",
+      callback: () => void this.runWorkspaceEntry((view) => view.openCaptureInbox(), "Could not open the capture inbox.")
     });
     this.addCommand({
       id: "search-clinical-records",
@@ -730,6 +750,10 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     this.registerQuickEntryProtocol(
       QUICK_ENTRY_PROTOCOL_ACTIONS["add-task-follow-up"],
       () => this.openAddTask()
+    );
+    this.registerQuickEntryProtocol(
+      QUICK_ENTRY_PROTOCOL_ACTIONS["book-or"],
+      () => this.openBookOr()
     );
     this.registerQuickEntryProtocol(
       QUICK_ENTRY_PROTOCOL_ACTIONS["record-procedure"],
@@ -4738,6 +4762,14 @@ export default class ClinicalWorkspacePlugin extends Plugin {
     await this.runWorkspaceEntry(
       (view) => view.openAddTaskQuickEntry(activeEpisodePath),
       "Could not open task / follow-up quick entry."
+    );
+  }
+
+  private async openBookOr(): Promise<void> {
+    const activeEpisodePath = this.activeMarkdownPath();
+    await this.runWorkspaceEntry(
+      (view) => view.openBookOrQuickEntry(activeEpisodePath),
+      "Could not open OR booking quick entry."
     );
   }
 

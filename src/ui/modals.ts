@@ -521,6 +521,11 @@ const QUICK_ENTRY_OPTIONS: ReadonlyArray<{
     description: "Choose an episode, then add a task."
   },
   {
+    action: "book-or",
+    label: "Book OR",
+    description: "Choose an episode, then plan surgery without adding a logbook entry."
+  },
+  {
     action: "record-procedure",
     label: "Record procedure",
     description: "Choose an episode, then log a procedure."
@@ -536,7 +541,8 @@ const QUICK_ENTRY_OPTIONS: ReadonlyArray<{
 export class QuickEntryModal extends ClinicalResponsiveModal {
   constructor(
     app: App,
-    private readonly onChoose: (action: QuickEntryFormAction) => void
+    private readonly onChoose: (action: QuickEntryFormAction) => void,
+    private readonly onCaptureInbox?: () => void
   ) {
     super(app);
   }
@@ -562,6 +568,12 @@ export class QuickEntryModal extends ClinicalResponsiveModal {
         this.close();
         this.onChoose(option.action);
       });
+    }
+    if (this.onCaptureInbox) {
+      const capture = actions.createEl("button", { cls: "clinical-quick-entry-option", attr: { type: "button" } });
+      capture.createEl("strong", { text: "Capture inbox" });
+      capture.createSpan({ text: "Review drafts saved with native capture.", cls: "clinical-section-note" });
+      capture.addEventListener("click", () => { this.close(); this.onCaptureInbox?.(); });
     }
     const footer = this.contentEl.createDiv({ cls: "clinical-modal-actions" });
     const cancel = footer.createEl("button", { text: "Cancel" });
@@ -1253,7 +1265,8 @@ export class NewTaskModal extends ClinicalModal<NewTaskInput> {
     app: App,
     private readonly episode: EpisodeRecord,
     patientLabel: string,
-    onSubmit: AsyncSubmit<NewTaskInput>
+    onSubmit: AsyncSubmit<NewTaskInput>,
+    seed: Partial<Pick<NewTaskInput, "task" | "taskType" | "dueDate" | "priority" | "owner">> = {}
   ) {
     super(app, "Add task", onSubmit);
     // The episode's due date tracks its earliest open task, so for a patient
@@ -1270,13 +1283,19 @@ export class NewTaskModal extends ClinicalModal<NewTaskInput> {
       dueDate: episodeDue > today ? episodeDue : today,
       owner: ""
     };
+    // Draft text can prefill fields, never the patient/episode selected in-app.
+    if (seed.task !== undefined) this.input.task = seed.task;
+    if (seed.taskType !== undefined) this.input.taskType = seed.taskType;
+    if (seed.dueDate !== undefined) this.input.dueDate = seed.dueDate;
+    if (seed.priority !== undefined) this.input.priority = seed.priority;
+    if (seed.owner !== undefined) this.input.owner = seed.owner;
     this.patientLabel = patientLabel;
   }
 
   onOpen(): void {
     const form = this.prepare("Add patient task", `${this.patientLabel} · ${bidiIsolate(this.episode.case)}`);
     namedSetting(form, "Task").addText((field) => {
-      field.setPlaceholder("Action for the team").onChange((value) => (this.input.task = value));
+      field.setValue(this.input.task).setPlaceholder("Action for the team").onChange((value) => (this.input.task = value));
     });
     namedSetting(form, "Task type").addDropdown((field) => {
       field.addOptions(TASK_TYPE_OPTIONS).setValue(this.input.taskType).onChange((value) => {
@@ -1308,7 +1327,7 @@ export class NewTaskModal extends ClinicalModal<NewTaskInput> {
           });
       });
     namedSetting(form, "Owner").addText((field) => {
-      field.setPlaceholder("Optional team member").onChange((value) => (this.input.owner = value));
+      field.setValue(this.input.owner).setPlaceholder("Optional team member").onChange((value) => (this.input.owner = value));
       identityField(field.inputEl, "owner");
     });
     this.addActions(this.contentEl);
@@ -1846,7 +1865,10 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
      * on from OR booking; this logs another as its own entry without changing
      * its pathway.
      */
-    options: { additional?: boolean; returnToTheatre?: boolean; completionBookingTaskId?: string } = {}
+    options: {
+      additional?: boolean; returnToTheatre?: boolean; completionBookingTaskId?: string;
+      seed?: Partial<Pick<CompleteProcedureInput, "procedure" | "procedureDate" | "outcome">>;
+    } = {}
   ) {
     super(app, options.additional ? "Log procedure" : "Complete surgery", onSubmit);
     this.additional = options.additional === true;
@@ -1871,6 +1893,10 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
       ...(this.additional ? { additionalEntryId: createId("ADD") } : {}),
       ...(this.returnToTheatre ? { completionBookingTaskId: options.completionBookingTaskId ?? "" } : {})
     };
+    // Never accept relationship, booking identity or retry IDs from a capture.
+    if (options.seed?.procedure !== undefined) this.input.procedure = options.seed.procedure;
+    if (options.seed?.procedureDate !== undefined) this.input.procedureDate = options.seed.procedureDate;
+    if (options.seed?.outcome !== undefined) this.input.outcome = options.seed.outcome;
   }
 
   onOpen(): void {
@@ -1897,7 +1923,7 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
     namedSetting(form, "Surgery / procedure")
       .setDesc("The operation performed, which may differ from the booked case.")
       .addText((field) => {
-        field.setPlaceholder(this.episode.case).onChange((value) => (this.input.procedure = value));
+        field.setValue(this.input.procedure).setPlaceholder(this.episode.case).onChange((value) => (this.input.procedure = value));
       });
     this.addDateSetting(form, "Surgery date", this.input.procedureDate, (value) => {
       this.input.procedureDate = value;
@@ -1914,7 +1940,7 @@ export class ProcedureModal extends ClinicalModal<CompleteProcedureInput> {
         .onChange((value) => (this.input.role = value));
     });
     namedSetting(form, "Outcome").addText((field) => {
-      field.setPlaceholder("Optional short outcome").onChange((value) => (this.input.outcome = value));
+      field.setValue(this.input.outcome).setPlaceholder("Optional short outcome").onChange((value) => (this.input.outcome = value));
     });
     let followUpFields: HTMLDivElement;
     namedSetting(form, "Follow-up required").addToggle((field) => {

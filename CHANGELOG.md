@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-27
+
+### Added
+
+- Native capture inbox for patient/episode, task, procedure, and OR-booking
+  drafts. Setup creates four static templates and a scoped inbox without
+  overwriting existing files. Review and ordinary form submission are required
+  before clinical records are written; episode selection stays explicit.
+- Capture processing receipts block repeat submission after an interrupted or
+  uncertain save and retain the original draft for manual review. This is local
+  duplicate prevention, not cross-device exactly-once processing.
+- **Quick entry: book operating room** and its parameter-free local link open planned
+  booking through an episode picker without logging a completed operation.
+- [Native capture guide](docs/native-capture.md), including iOS 26 and
+  Obsidian 1.14 Catalyst requirements, synthetic-first setup, Sync limitations,
+  and the outstanding physical iPhone widget check.
+
 ## [0.7.1] - 2026-09-25
 
 ### Changed

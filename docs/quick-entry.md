@@ -17,6 +17,9 @@ shortcut.
 | **Quick entry: new patient / episode** | Opens a completely blank patient and Episode form. |
 | **Quick entry: add task / follow-up** | Opens an Episode chooser, then a blank task form. |
 | **Quick entry: record procedure** | Opens a chooser of active **OR booking** Episodes and Episodes that already have a logged procedure, then a blank procedure form. |
+| **Quick entry: book operating room** | Asks for an Episode, then opens a planned OR-booking form; does not log a completed operation. |
+| **Review capture inbox** | Reviews native Markdown drafts before opening the relevant clinical form. |
+| **Set up native capture** | Creates the scoped capture inbox and four templates without overwriting existing files. |
 | **Open today's pending work** | Opens the Today view with overdue, due-today, and undated tasks refreshed from the vault. |
 
 Every command passes through the same initialization, Sync-recovery, and
@@ -27,6 +30,11 @@ before any form opens. The [Everyday use guide](user-guide.md#all-commands)
 lists every Clinical Workspace command.
 
 ## iPhone and other mobile devices
+
+For native capture before the vault loads, use the separate
+[native iPhone capture inbox](native-capture.md). That route saves a draft
+first and requires review and form submission after Clinical Workspace loads.
+The workspace header and Quick Entry hub both offer **Capture inbox**.
 
 The workspace header includes a 44-pixel **Quick entry** control. The plugin
 also registers a separate **Clinical Workspace quick entry** ribbon action in
@@ -102,6 +110,7 @@ obsidian://clinical-workspace-quick-entry
 obsidian://clinical-workspace-new-patient-episode
 obsidian://clinical-workspace-add-task-follow-up
 obsidian://clinical-workspace-record-procedure
+obsidian://clinical-workspace-book-or
 obsidian://clinical-workspace-today
 ```
 
